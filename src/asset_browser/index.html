@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>City Asset Library</title><link rel="stylesheet" href="/browser.css"><script defer src="/browser.js"></script></head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">▥</span><span>CITY LAB<span class="brand-sub">Asset library</span></span></a>
+    <div class="side-label">COLLECTION</div>
+    <nav id="categories" aria-label="Asset categories"></nav>
+    <div class="side-bottom"><span class="live-dot"></span> Local collection<p>Original imports stay on this computer.<br>Game graphics are unchanged.</p></div>
+  </aside>
+  <main>
+    <header><div class="eyebrow">CITYGAME / ASSET LIBRARY</div><div class="header-row"><div><h1>A place for every piece.</h1><p class="subtitle">Explore imported and original assets. Plan what comes next.</p></div><a class="button secondary" href="/api/artist-brief" download="artist-brief.json">↓ Export artist brief</a></div></header>
+    <section id="stats" class="stats" aria-label="Collection overview"></section>
+    <details class="packs-panel"><summary>Source packs <span id="pack-summary"></span></summary><div id="packs" class="pack-list"></div><p class="muted">Add an extracted folder or an authored asset-pack.json with <code>--asset-pack PATH</code> when launching the browser. Raw installers and CDs need extraction first.</p></details>
+    <div id="warnings" role="status"></div>
+    <section class="collection" aria-label="Browse assets">
+      <div class="collection-heading"><div><h2 id="collection-title">All assets</h2><p id="result-count" aria-live="polite">Loading collection…</p></div><div class="view-note">Pixel previews · palette animation paused</div></div>
+      <div class="filters">
+        <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search names, sprite IDs or asset keys" aria-label="Search assets"></label>
+        <label><span class="sr-only">Source pack</span><select id="pack-filter"><option value="">All packs</option></select></label>
+        <label><span class="sr-only">Zoom size</span><select id="zoom-filter"><option value="">All zoom sizes</option><option>Small</option><option>Medium</option><option>Large</option></select></label>
+        <label><span class="sr-only">Replacement status</span><select id="status-filter"><option value="">All replacement states</option><option value="missing">Not started</option><option value="draft">Draft available</option><option value="reviewed">Reviewed available</option></select></label>
+      </div>
+      <div id="grid" class="grid"></div><div id="empty" class="empty" hidden>No assets match these filters. Try a different search or source pack.</div>
+      <footer class="pagination"><button id="previous" class="button secondary">← Previous</button><span id="page-status"></span><button id="next" class="button secondary">Next →</button></footer>
+    </section>
+    <p class="footnote">Coverage measures inventoried assets, not full game readiness. Numeric ID matches and author review status still need compatibility validation.</p>
+  </main>
+</div>
+<dialog id="detail" aria-labelledby="detail-title">
+  <div class="dialog-top"><div><div class="eyebrow" id="detail-category"></div><h2 id="detail-title"></h2><code id="detail-key"></code></div><button id="close-detail" class="icon-button" aria-label="Close asset details">×</button></div>
+  <div id="comparisons" class="comparisons"></div>
+  <div id="contract" class="contract"></div>
+  <div class="detail-section"><h3>Related zoom variants</h3><div id="family" class="family"></div></div>
+  <div class="detail-section"><h3>Before replacement approval</h3><ul id="questions"></ul></div>
+  <p class="footnote">This comparison view includes original artwork. The exported artist brief contains technical metadata only.</p>
+</dialog>
+</body></html>

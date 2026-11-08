@@ -1,0 +1,67 @@
+/target
+/outputs/
+**/__pycache__/
+*.py[cod]
+packaging/android/local.properties
+packaging/android/.gradle/
+packaging/android/**/build/
+packaging/android/.idea/
+packaging/android/app/src/main/jniLibs/
+packaging/android/app/src/main/assets/SeedAssets.zip
+packaging/ios/DerivedData/
+packaging/ios/RustLibs/
+packaging/ios/CityGame/SeedAssets/
+packaging/ios/CityGame/SeedAssets.zip
+*.xcuserstate
+.DS_Store
+
+# Local installations, imported packs, and extracted original game data.
+/Imported Assets/
+/imported-assets/
+/SeedAssets/
+/SC2K/
+/WIN95/
+/sprites/
+/win95_tiles/
+/palettes/
+/catalog/
+/cursors/
+*.sc2
+*.SC2
+*.scn
+*.SCN
+*.dat
+*.DAT
+*.iso
+*.ISO
+*.img
+*.dmg
+*.hqx
+*.sit
+*.zip
+
+# Audio imports stay local; only the authored asset directories are published.
+*.wav
+*.WAV
+*.mid
+*.MID
+!assets/music/*.wav
+!assets/music/*.mid
+!assets/replacements/our-graphics/audio/**
+
+# Compiled applications and libraries, even if copied outside target/.
+*.app/
+*.dSYM/
+*.a
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+*.EXE
+*.pdb
+/build/
+/dist/
+
+# Authored replacement pack is kept private pending redistribution review.
+/assets/replacements/our-graphics/

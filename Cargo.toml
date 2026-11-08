@@ -1,0 +1,53 @@
+[package]
+name = "citygame"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "citygame"
+path = "src/lib.rs"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[features]
+default = ["desktop-bin"]
+# Desktop CLI binary. Disabled for iOS/Android host library builds.
+desktop-bin = []
+
+[[bin]]
+name = "citygame"
+path = "src/main.rs"
+required-features = ["desktop-bin"]
+
+[dependencies]
+wgpu = "29.0.3"
+raw-window-handle = "0.6.2"
+image = "0.25"
+oxideav-pict = { version = "0.0.4", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.30"
+pollster = "0.4"
+env_logger = "0.11"
+log = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Desktop: system SDL via pkg-config.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+sdl3 = { version = "0.18.4", features = ["raw-window-handle", "use-pkg-config", "main"] }
+
+# Mobile: build SDL from source (CMake + platform SDK/NDK).
+[target.'cfg(target_os = "ios")'.dependencies]
+sdl3 = { version = "0.18.4", features = ["raw-window-handle", "main", "build-from-source-static"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+sdl3 = { version = "0.18.4", features = ["raw-window-handle", "main", "build-from-source"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
+
+[build-dependencies]
+cc = "1"

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sky" x2="0" y2="1">
+      <stop stop-color="#182c3a"/>
+      <stop offset="1" stop-color="#294d5e"/>
+    </linearGradient>
+    <linearGradient id="tower" x2="1" y2="1">
+      <stop stop-color="#b5e9e3"/>
+      <stop offset="1" stop-color="#4fa49f"/>
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed rounded backing removes the pale desktop showing around the mark. -->
+  <rect x="24" y="24" width="976" height="976" rx="215" fill="#203b4b"/>
+  <g transform="translate(71.68 71.68) scale(.86)">
+  <rect x="24" y="24" width="976" height="976" rx="215" fill="#203b4b"/>
+  <rect x="34" y="34" width="956" height="956" rx="205" fill="none" stroke="#a7e9dc" stroke-width="12" opacity=".75"/>
+  <path d="M110 282H914M110 402H914M110 522H914" stroke="#85b4be" stroke-width="5" opacity=".12"/>
+  <path d="M512 754 153 581 512 406 871 581Z" fill="#1c3b4a" stroke="#95e9da" stroke-width="23" stroke-linejoin="round"/>
+  <path d="M512 754v83L153 663v-82M512 754v83l359-174v-82" fill="#214552" stroke="#62aead" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M265 575 512 456 759 575 512 695Z" fill="#335d68"/>
+  <path d="M355 326 439 291v331l-84 41Z" fill="#457e88"/>
+  <path d="M439 291 514 326v298l-75-2Z" fill="#83c8c5"/>
+  <path d="M472 256 551 216v410l-79 38Z" fill="#5ba7aa"/>
+  <path d="M551 216 631 255v371l-80 0Z" fill="#8fd9d1"/>
+  <path d="M634 394 704 360v250l-70 34Z" fill="#427d87"/>
+  <path d="M704 360 760 390v223l-56-3Z" fill="#80c6c3"/>
+  <g fill="#ffe0a0">
+    <path d="M382 383h22v33h-22zm0 73h22v33h-22zm0 73h22v33h-22zm102-188h20v30h-20zm0 70h20v30h-20zm0 70h20v30h-20zm0 70h20v30h-20zm91-269h24v34h-24zm0 77h24v34h-24zm0 77h24v34h-24zm0 77h24v34h-24zm77-72h20v29h-20zm0 65h20v29h-20z"/>
+  </g>
+  <path d="M259 286c58-99 159-157 270-157 122 0 221 65 275 163" fill="none" stroke="#80d8cd" stroke-width="14" stroke-linecap="round" stroke-dasharray="3 36"/>
+  <circle cx="264" cy="280" r="23" fill="#ffe0a0"/>
+  <circle cx="798" cy="286" r="23" fill="#ffe0a0"/>
+  <circle cx="512" cy="127" r="18" fill="#a2f1df"/>
+  </g>
+</svg>

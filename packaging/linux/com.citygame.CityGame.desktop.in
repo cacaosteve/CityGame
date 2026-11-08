@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=CityGame
+Comment=Build a city. Shape its future.
+Exec=@CITYGAME_EXEC@
+Icon=com.citygame.CityGame
+Terminal=false
+Categories=Game;Simulation;
+StartupWMClass=com.citygame.CityGame
+StartupNotify=true

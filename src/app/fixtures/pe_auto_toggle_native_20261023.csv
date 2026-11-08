@@ -1,0 +1,6 @@
+auto_before,auto_after,profile_calls,profile_value,funds_after,speed_after
+0,1,1,1,123456,4
+1,0,1,0,123456,4
+2,0,1,0,123456,4
+2147483648,0,1,0,123456,4
+4294967295,0,1,0,123456,4

@@ -1,0 +1,356 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2825DE3CA350DA5BCC4BEDF8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C2ECA236E7CC5381600F5D73 /* Assets.xcassets */; };
+		980010E7259A396FEFD493B5 /* SeedAssets.zip in Resources */ = {isa = PBXBuildFile; fileRef = 2C2525574BBE7CDB6E0F7656 /* SeedAssets.zip */; };
+		C33A249978F604A5852BDD27 /* ios_sdl_entry.m in Sources */ = {isa = PBXBuildFile; fileRef = 7B2395B286705131B17B2E90 /* ios_sdl_entry.m */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		222AD75000D37D6136E5D2CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2C2525574BBE7CDB6E0F7656 /* SeedAssets.zip */ = {isa = PBXFileReference; lastKnownFileType = archive.zip; path = SeedAssets.zip; sourceTree = "<group>"; };
+		7B2395B286705131B17B2E90 /* ios_sdl_entry.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ios_sdl_entry.m; sourceTree = "<group>"; };
+		C2ECA236E7CC5381600F5D73 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EBECE9D37314EA618AE832F9 /* CityGame.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CityGame.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		29557FFADE6A9F8DE4345512 /* CityGame */ = {
+			isa = PBXGroup;
+			children = (
+				C2ECA236E7CC5381600F5D73 /* Assets.xcassets */,
+				222AD75000D37D6136E5D2CA /* Info.plist */,
+				7B2395B286705131B17B2E90 /* ios_sdl_entry.m */,
+				2C2525574BBE7CDB6E0F7656 /* SeedAssets.zip */,
+			);
+			path = CityGame;
+			sourceTree = "<group>";
+		};
+		482928B0A12805DC3AF9ED25 = {
+			isa = PBXGroup;
+			children = (
+				29557FFADE6A9F8DE4345512 /* CityGame */,
+				785B4C0EC546D52DDA6EC0AE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		785B4C0EC546D52DDA6EC0AE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				EBECE9D37314EA618AE832F9 /* CityGame.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		CD7626536706F970B7B5732E /* CityGame */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 91E307B8B3358ED6E58647E2 /* Build configuration list for PBXNativeTarget "CityGame" */;
+			buildPhases = (
+				1B8853218185767EC03CAA9C /* Build Rust libcitygame */,
+				4BBA7E0ECFDD47E347AA26EC /* Sources */,
+				6DE1BAB270EB893B925EA3CD /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CityGame;
+			packageProductDependencies = (
+			);
+			productName = CityGame;
+			productReference = EBECE9D37314EA618AE832F9 /* CityGame.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5DD1E0BC45901A2C746146FC /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					CD7626536706F970B7B5732E = {
+						DevelopmentTeam = AD7493G5S3;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 601438F54109850FF118F177 /* Build configuration list for PBXProject "CityGame" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 482928B0A12805DC3AF9ED25;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 785B4C0EC546D52DDA6EC0AE /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CD7626536706F970B7B5732E /* CityGame */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6DE1BAB270EB893B925EA3CD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2825DE3CA350DA5BCC4BEDF8 /* Assets.xcassets in Resources */,
+				980010E7259A396FEFD493B5 /* SeedAssets.zip in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		1B8853218185767EC03CAA9C /* Build Rust libcitygame */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust libcitygame";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n# Xcode's PATH lacks rustup; build_ios_rust.sh also bootstraps this.\nexport PATH=\"/Users/steve/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/ChatGPT.app/Contents/Resources/codex-cli/codex-path:/Users/steve/.codex/tmp/arg0-macos/codex-arg04RSEIi:/Users/steve/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override:/opt/homebrew/opt/ffmpeg@7/bin:/Users/steve/Library/Application Support/Herd/bin:/opt/homebrew/opt/postgresql@18/bin:/opt/homebrew/opt/ruby/bin:/opt/homebrew/lib/ruby/gems/4.0.0/bin:/Users/steve/miniforge3/bin:/Users/steve/miniforge3/condabin:/Users/steve/.pyenv/shims:/Users/steve/.pyenv/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/steve/Library/Java/JavaVirtualMachines/jbr-17.0.5/Contents/Home/bin:/Users/steve/development/flutter/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/opt/X11/bin:/Library/Apple/usr/bin:/usr/local/MacGPG2/bin:/Applications/Server.app/Contents/ServerRoot/usr/bin:/Applications/Server.app/Contents/ServerRoot/usr/sbin:/Applications/VMware Fusion.app/Contents/Public:/usr/local/share/dotnet:~/.dotnet/tools:/Library/Frameworks/Mono.framework/Versions/Current/Commands:/opt/podman/bin:/Users/steve/.cargo/bin:/usr/local/bin:/Users/steve/Library/Android/sdk/emulator:/Users/steve/Library/Android/sdk/platform-tools:/Users/steve/Library/Android/sdk/ndk/29.0.14206865/build-tools:/Users/steve/.orbstack/bin:/Users/steve/flutter/bin:/Users/steve/go/bin:/Applications/flutter/bin:/Users/steve/Library/Android/sdk/tools/bin:/Users/steve/.dotnet/tools:/Users/steve/.lmstudio/bin:/Users/steve/.modular/bin:/Users/steve/.config/herd-lite/bin:/Users/steve/Library/Android/sdk/emulator:/Users/steve/Library/Android/sdk/platform-tools:/Users/steve/Library/Android/sdk/tools:/Users/steve/Library/Android/sdk/tools/bin:/Users/steve/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/fallback:/Applications/ChatGPT.app/Contents/Resources:/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS\"\nROOT=\"${SRCROOT}/../..\"\nexport IPHONEOS_DEPLOYMENT_TARGET=15.0\nif [ \"${PLATFORM_NAME}\" = \"iphonesimulator\" ]; then\n  TARGET=aarch64-apple-ios-sim\nelse\n  TARGET=aarch64-apple-ios\nfi\n\"$ROOT/scripts/build_ios_rust.sh\" \"$TARGET\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4BBA7E0ECFDD47E347AA26EC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C33A249978F604A5852BDD27 /* ios_sdl_entry.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0466371068976B317DE6BFBC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = AD7493G5S3;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/RustLibs/include $(inherited)";
+				INFOPLIST_FILE = CityGame/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/RustLibs/lib $(inherited)";
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = "$(inherited) -force_load $(SRCROOT)/RustLibs/lib/libcitygame.a -lSDL3 -lc++ -framework Metal -framework MetalKit -framework QuartzCore -framework CoreGraphics -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework AudioToolbox -framework AVFoundation -framework GameController -framework CoreHaptics -framework CoreMotion -framework CoreBluetooth -framework OpenGLES -framework CoreAudio -framework CoreVideo -framework CoreMedia -framework ImageIO -framework MobileCoreServices -framework CFNetwork -framework Security -framework IOKit";
+				PRODUCT_BUNDLE_IDENTIFIER = com.citygame.CityGame;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		7A2792CA0624B59370EEDD11 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 3;
+				ENABLE_BITCODE = NO;
+				INFOPLIST_FILE = CityGame/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.1;
+				PRODUCT_NAME = CityGame;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C54E0BA7D4F586B6EC3D308F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 3;
+				ENABLE_BITCODE = NO;
+				INFOPLIST_FILE = CityGame/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.1;
+				PRODUCT_NAME = CityGame;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		F9FF85D20FAADE96038BA855 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = AD7493G5S3;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/RustLibs/include $(inherited)";
+				INFOPLIST_FILE = CityGame/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/RustLibs/lib $(inherited)";
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = "$(inherited) -force_load $(SRCROOT)/RustLibs/lib/libcitygame.a -lSDL3 -lc++ -framework Metal -framework MetalKit -framework QuartzCore -framework CoreGraphics -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework AudioToolbox -framework AVFoundation -framework GameController -framework CoreHaptics -framework CoreMotion -framework CoreBluetooth -framework OpenGLES -framework CoreAudio -framework CoreVideo -framework CoreMedia -framework ImageIO -framework MobileCoreServices -framework CFNetwork -framework Security -framework IOKit";
+				PRODUCT_BUNDLE_IDENTIFIER = com.citygame.CityGame;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		601438F54109850FF118F177 /* Build configuration list for PBXProject "CityGame" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0466371068976B317DE6BFBC /* Debug */,
+				F9FF85D20FAADE96038BA855 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		91E307B8B3358ED6E58647E2 /* Build configuration list for PBXNativeTarget "CityGame" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7A2792CA0624B59370EEDD11 /* Debug */,
+				C54E0BA7D4F586B6EC3D308F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 5DD1E0BC45901A2C746146FC /* Project object */;
+}

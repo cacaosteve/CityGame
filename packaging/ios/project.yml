@@ -1,0 +1,89 @@
+name: CityGame
+options:
+  bundleIdPrefix: com.citygame
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.citygame.CityGame
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+    INFOPLIST_FILE: CityGame/Info.plist
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    DEVELOPMENT_TEAM: AD7493G5S3
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    HEADER_SEARCH_PATHS: "$(SRCROOT)/RustLibs/include $(inherited)"
+    LIBRARY_SEARCH_PATHS: "$(SRCROOT)/RustLibs/lib $(inherited)"
+    OTHER_LDFLAGS: "$(inherited) -force_load $(SRCROOT)/RustLibs/lib/libcitygame.a -lSDL3 -lc++ -framework Metal -framework MetalKit -framework QuartzCore -framework CoreGraphics -framework UIKit -framework Foundation -framework UniformTypeIdentifiers -framework AudioToolbox -framework AVFoundation -framework GameController -framework CoreHaptics -framework CoreMotion -framework CoreBluetooth -framework OpenGLES -framework CoreAudio -framework CoreVideo -framework CoreMedia -framework ImageIO -framework MobileCoreServices -framework CFNetwork -framework Security -framework IOKit"
+targets:
+  CityGame:
+    type: application
+    platform: iOS
+    sources:
+      - path: CityGame
+        excludes:
+          - CityGameApp.swift
+          - ContentView.swift
+          - SeedAssets
+    resources:
+      - path: CityGame/SeedAssets.zip
+        optional: true
+    settings:
+      base:
+        PRODUCT_NAME: CityGame
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "3"
+        ENABLE_BITCODE: NO
+        CLANG_ENABLE_MODULES: YES
+    info:
+      path: CityGame/Info.plist
+      properties:
+        CFBundleDisplayName: CityGame
+        CFBundleShortVersionString: "0.1.1"
+        CFBundleVersion: "3"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: CityGame City
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.citygame.sc2-city
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: org.citygame.sc2-city
+            UTTypeDescription: CityGame City
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - sc2
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+        CADisableMinimumFrameDurationOnPhone: true
+    preBuildScripts:
+      - name: Build Rust libcitygame
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          # Xcode's PATH lacks rustup; build_ios_rust.sh also bootstraps this.
+          export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+          ROOT="${SRCROOT}/../.."
+          export IPHONEOS_DEPLOYMENT_TARGET=15.0
+          if [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
+            TARGET=aarch64-apple-ios-sim
+          else
+            TARGET=aarch64-apple-ios
+          fi
+          "$ROOT/scripts/build_ios_rust.sh" "$TARGET"

@@ -1,0 +1,7 @@
+name,slot,cells,packed
+none,20,,0
+origin,20,0:0:71,0
+origin_then_duplicate,20,0:0:71|10:10:71,0
+single,20,17:30:71,4382
+scan_order,20,99:4:71|1:5:71|2:4:71,516
+other_ids,20,1:1:70|2:2:201|3:3:71,771

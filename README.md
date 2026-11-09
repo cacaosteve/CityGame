@@ -4,7 +4,7 @@ CityGame is a city-building game written in Rust. It can import city files and g
 
 ## Screenshots
 
-These screenshots show an optional replacement artwork pack that is not distributed in this repository. The public build can use locally imported game graphics.
+These screenshots show the included CityGame High-Res Pack in use.
 
 **macOS**
 
@@ -66,7 +66,9 @@ These are debug hosts, not store-ready releases. iPadOS requires Xcode, `xcodege
 
 ## First launch and basic use
 
-On first launch, use **Asset Library → Import Game Edition** and select a locally owned game installation. CityGame extracts the media it needs into its application-support folder. The asset browser is also available for inspecting imported and authored packs:
+CityGame requires an import from a locally owned SimCity 2000™ installation. On first launch, choose **Asset Library → Import Game Edition** and select the installation folder. CityGame extracts its base assets into its application-support folder.
+
+To use the included pack, enable **Prefer High-Res CityGame Graphics** and **Use CityGame Sounds** in the **Assets** menu. The Asset Library on the title screen has the same controls. Run the asset browser to inspect imported and authored packs.
 
 ```sh
 cargo run --release -- --asset-browser
@@ -95,7 +97,7 @@ An additional ignored graphics comparison accepts locally extracted `highway-ref
 
 ## Making CityGame assets
 
-Authored graphics and effect-sound packs are not distributed with this checkout. You can supply a replacement pack with an `asset-pack.json` manifest using **Asset Library → Choose CityGame Override Pack**, then enable **Prefer High-Res CityGame Graphics**. Add each asset to the manifest with a `citygame.*` key, a relative file path, and `status: "reviewed"`.
+The CityGame High-Res Pack lives in `assets/replacements/our-graphics/`. To use a custom pack with an `asset-pack.json` manifest, choose **Asset Library → Choose CityGame Override Pack**, then enable **Prefer High-Res CityGame Graphics**. Add each asset to the manifest with a `citygame.*` key, a relative file path, and `status: "reviewed"`.
 
 To include your own pack in a local macOS or mobile build, set `CITYGAME_REPLACEMENT_PACK=/path/to/your/pack` when running the build script. The game still needs imported graphics for any slots your pack does not replace.
 
@@ -105,4 +107,4 @@ To include your own pack in a local macOS or mobile build, set `CITYGAME_REPLACE
 
 The asset browser can preview images and WAV files and compare packs. It runs locally and does not upload or modify assets. Avoid putting imported game files into public source control; keep only original or properly licensed CityGame-created work in a pack you share.
 
-Optional artwork-specific tests run only when a replacement pack is available locally. Set `CITYGAME_TEST_REPLACEMENT_ROOT=/path/to/your/pack` to exercise them; the public test suite does not require the private artwork.
+The artwork tests use the included pack by default. Set `CITYGAME_TEST_REPLACEMENT_ROOT=/path/to/your/pack` to test a different pack.

@@ -48,6 +48,9 @@ def bake_replacement_tier(src_root: Path, dest_root: Path, target_density: int) 
     for entry in pack.get("assets", []):
         out_entry = dict(entry)
         relative = entry.get("file", "")
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError(f"replacement file must stay inside its pack: {relative}")
         status = entry.get("status", "")
         key = entry.get("key", "")
         if (
@@ -74,6 +77,14 @@ def bake_replacement_tier(src_root: Path, dest_root: Path, target_density: int) 
                     resized.save(out_path, format="PNG", optimize=True)
             out_entry["file"] = out_rel
             count += 1
+        elif (
+            status == "reviewed"
+            and key.startswith("citygame.sound.")
+            and relative.lower().endswith(".wav")
+        ):
+            out_path = dest_root / relative
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src_root / relative, out_path)
         baked_assets.append(out_entry)
 
     pack["assets"] = baked_assets

@@ -62,6 +62,3 @@ packaging/ios/CityGame/SeedAssets.zip
 *.pdb
 /build/
 /dist/
-
-# Authored replacement pack is kept private pending redistribution review.
-/assets/replacements/our-graphics/

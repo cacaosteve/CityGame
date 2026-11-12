@@ -5016,6 +5016,59 @@ fn mac_monthly_museum_divides_full_signed_funding_dword_for_books() {
 }
 
 #[test]
+fn mac_museum_worker_matches_original_68020_replay_cases() {
+    // Golden outputs from the original Mac museum worker's M68020 replay.
+    // Keep them inline so this test needs no external research files.
+    let cases = [
+        (
+            "ordinary",
+            30_u16,
+            100_u32,
+            500_000_u32,
+            12_000_u16,
+            300_u16,
+        ),
+        ("signed capacity word", 83, 100, 500_000, 33_200, 830),
+        ("zero census", 0, 100, 500_000, 0, 0),
+        ("zero funding", 30, 0, 500_000, 0, 0),
+        ("high funding word", 30, 65_536, 500_000, 0, 65_518),
+        (
+            "negative funding dword",
+            17,
+            0xC000_0000,
+            500_000,
+            0,
+            13_114,
+        ),
+        ("census word wrap", 65_535, 100, 500_000, 65_136, 65_526),
+        ("low growth cap", 30, 100, 20_000, 1_000, 300),
+    ];
+
+    for (name, census, funding, growth, expected_capacity, expected_books) in cases {
+        let mut city =
+            City::new_blank("/tmp/citygame-mac-museum-native.sc2", name).expect("blank city");
+        city.kind = CityFileKind::MacCity;
+        city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xd4 * 4, u32::from(census));
+        city.set_mac_state_misc_u32_at(0x102c, growth);
+        let overlay = city
+            .provision_microsim_for_building(0xd4)
+            .expect("museum XMIC row");
+        let index = usize::from(overlay - MIN_SIM_TEXT_ENTRIES);
+        city.set_microsim_stat0(index, 0xa1);
+        city.set_microsim_stat2(index, 0x2345);
+        city.set_microsim_stat3(index, 0xbcde);
+
+        city.refresh_mac_monthly_museum_microsims(funding);
+
+        let row = city.microsim_at(index).expect("museum row remains present");
+        assert_eq!(row.stat0, 0xa1, "{name}: native leaves +1 untouched");
+        assert_eq!(row.stat1, expected_capacity, "{name}: native +2 capacity");
+        assert_eq!(row.stat2, expected_books, "{name}: native +4 books");
+        assert_eq!(row.stat3, 0xbcde, "{name}: native leaves +6 untouched");
+    }
+}
+
+#[test]
 fn mac_monthly_park_uses_saved_park_census_and_prior_attendance() {
     let mut city =
         City::new_blank("/tmp/sc2000-mac-park-monthly.sc2", "MacPark").expect("blank city");

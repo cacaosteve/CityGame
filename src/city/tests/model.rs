@@ -847,6 +847,10 @@ fn mac_cross_layout_saved_state_round_trips_without_using_pe_misc_slots() {
     city.mac_pending_action_runtime = 0x1234_5678;
     city.mac_rci_counters_runtime = [11, 22, 33, 44, 55, 66, 77, 88];
     city.mac_transit_accumulators_runtime = [101, 202, 303];
+    let transit_misc_sentinels = [0x1111_2222, 0x3333_4444, 0x5555_6666];
+    for (mode, sentinel) in transit_misc_sentinels.into_iter().enumerate() {
+        city.set_misc_u32_at((1045 + mode) * 4, sentinel);
+    }
     for (index, count) in city.mac_xbld_census_runtime.iter_mut().enumerate() {
         *count = (index as u16).wrapping_mul(17);
     }
@@ -880,6 +884,13 @@ fn mac_cross_layout_saved_state_round_trips_without_using_pe_misc_slots() {
         [11, 22, 33, 44, 55, 66, 77, 88]
     );
     assert_eq!(loaded.mac_transit_accumulators_runtime, [101, 202, 303]);
+    for (mode, sentinel) in transit_misc_sentinels.into_iter().enumerate() {
+        assert_eq!(
+            loaded.misc_u32_at((1045 + mode) * 4),
+            Some(sentinel),
+            "restored CGEX transit totals must win without rewriting PE MISC"
+        );
+    }
     assert_eq!(loaded.mac_xbld_census_runtime, city.mac_xbld_census_runtime);
     assert_eq!(loaded.mac_kind2_hotspot_runtime, Some((0x1234, 0xabcd)));
     assert_eq!(loaded.mac_arcology_total_runtime, Some(0x1020_3040));

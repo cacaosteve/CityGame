@@ -4894,6 +4894,56 @@ fn mac_monthly_transit_copies_tile_and_passenger_words_then_clears_inputs() {
 }
 
 #[test]
+fn mac_first_open_transit_accumulators_seed_xmic_for_win_layout_city() {
+    let mut city = City::new_blank(
+        "/tmp/citygame-mac-first-open-transit.sc2",
+        "MacFirstOpenTransit",
+    )
+    .expect("blank Win-layout city");
+    city.kind = CityFileKind::WinSc2;
+    let raw_accumulators = [0x1111_0002, 0x2222_0003, 0x3333_0004];
+    for (mode, value) in raw_accumulators.into_iter().enumerate() {
+        city.set_misc_u32_at((1045 + mode) * 4, value);
+    }
+    let subway = usize::from(
+        city.provision_microsim_for_building(0xe9)
+            .expect("subway XMIC row")
+            - MIN_SIM_TEXT_ENTRIES,
+    );
+    let bus = usize::from(
+        city.provision_microsim_for_building(0xec)
+            .expect("bus XMIC row")
+            - MIN_SIM_TEXT_ENTRIES,
+    );
+    let rail = usize::from(
+        city.provision_microsim_for_building(0xed)
+            .expect("rail XMIC row")
+            - MIN_SIM_TEXT_ENTRIES,
+    );
+
+    city.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(
+        std::array::from_fn(|mode| city.mac_transit_accumulator(mode)),
+        raw_accumulators,
+        "first Mac-fidelity open uses the native CODE 4 MISC slot interpretation"
+    );
+
+    city.refresh_mac_monthly_transit_microsims();
+
+    assert_eq!(city.microsim_at(subway).unwrap().stat3, 4);
+    assert_eq!(city.microsim_at(bus).unwrap().stat3, 2);
+    assert_eq!(city.microsim_at(rail).unwrap().stat3, 3);
+    for (mode, value) in raw_accumulators.into_iter().enumerate() {
+        assert_eq!(
+            city.misc_u32_at((1045 + mode) * 4),
+            Some(value),
+            "Mac XMIC consumption must not overwrite Win-layout MISC"
+        );
+        assert_eq!(city.mac_transit_accumulator(mode), 0);
+    }
+}
+
+#[test]
 fn mac_transit_accumulators_preserve_win_layout_misc() {
     let mut city = City::new_blank("/tmp/mac-transit-win.sc2", "Transit").unwrap();
     for (mode, sentinel) in [0x1111_2222, 0x3333_4444, 0x5555_6666]

@@ -114,6 +114,10 @@ impl City {
                     .misc_u32_values(380 * MISC_FIELD_LEN, 8)
                     .try_into()
                     .unwrap_or([0; 8]);
+                self.mac_transit_accumulators_runtime = std::array::from_fn(|mode| {
+                    self.misc_u32_at((1045 + mode) * MISC_FIELD_LEN)
+                        .unwrap_or(0)
+                });
                 self.mac_power_summary_runtime =
                     self.misc_u32_at(MAC_POWER_SUMMARY_MISC_OFFSET).unwrap_or(0);
                 self.mac_water_summary_runtime =
@@ -230,8 +234,8 @@ impl City {
     }
 
     /// CODE 4 slots 1045–1047 hold Mac bus, rail and subway route totals.
-    /// Other file layouts retain independent runtime state until their native
-    /// storage relationship is established.
+    /// Win-layout saves keep them in separate runtime state: first-open values
+    /// are hydrated from raw MISC, then CityGame persists later Mac values in CGEX.
     pub(crate) fn mac_transit_accumulator(&self, mode: usize) -> u32 {
         if self.kind == CityFileKind::MacCity {
             self.mac_state_misc_u32_at((1045 + mode) * MISC_FIELD_LEN)

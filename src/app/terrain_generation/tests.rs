@@ -1833,3 +1833,239 @@ fn mac68k_flat_terrain_below_water_level_becomes_surface_water() {
     assert_eq!(dry_altm[index].tunnel_levels, 0x15);
     assert!(!dry_bits[index]);
 }
+
+#[test]
+fn mac_terrain_all_three_slider_controls_match_native() {
+    // These tuples vary Hills, Water, and Trees together. Each input is a
+    // hash-pinned original CODE 3/5/13 replay at the same controlled seeds,
+    // across all four coast/river combinations.
+    for ((hills, water, trees, coast, river), expected_planes, expected_seeds) in [
+        (
+            (0, 0, 0, false, false),
+            [
+                0xa966_191a_8bec_9d1a,
+                0x6be4_74ea_7639_d173,
+                0x9c1b_da7f_8c87_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 1_103_527_590),
+        ),
+        (
+            (0, 0, 0, true, false),
+            [
+                0xd4ea_173f_8ae4_62d8,
+                0xf5c0_617a_9b8f_b00e,
+                0x27b5_83a2_902a_d7bc,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 3_124_316_263),
+        ),
+        (
+            (0, 0, 0, false, true),
+            [
+                0x94dd_ce12_867f_7613,
+                0xccd8_435a_345c_a6d4,
+                0x231a_0207_b69a_5999,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 1_692_766_423),
+        ),
+        (
+            (0, 0, 0, true, true),
+            [
+                0xdad1_28d4_e2fe_b5c8,
+                0x35bf_4879_5f07_6f48,
+                0xf1c7_cc5b_49aa_d2ac,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 1_869_663_702),
+        ),
+        (
+            (47, 0, 0, false, false),
+            [
+                0x1f71_aaba_bc2c_1f2a,
+                0x4f6a_ebbf_b1c7_34b2,
+                0x9c1b_da7f_8c87_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 1_103_527_590),
+        ),
+        (
+            (47, 0, 0, true, false),
+            [
+                0xb419_c20f_b21b_2bf3,
+                0x7ff0_25cc_01b3_1ffc,
+                0x9209_d2a7_9e5f_d6f7,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 3_124_316_263),
+        ),
+        (
+            (47, 0, 0, false, true),
+            [
+                0xe7f0_5855_616a_20c9,
+                0xf86e_7a88_222c_50c3,
+                0x2318_5427_8266_0ae9,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 1_692_766_423),
+        ),
+        (
+            (47, 0, 0, true, true),
+            [
+                0xcf1e_9b1c_7b82_fea7,
+                0x78be_44ad_efe1_bd97,
+                0x408c_d34d_ebe7_6063,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (92_257_252, 1_869_663_702),
+        ),
+        (
+            (23, 23, 23, false, false),
+            [
+                0x6f5a_fed5_990f_a371,
+                0x8eb6_3c11_213c_6c29,
+                0x1a70_3a77_c5a4_83a9,
+                0x6015_3158_f085_802c,
+            ],
+            (504_001_357, 1_103_527_590),
+        ),
+        (
+            (23, 23, 23, true, false),
+            [
+                0x0b5c_bf1b_d26c_b204,
+                0xaaf6_d03d_2d17_5473,
+                0x9ce7_483a_494b_a470,
+                0x544d_5024_987b_4461,
+            ],
+            (1_573_712_442, 3_124_316_263),
+        ),
+        (
+            (23, 23, 23, false, true),
+            [
+                0x0cdf_e85f_3150_071b,
+                0x9eec_2033_8028_e8e8,
+                0xe814_7f11_434a_7d19,
+                0x2d46_c1e8_d0e7_5932,
+            ],
+            (951_853_448, 1_692_766_423),
+        ),
+        (
+            (23, 23, 23, true, true),
+            [
+                0x513d_9834_926c_dd83,
+                0x4f98_7ea8_ed51_3bc2,
+                0x8548_59d6_3a29_0d18,
+                0x34f1_db91_5c82_d202,
+            ],
+            (1_381_748_423, 1_869_663_702),
+        ),
+        (
+            (0, 47, 47, false, false),
+            [
+                0x62f8_75f3_70dd_5a1a,
+                0x2903_5d7d_4a5e_33a3,
+                0xcfcf_e895_5a28_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (1_889_046_726, 1_103_527_590),
+        ),
+        (
+            (0, 47, 47, true, false),
+            [
+                0x73b8_964c_f226_ebba,
+                0xc78d_c43e_51de_0501,
+                0xa542_8fe7_e3de_2986,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (1_889_046_726, 3_124_316_263),
+        ),
+        (
+            (0, 47, 47, false, true),
+            [
+                0x3dac_796d_98f3_4c0d,
+                0xfdd6_e318_bba7_db59,
+                0xcfcf_e895_5a28_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (1_889_046_726, 1_692_766_423),
+        ),
+        (
+            (0, 47, 47, true, true),
+            [
+                0xd132_660b_ff7f_31f5,
+                0xb9ee_3cd6_bfb9_fe1f,
+                0xa542_8fe7_e3de_2986,
+                0x9c1b_da7f_8c87_2325,
+            ],
+            (1_889_046_726, 1_869_663_702),
+        ),
+        (
+            (47, 47, 47, false, false),
+            [
+                0x298f_3bcf_7670_5f90,
+                0x3d96_84ff_a349_9c2a,
+                0xa0b8_006d_31c0_4ded,
+                0xb0cc_7e6f_dd96_e4e7,
+            ],
+            (871_653_772, 1_103_527_590),
+        ),
+        (
+            (47, 47, 47, true, false),
+            [
+                0x56b7_1645_2020_9639,
+                0x2426_bb9a_5c7c_27d2,
+                0xdd62_52f1_982d_542f,
+                0x3278_9073_9242_5332,
+            ],
+            (178_087_307, 3_124_316_263),
+        ),
+        (
+            (47, 47, 47, false, true),
+            [
+                0xe049_2ca8_73c0_8068,
+                0x1ab8_da43_3c97_0957,
+                0xffe0_1109_b9e8_8449,
+                0x1f40_9134_41c7_9e5b,
+            ],
+            (2_099_441_083, 1_692_766_423),
+        ),
+        (
+            (47, 47, 47, true, true),
+            [
+                0xd906_30c3_51ad_c4f6,
+                0x8890_baba_e60d_7a7d,
+                0x9d9a_d337_c48b_ba03,
+                0x5967_e1c4_9aae_174a,
+            ],
+            (1_230_676_119, 1_869_663_702),
+        ),
+    ] {
+        let mut rng = MacToolboxRng::new(1_106_567_514);
+        let mut game_rng = MacGameLcgRng::after_startup_playlist_choice();
+        let (terrain, altm, xbit, buildings, _) = generate_with_rng(
+            &mut rng,
+            coast,
+            river,
+            ui::EditMapSliderValues {
+                hills,
+                water,
+                trees,
+            },
+            &mut game_rng,
+        );
+        let planes = [
+            mac_altm_fingerprint(&altm),
+            terrain_fingerprint(terrain.into_iter()),
+            terrain_fingerprint(xbit.into_iter()),
+            terrain_fingerprint(buildings.into_iter()),
+        ];
+        let case = (hills, water, trees, coast, river);
+        assert_eq!(planes, expected_planes, "ALTM/XTER/XBIT/XBLD {case:?}");
+        assert_eq!(
+            (rng.seed(), game_rng.state()),
+            expected_seeds,
+            "RNG {case:?}"
+        );
+    }
+}

@@ -301,6 +301,38 @@ fn mac_rail_handler_moves_native_single_free_slot_alias() {
 }
 
 #[test]
+fn mac_rail_handler_moves_native_two_free_slot_alias() {
+    // The hash-pinned native Charleston replay has head -> slot 2 -> slot 0.
+    // Native reaches movement even though the tail link uses reserved slot
+    // zero. This prefix test checks that alias does not block the head and
+    // proxy move; the native actor-sweep output also includes the later route
+    // suffix, so its final XTHG records are checked by the external replay.
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/mac-rail-two-free-slot-move.sc2", "Rail").unwrap();
+        city.kind = kind;
+        city.set_building(64, 61, 0x2c);
+        city.set_building(64, 60, 0x2c);
+        city.set_mac_object_slot_record(0, record("0b0008403d00403dd1e5004b"));
+        city.set_mac_object_slot_record(1, record("0a0002403d00403c6cd60005"));
+        city.set_mac_object_slot_record(2, record("0b0000403d00403d01840011"));
+        city.set_text_overlay(64, 61, 0xca);
+
+        let mut draws = 0;
+        let result = mac_rail_handler_prefix(&mut city, 1, || {
+            draws += 1;
+            0
+        });
+
+        assert_eq!(result, Some(MacRailPrefixOutcome::Moved));
+        assert_eq!(draws, 1);
+        assert_eq!(city.text_overlay_at(64, 61), Some(0));
+        assert_eq!(city.text_overlay_at(64, 60), Some(0xca));
+        let records = city.traffic_overlays().unwrap();
+        assert_eq!((records[1].tile_x, records[1].tile_y), (64, 60));
+    }
+}
+
+#[test]
 fn mac_rail_handler_retires_native_single_free_slot_alias() {
     // The original teardown clears the aliased slot-zero follower and reuses
     // the head as a kind-6 effect without removing the head's XTXT proxy.

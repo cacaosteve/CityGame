@@ -1,7 +1,7 @@
 //! Compact, non-modal tool/notice/weather display shared by desktop and touch layouts.
 use super::super::dialog_content::wrap_dialog_text;
 use super::super::{AppMode, FloatRect, MenubarUi, ViewerState, point_in_float_rect, push_ui_rect};
-use crate::renderer::UiSolid;
+use crate::renderer::{Renderer, UiImage, UiSolid};
 use crate::ui;
 use glam::Vec2;
 
@@ -17,18 +17,57 @@ pub(in crate::app) fn status_panel_rect(size: (u32, u32), pixel_scale: f32) -> F
         x: size.0 as f32 - margin - w,
         y: MenubarUi::occupied_top(pixel_scale) + margin,
         w,
-        h: 88.0 * s,
+        h: 44.0 * s,
     }
 }
 
 impl ViewerState {
+    fn placed_status_panel_rect(&self, size: (u32, u32), ps: f32) -> FloatRect {
+        let mut rect = status_panel_rect(size, ps);
+        if let Some(origin) = self.status_panel_origin {
+            rect.x = origin.x.clamp(0.0, (size.0 as f32 - rect.w).max(0.0));
+            rect.y = origin.y.clamp(
+                MenubarUi::occupied_top(ps).min((size.1 as f32 - rect.h).max(0.0)),
+                (size.1 as f32 - rect.h).max(0.0),
+            );
+        }
+        rect
+    }
+
+    pub(in crate::app) fn begin_status_panel_drag(
+        &mut self,
+        screen: Vec2,
+        size: (u32, u32),
+        ps: f32,
+    ) -> bool {
+        let rect = self.placed_status_panel_rect(size, ps);
+        if !point_in_float_rect(screen, rect) {
+            return false;
+        }
+        self.status_panel_grab = Some(screen - Vec2::new(rect.x, rect.y));
+        true
+    }
+
+    pub(in crate::app) fn drag_status_panel(&mut self, screen: Vec2) -> bool {
+        if let Some(grab) = self.status_panel_grab {
+            self.status_panel_origin = Some(screen - grab);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(in crate::app) fn end_status_panel_drag(&mut self) {
+        self.status_panel_grab = None;
+    }
+
     pub(in crate::app) fn point_in_status_panel(
         &self,
         screen: Vec2,
         size: (u32, u32),
         ps: f32,
     ) -> bool {
-        point_in_float_rect(screen, status_panel_rect(size, ps))
+        point_in_float_rect(screen, self.placed_status_panel_rect(size, ps))
     }
 
     pub(in crate::app) fn status_panel_notice(&self) -> String {
@@ -77,9 +116,11 @@ impl ViewerState {
         size: (u32, u32),
         ps: f32,
         solids: &mut Vec<UiSolid>,
+        renderer: Option<&Renderer<'_>>,
+        images: &mut Vec<UiImage>,
     ) {
-        let rect = status_panel_rect(size, ps);
-        let s = rect.h / 88.0;
+        let rect = self.placed_status_panel_rect(size, ps);
+        let s = rect.h / 44.0;
         let depth = ui::UI_DEPTH + 12.0;
         let (background, ink, muted, edge) = if self.dark_appearance {
             (
@@ -87,6 +128,13 @@ impl ViewerState {
                 [0.88, 0.96, 0.94, 1.0],
                 [0.65, 0.80, 0.82, 1.0],
                 [0.39, 0.76, 0.74, 1.0],
+            )
+        } else if !self.menu_checks.citygame_toolbar {
+            (
+                [0.76, 0.76, 0.76, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [0.15, 0.15, 0.15, 1.0],
+                [0.15, 0.15, 0.15, 1.0],
             )
         } else {
             (
@@ -108,16 +156,50 @@ impl ViewerState {
             background,
             depth + 0.5,
         );
-        let max_chars = ((rect.w - 24.0 * s) / (4.0 * 1.8 * s)).floor().max(1.0) as usize;
+        if !self.dark_appearance && !self.menu_checks.citygame_toolbar {
+            for (x, y, w, h, color) in [
+                (
+                    rect.x + s,
+                    rect.y + s,
+                    rect.w - 2.0 * s,
+                    s,
+                    [1.0, 1.0, 1.0, 1.0],
+                ),
+                (
+                    rect.x + s,
+                    rect.y + s,
+                    s,
+                    rect.h - 2.0 * s,
+                    [1.0, 1.0, 1.0, 1.0],
+                ),
+                (
+                    rect.x + s,
+                    rect.y + rect.h - 2.0 * s,
+                    rect.w - 2.0 * s,
+                    s,
+                    [0.28, 0.28, 0.28, 1.0],
+                ),
+                (
+                    rect.x + rect.w - 2.0 * s,
+                    rect.y + s,
+                    s,
+                    rect.h - 2.0 * s,
+                    [0.28, 0.28, 0.28, 1.0],
+                ),
+            ] {
+                push_ui_rect(solids, FloatRect { x, y, w, h }, color, depth + 0.75);
+            }
+        }
+        let max_chars = ((rect.w - 60.0 * s) / (4.0 * 1.8 * s)).floor().max(1.0) as usize;
         let tool = self
             .selected_tool_status_line()
             .unwrap_or_else(|| self.tool.label().into());
-        let title = format!("{tool} / {}", self.traffic.speed().label());
+        let title = tool;
         for (row, line) in std::iter::once(title)
             .chain(
                 wrap_dialog_text(&self.status_panel_notice(), max_chars)
                     .into_iter()
-                    .take(2),
+                    .take(1),
             )
             .enumerate()
         {
@@ -126,37 +208,54 @@ impl ViewerState {
                 solids,
                 &line,
                 rect.x + 12.0 * s,
-                rect.y + (11.0 + 18.0 * row as f32) * s,
+                rect.y + (5.0 + 18.0 * row as f32) * s,
                 1.8 * s,
                 ink,
                 depth + 1.0,
             );
         }
-        let weather = format!(
-            "{} / Wind {}",
-            super::super::weather::weather_status_label(&self.city),
-            self.city.pe_b_weather_wind
-        );
-        ui::push_pixel_text_preserving_case(
+        push_ui_rect(
             solids,
-            &weather
-                .chars()
-                .take(max_chars.saturating_sub(5))
-                .collect::<String>(),
-            rect.x + 12.0 * s,
-            rect.y + 68.0 * s,
-            1.8 * s,
+            FloatRect {
+                x: rect.x + rect.w - 43.0 * s,
+                y: rect.y + 2.0 * s,
+                w: 2.0 * s,
+                h: rect.h - 4.0 * s,
+            },
             muted,
             depth + 1.0,
         );
-        // A small authored sun/cloud indicator; all values come from current weather state.
+        // Mac PICT 700..711 follow the twelve weather states in order.
+        let picture = crate::assets::NEWSPAPER_PICTURE_BASE
+            + 700
+            + u32::from(super::super::weather::pe_weather_trend(&self.city));
+        if let Some((atlas, [src_x, src_y, src_w, src_h])) = renderer.and_then(|r| {
+            let atlas = r.atlas_for_sprite(picture)?;
+            Some((atlas, r.sprite_frame_rect(atlas, picture)?))
+        }) {
+            images.push(UiImage {
+                atlas,
+                src_x,
+                src_y,
+                src_w,
+                src_h,
+                x: rect.x + rect.w - 39.0 * s,
+                y: rect.y + 4.0 * s,
+                w: 36.0 * s,
+                h: 36.0 * s,
+                depth: depth + 1.0,
+                tint: [1.0; 4],
+            });
+            return;
+        }
+        // CityGame indicator used when the original Mac pictures are unavailable.
         let cloudy = self.city.pe_b_weather_trend >= 3 && self.city.pe_b_weather_trend != 4;
         let icon = if cloudy {
             [0.43, 0.65, 0.75, 1.0]
         } else {
             [0.96, 0.72, 0.23, 1.0]
         };
-        let x = rect.x + rect.w - 29.0 * s;
+        let x = rect.x + rect.w - 31.0 * s;
         for (dx, dy, w, h) in if cloudy {
             vec![(0.0, 4.0, 18.0, 7.0), (4.0, 0.0, 8.0, 8.0)]
         } else {
@@ -172,7 +271,7 @@ impl ViewerState {
                 solids,
                 FloatRect {
                     x: x + dx * s,
-                    y: rect.y + (66.0 + dy) * s,
+                    y: rect.y + (15.0 + dy) * s,
                     w: w * s,
                     h: h * s,
                 },

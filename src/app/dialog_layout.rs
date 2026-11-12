@@ -10,6 +10,86 @@ use super::dialogs::{
 use super::*;
 use sdl3::rect::Rect;
 
+impl ViewerState {
+    fn movable_info_dialog(&self) -> Option<CityInfoDialog> {
+        self.city_info_dialog.filter(|d| {
+            matches!(
+                d,
+                CityInfoDialog::Map
+                    | CityInfoDialog::Graphs
+                    | CityInfoDialog::Population
+                    | CityInfoDialog::Industry
+                    | CityInfoDialog::Neighbors
+                    | CityInfoDialog::Budget
+            )
+        })
+    }
+
+    pub(super) fn info_panel_transform(&self, size: (u32, u32)) -> Option<(FloatRect, Vec2, f32)> {
+        let base = city_info_dialog_rect_for(self.movable_info_dialog()?, size);
+        let scale = self.info_panel_scale.clamp(0.5, 2.0);
+        let origin = self.info_panel_origin.unwrap_or(Vec2::new(base.x, base.y));
+        let origin = Vec2::new(
+            origin
+                .x
+                .clamp(0.0, (size.0 as f32 - base.w * scale).max(0.0)),
+            origin
+                .y
+                .clamp(0.0, (size.1 as f32 - base.h * scale).max(0.0)),
+        );
+        Some((base, origin, scale))
+    }
+
+    pub(super) fn info_panel_input_point(&self, point: Vec2, size: (u32, u32)) -> Vec2 {
+        if let Some((base, origin, scale)) = self.info_panel_transform(size) {
+            (point - origin) / scale + Vec2::new(base.x, base.y)
+        } else {
+            point
+        }
+    }
+
+    pub(super) fn begin_info_panel_drag(&mut self, point: Vec2, size: (u32, u32)) -> bool {
+        let Some((base, origin, scale)) = self.info_panel_transform(size) else {
+            return false;
+        };
+        let local = (point - origin) / scale;
+        let resize = local.x >= base.w - 24.0
+            && local.x <= base.w
+            && local.y >= base.h - 24.0
+            && local.y <= base.h;
+        let title = local.x >= 0.0 && local.x < base.w - 120.0 && local.y >= 0.0 && local.y < 30.0;
+        if !resize && !title {
+            return false;
+        }
+        self.info_panel_drag = Some((resize, point, origin, scale));
+        true
+    }
+
+    pub(super) fn drag_info_panel(&mut self, point: Vec2, size: (u32, u32)) -> bool {
+        let Some((resize, start, origin, scale)) = self.info_panel_drag else {
+            return false;
+        };
+        if resize {
+            if let Some((base, _, _)) = self.info_panel_transform(size) {
+                let delta = point - start;
+                let by_width = delta.x / base.w;
+                let by_height = delta.y / base.h;
+                self.info_panel_scale = (scale + (by_width + by_height) * 0.5).clamp(
+                    0.5,
+                    (size.0 as f32 / base.w)
+                        .min(size.1 as f32 / base.h)
+                        .max(0.5)
+                        .min(2.0),
+                );
+                self.info_panel_origin = Some(origin);
+            }
+        } else {
+            self.info_panel_origin = Some(origin + point - start);
+        }
+        true
+    }
+}
+
 pub(super) fn city_info_dialog_rect(window_size: (u32, u32)) -> FloatRect {
     let screen_w = window_size.0 as f32;
     let screen_h = window_size.1 as f32;

@@ -206,6 +206,10 @@ impl ViewerState {
             );
         }
         let next_dialog = (self.city_info_dialog != Some(dialog)).then_some(dialog);
+        if next_dialog == Some(CityInfoDialog::Budget) {
+            self.info_panel_origin = None;
+            self.info_panel_scale = 1.0;
+        }
         self.close_tool_menu();
         // Replacing one native modal with another retains its outer speed
         // snapshot; there is no timer/idle opportunity between these views.

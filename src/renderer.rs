@@ -577,7 +577,10 @@ impl<'window> Renderer<'window> {
         sources.extend(tile_set);
         sources.extend(originals);
         sources.extend(fallback);
-        let ui_sources = load_ui_palette_sources(asset_root)?;
+        let toolbar_root = graphics_roots.iter()
+            .find(|root| root.join("pict/PICT_00500.png").is_file())
+            .unwrap_or(asset_root);
+        let ui_sources = load_ui_palette_sources(toolbar_root)?;
         let mut atlases = Vec::with_capacity(sources.len() + ui_sources.len() + 2);
         for source in &sources {
             atlases.push(self.upload_atlas(source)?);

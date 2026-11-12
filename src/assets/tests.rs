@@ -42,6 +42,38 @@ mod tests {
     }
 
     #[test]
+    fn imported_mac_toolbar_is_used_for_classic_palette() {
+        let root = scratch("mac-toolbar");
+        fs::create_dir_all(root.join("pict")).unwrap();
+        let color = Rgba([31, 57, 103, 255]);
+        RgbaImage::from_pixel(71, 312, color)
+            .save(root.join("pict/PICT_00500.png")).unwrap();
+        let sources = load_ui_palette_sources(&root).unwrap();
+        let image = sources[2].load_rgba().unwrap();
+        assert_eq!(image.dimensions(), (568, 2496));
+        assert_eq!(*image.get_pixel(0, 0), color);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imported_mac_weather_pictures_enter_ui_atlas() {
+        let root = scratch("weather-pictures");
+        fs::create_dir_all(root.join("pict")).unwrap();
+        for picture in 700..=711 {
+            RgbaImage::from_pixel(32, 32, Rgba([picture as u8, 80, 90, 255]))
+                .save(root.join(format!("pict/PICT_{picture:05}.png")))
+                .unwrap();
+        }
+        let atlas = load_newspaper_pictures(&[root.clone()]).unwrap().unwrap();
+        let image = atlas.load_rgba().unwrap();
+        for picture in 700..=711 {
+            let frame = atlas.frame_by_id(NEWSPAPER_PICTURE_BASE + picture).unwrap();
+            assert_eq!(*image.get_pixel(frame.x, frame.y), Rgba([picture as u8, 80, 90, 255]));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn newspaper_pictures_load_both_editions_without_using_traffic_ids() {
         let root = scratch("newspaper");
         let mac = root.join("mac");

@@ -1,6 +1,7 @@
 //! Main-map and Tools-palette frame construction and presentation.
 
 use super::*;
+use crate::renderer::UiSolid;
 
 pub(super) fn present_frame(
     mut windows: RuntimeWindows<'_, '_, '_>,
@@ -70,6 +71,63 @@ pub(super) fn present_frame(
         docked.offset_by(tools_origin);
         ui_solids.extend(docked.solids);
         ui_images.extend(docked.images);
+        if state.mode == crate::city::AppMode::CityView {
+            let unit = palette_logical_size.0 as f32 * main_ps / 71.0;
+            let x = tools_origin.x + 48.0 * unit;
+            let y = tools_origin.y + 202.0 * unit;
+            ui_solids.push(UiSolid {
+                x,
+                y,
+                w: 21.0 * unit,
+                h: 59.0 * unit,
+                color: if state.dark_appearance {
+                    [0.08, 0.14, 0.17, 1.0]
+                } else {
+                    [0.70, 0.70, 0.70, 1.0]
+                },
+                depth: ui::UI_DEPTH + 10.0,
+            });
+            ui::push_pixel_text(
+                &mut ui_solids,
+                "RCI",
+                x + 4.0 * unit,
+                y + 25.0 * unit,
+                unit,
+                if state.dark_appearance {
+                    [0.9, 0.95, 0.95, 1.0]
+                } else {
+                    [0.0, 0.0, 0.0, 1.0]
+                },
+                ui::UI_DEPTH + 11.0,
+            );
+            for (i, (kind, color)) in [
+                (super::super::RciKind::Residential, [0.1, 0.8, 0.2, 1.0]),
+                (super::super::RciKind::Commercial, [0.1, 0.35, 0.95, 1.0]),
+                (super::super::RciKind::Industrial, [0.95, 0.8, 0.1, 1.0]),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let value =
+                    super::super::rci::rci_demand_for_kind(&state.city, kind).clamp(-2000, 2000);
+                let height = value.unsigned_abs() as f32 / 2000.0 * 20.0 * unit;
+                if height > 0.0 {
+                    let top = if value > 0 {
+                        y + 22.0 * unit - height
+                    } else {
+                        y + 36.0 * unit
+                    };
+                    ui_solids.push(UiSolid {
+                        x: x + (3.0 + i as f32 * 6.0) * unit,
+                        y: top,
+                        w: 4.0 * unit,
+                        h: height,
+                        color,
+                        depth: ui::UI_DEPTH + 11.0,
+                    });
+                }
+            }
+        }
     }
     state.push_drag_cost_overlay(
         renderer.size(),
@@ -81,12 +139,20 @@ pub(super) fn present_frame(
         pixel_scale(window, renderer.size()),
         &mut ui_solids,
     );
-    state.push_status_panel(renderer.size(), main_ps, &mut ui_solids);
+    state.push_status_panel(
+        renderer.size(),
+        main_ps,
+        &mut ui_solids,
+        Some(renderer),
+        &mut ui_images,
+    );
     let dialog_solids_start = ui_solids.len();
     state.push_sign_dialog(renderer.size(), &mut ui_solids);
     state.push_military_base_dialog(renderer.size(), &mut ui_solids);
     state.push_power_plant_dialog(renderer, renderer.size(), &mut ui_images, &mut ui_solids);
     state.push_arcology_dialog(renderer, renderer.size(), &mut ui_images, &mut ui_solids);
+    let info_solid_start = ui_solids.len();
+    let info_image_start = ui_images.len();
     state.push_city_info_dialog(
         Some(renderer),
         renderer.size(),
@@ -94,6 +160,28 @@ pub(super) fn present_frame(
         &mut ui_solids,
         &mut ui_images,
     );
+    if let Some((base, origin, scale)) = state.info_panel_transform(renderer.size()) {
+        for solid in &mut ui_solids[info_solid_start..] {
+            solid.x = origin.x + (solid.x - base.x) * scale;
+            solid.y = origin.y + (solid.y - base.y) * scale;
+            solid.w *= scale;
+            solid.h *= scale;
+        }
+        for image in &mut ui_images[info_image_start..] {
+            image.x = origin.x + (image.x - base.x) * scale;
+            image.y = origin.y + (image.y - base.y) * scale;
+            image.w *= scale;
+            image.h *= scale;
+        }
+        ui_solids.push(UiSolid {
+            x: origin.x + base.w * scale - 14.0 * scale,
+            y: origin.y + base.h * scale - 6.0 * scale,
+            w: 9.0 * scale,
+            h: 2.0 * scale,
+            color: [0.2, 0.35, 0.38, 1.0],
+            depth: ui::UI_DEPTH + 320.0,
+        });
+    }
     if state.dark_appearance {
         ui::apply_dark_window_colors(&mut ui_solids[dialog_solids_start..]);
     }

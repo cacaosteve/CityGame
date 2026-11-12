@@ -202,12 +202,12 @@ pub fn load_sprite_sources(asset_root: impl AsRef<Path>) -> Result<Vec<AtlasSour
 /// Private UI namespace, separate from the world sprite and traffic banks.
 pub const NEWSPAPER_PICTURE_BASE: u32 = 70_000;
 
-/// The imported editions expose the same twelve editorial pictures in different folders.
+/// Load imported editorial pictures and Mac weather PICTs into a private UI atlas.
 /// Keep their UI IDs separate from road-traffic masks, which also use IDs 400..411.
 pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>> {
-    let mut atlas = RgbaImage::new(640, 312);
+    let mut atlas = RgbaImage::new(640, 624);
     let mut frames = Vec::new();
-    for picture in 400..=411u32 {
+    for picture in (400..=411u32).chain(700..=711) {
         let path = roots.iter().find_map(|root| {
             [
                 root.join(format!("pict/PICT_{picture:05}.png")),
@@ -225,7 +225,7 @@ pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>>
         } else {
             image
         };
-        let index = picture - 400;
+        let index = if picture < 700 { picture - 400 } else { 12 + picture - 700 };
         let (x, y) = ((index % 4) * 160 + 2, (index / 4) * 104 + 2);
         image::imageops::overlay(&mut atlas, &image, i64::from(x), i64::from(y));
         frames.push(AtlasFrame {
@@ -245,7 +245,7 @@ pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>>
 }
 
 /// Project-authored high-density toolbar sheets are used with every original game edition.
-pub fn load_ui_palette_sources(_asset_root: impl AsRef<Path>) -> Result<Vec<AtlasSource>> {
+pub fn load_ui_palette_sources(asset_root: impl AsRef<Path>) -> Result<Vec<AtlasSource>> {
     fn bundled(name: &str, bytes: &[u8]) -> Result<AtlasSource> {
         let image = image::load_from_memory(bytes)
             .with_context(|| format!("decoding bundled {name} toolbar artwork"))?
@@ -296,13 +296,25 @@ pub fn load_ui_palette_sources(_asset_root: impl AsRef<Path>) -> Result<Vec<Atla
     )?;
     let city_light = light_variant(city.clone(), "citygame_city_toolbar_light");
     let edit_light = light_variant(edit.clone(), "citygame_edit_toolbar_light");
+    let original_city_path = asset_root.as_ref().join("pict/PICT_00500.png");
+    let classic_city = if original_city_path.is_file() {
+        let image = image::open(&original_city_path)?.to_rgba8();
+        if image.dimensions() == (71, 312) {
+            let image = image::imageops::resize(&image, 568, 2496, image::imageops::FilterType::Nearest);
+            AtlasSource::from_rgba("classic_city_toolbar", image, vec![AtlasFrame {
+                file: original_city_path.to_string_lossy().into_owned(), index: 0, id: 1,
+                source_offset: 0, x: 0, y: 0, w: 568, h: 2496, logical_size: None, anchor: None,
+            }])
+        } else {
+            bundled("classic_city_toolbar", include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"))?
+        }
+    } else {
+        bundled("classic_city_toolbar", include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"))?
+    };
     Ok(vec![
         city,
         edit,
-        bundled(
-            "classic_city_toolbar",
-            include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"),
-        )?,
+        classic_city,
         bundled(
             "classic_edit_toolbar",
             include_bytes!("../assets/ui/citygame-toolbar/edit-map-classic.png"),

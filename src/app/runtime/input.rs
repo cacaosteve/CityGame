@@ -1,5 +1,6 @@
 //! Input dispatch for the main window and floating/docked Tools palette.
 
+use super::super::CityInfoDialog;
 use super::super::map_interaction::{
     handle_map_left_pointer_down, release_map_tools, update_map_paint_pointer_motion,
 };
@@ -16,6 +17,7 @@ pub(super) struct InputState {
     pub(super) touch: TouchTracker,
     pub(super) map_touch: MapTouchArbiter,
     pub(super) docked_palette: DockedPalette,
+    info_preview: Option<(Vec2, Vec2, Vec2, Vec2, bool)>,
     pub(super) lifecycle: AppLifecycle,
 }
 
@@ -32,8 +34,72 @@ impl InputState {
             touch: TouchTracker::new(),
             map_touch: MapTouchArbiter::new(),
             docked_palette: DockedPalette::new(),
+            info_preview: None,
             lifecycle: AppLifecycle::new(),
         }
+    }
+}
+
+impl InputState {
+    fn begin_info_preview(&mut self, state: &mut ViewerState, action: UiAction, screen: Vec2, tools_origin: Vec2, size: Vec2) {
+        if matches!(action, UiAction::OpenCityMap | UiAction::OpenCityGraphs | UiAction::OpenCityPopulation | UiAction::OpenCityIndustry | UiAction::OpenCityNeighbors) && state.city_info_dialog.is_some() {
+            let origin = Vec2::new(tools_origin.x + size.x + 8.0, screen.y - 12.0);
+            state.info_panel_origin = Some(origin);
+            state.info_panel_scale = 0.5;
+            self.info_preview = Some((screen, origin, tools_origin, size, false));
+        }
+    }
+
+    fn move_info_preview(&mut self, state: &mut ViewerState, screen: Vec2) -> bool {
+        if let Some((start, origin, toolbar, size, ref mut detached)) = self.info_preview {
+            let delta = screen - start;
+            let outside = screen.x < toolbar.x || screen.y < toolbar.y || screen.x >= toolbar.x + size.x || screen.y >= toolbar.y + size.y;
+            if outside && delta.length() > 8.0 { *detached = true; }
+            if *detached { state.info_panel_origin = Some(origin + delta); }
+            true
+        } else { false }
+    }
+
+    fn end_info_preview(&mut self, state: &mut ViewerState) -> bool {
+        if let Some((_, _, _, _, detached)) = self.info_preview.take() {
+            if !detached { state.close_city_info_dialog(); }
+            true
+        } else { false }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use crate::app::tests::test_state;
+    use crate::city::City;
+
+    #[test]
+    fn info_preview_closes_on_release_and_stays_when_dragged() {
+        let city = City::new_blank("/tmp/preview.sc2", "Preview").unwrap();
+        let mut state = test_state(city);
+        let mut input = InputState::new();
+        let start = Vec2::new(100.0, 200.0);
+        state.city_info_dialog = Some(CityInfoDialog::Graphs);
+        input.begin_info_preview(&mut state, UiAction::OpenCityGraphs, start, Vec2::ZERO, Vec2::new(140.0, 624.0));
+        assert_eq!(state.info_panel_origin, Some(Vec2::new(148.0, 188.0)));
+        assert!(input.end_info_preview(&mut state));
+        assert_eq!(state.city_info_dialog, None);
+        state.city_info_dialog = Some(CityInfoDialog::Graphs);
+        input.begin_info_preview(&mut state, UiAction::OpenCityGraphs, start, Vec2::ZERO, Vec2::new(140.0, 624.0));
+        assert!(input.move_info_preview(&mut state, start + Vec2::new(70.0, 20.0)));
+        assert!(input.end_info_preview(&mut state));
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Graphs));
+        state.city_info_dialog = Some(CityInfoDialog::Budget);
+        input.begin_info_preview(&mut state, UiAction::OpenBudget, start, Vec2::ZERO, Vec2::new(140.0, 624.0));
+        assert!(!input.end_info_preview(&mut state));
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+        state.city_info_dialog = None;
+        state.info_panel_scale = 0.5;
+        state.info_panel_origin = Some(Vec2::new(30.0, 40.0));
+        state.open_city_info_dialog(CityInfoDialog::Budget);
+        assert_eq!(state.info_panel_scale, 1.0);
+        assert_eq!(state.info_panel_origin, None);
     }
 }
 
@@ -653,6 +719,33 @@ fn handle_mouse_event(
                 }
                 MenubarClick::Ignored => {}
             }
+            if state.begin_info_panel_drag(screen, renderer.size()) {
+                input.painting = false;
+                input.dragging = false;
+                return Ok(());
+            }
+            if handle_modal_pointer_down(
+                state,
+                screen,
+                renderer.size(),
+                pixel_scale(window, renderer.size()),
+                video,
+                window,
+                sound.as_ref(),
+            ) {
+                input.painting = false;
+                input.dragging = false;
+                return Ok(());
+            }
+            if state.begin_status_panel_drag(
+                screen,
+                renderer.size(),
+                pixel_scale(window, renderer.size()),
+            ) {
+                input.painting = false;
+                input.dragging = false;
+                return Ok(());
+            }
             if single_window {
                 let ps = pixel_scale(window, renderer.size());
                 let menubar_top = MenubarUi::occupied_top(ps);
@@ -702,6 +795,7 @@ fn handle_mouse_event(
                             _ => {
                                 state.close_tool_menu();
                                 state.handle_ui_action(action, video, window.id());
+                                input.begin_info_preview(state, action, screen, tools_origin, Vec2::new(palette_logical_size.0 as f32 * ps, palette_logical_size.1 as f32 * ps));
                             }
                         }
                         if resync {
@@ -722,26 +816,6 @@ fn handle_mouse_event(
                     input.dragging = false;
                     return Ok(());
                 }
-            }
-            if handle_modal_pointer_down(
-                state,
-                screen,
-                renderer.size(),
-                pixel_scale(window, renderer.size()),
-                video,
-                window,
-                sound.as_ref(),
-            ) {
-                input.painting = false;
-                input.dragging = false;
-                return Ok(());
-            }
-            if state.point_in_status_panel(
-                screen,
-                renderer.size(),
-                pixel_scale(window, renderer.size()),
-            ) {
-                return Ok(());
             }
             handle_map_left_pointer_down(
                 state,
@@ -791,7 +865,7 @@ fn handle_mouse_event(
                 return Ok(());
             }
             if state.city_info_dialog.is_some_and(|dialog| {
-                point_in_float_rect(screen, city_info_dialog_rect_for(dialog, renderer.size()))
+                point_in_float_rect(state.info_panel_input_point(screen, renderer.size()), city_info_dialog_rect_for(dialog, renderer.size()))
             }) {
                 input.painting = false;
                 input.dragging = false;
@@ -884,6 +958,18 @@ fn handle_mouse_event(
             mouse_btn: MouseButton::Left,
             ..
         } => {
+            if input.end_info_preview(state) {
+                state.release_palette_button();
+                input.painting = false;
+                input.dragging = false;
+                return Ok(());
+            }
+            if state.info_panel_drag.take().is_some() {
+                input.painting = false;
+                input.dragging = false;
+                return Ok(());
+            }
+            state.end_status_panel_drag();
             if input.docked_palette.is_dragging() {
                 input.docked_palette.end_drag();
                 input.dragging = false;
@@ -963,6 +1049,13 @@ fn handle_mouse_event(
                 state.update_window_title(video, window.id());
             }
             input.mouse_pos = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
+            if input.move_info_preview(state, input.mouse_pos) { return Ok(()); }
+            if state.drag_info_panel(input.mouse_pos, renderer.size()) {
+                return Ok(());
+            }
+            if state.drag_status_panel(input.mouse_pos) {
+                return Ok(());
+            }
             if single_window && input.docked_palette.is_dragging() {
                 let ps = pixel_scale(window, renderer.size());
                 input.docked_palette.drag_to(
@@ -1061,7 +1154,10 @@ fn handle_touch_event(
             } else if input.touch.finger_count() == 1 {
                 input.map_touch.clear();
                 let ps = pixel_scale(window, renderer.size());
-                if handle_modal_pointer_down(
+                if state.begin_info_panel_drag(screen, renderer.size()) {
+                    input.painting = false;
+                    input.dragging = false;
+                } else if handle_modal_pointer_down(
                     state,
                     screen,
                     renderer.size(),
@@ -1090,8 +1186,8 @@ fn handle_touch_event(
                         }
                         MenubarClick::Ignored => {
                             let mut ui_consumed =
-                                state.point_in_status_panel(screen, renderer.size(), ps);
-                            if single_window {
+                                state.begin_status_panel_drag(screen, renderer.size(), ps);
+                            if single_window && !ui_consumed {
                                 let menubar_top = MenubarUi::occupied_top(ps);
                                 if input.docked_palette.begin_drag(
                                     screen,
@@ -1127,6 +1223,7 @@ fn handle_touch_event(
                                                         video,
                                                         window.id(),
                                                     );
+                                                    input.begin_info_preview(state, action, screen, tools_origin, Vec2::new(palette_logical_size.0 as f32 * ps, palette_logical_size.1 as f32 * ps));
                                                 }
                                             }
                                         }
@@ -1170,7 +1267,13 @@ fn handle_touch_event(
             let screen = touch_input::finger_to_screen(x, y, renderer.size());
             input.mouse_pos = screen;
             let ps = pixel_scale(window, renderer.size());
-            if input.docked_palette.is_dragging() {
+            if input.move_info_preview(state, screen) {
+                let _ = input.touch.on_motion(finger_id, screen);
+            } else if state.drag_info_panel(screen, renderer.size()) {
+                let _ = input.touch.on_motion(finger_id, screen);
+            } else if state.drag_status_panel(screen) {
+                let _ = input.touch.on_motion(finger_id, screen);
+            } else if input.docked_palette.is_dragging() {
                 input.docked_palette.drag_to(
                     screen,
                     renderer.size(),
@@ -1246,6 +1349,20 @@ fn handle_touch_event(
         } if window_id == window.id() => {
             input.touch.on_up(finger_id);
             if input.touch.finger_count() == 0 {
+                if input.end_info_preview(state) {
+                    input.painting = false;
+                    input.dragging = false;
+                    state.release_palette_button();
+                    return;
+                }
+                let was_info_drag = state.info_panel_drag.take().is_some();
+                state.end_status_panel_drag();
+                if was_info_drag {
+                    input.docked_palette.end_drag();
+                    input.painting = false;
+                    input.dragging = false;
+                    return;
+                }
                 let ps = pixel_scale(window, renderer.size());
                 let _ =
                     handle_modal_pointer_up(state, input.mouse_pos, renderer.size(), video, window);

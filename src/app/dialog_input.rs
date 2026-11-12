@@ -52,6 +52,7 @@ pub(super) fn handle_modal_pointer_down(
         return true;
     }
     if let Some(dialog) = state.city_info_dialog {
+        let screen = state.info_panel_input_point(screen, window_size);
         if let Some(action) = city_info_dialog_hit_test(screen, window_size, dialog) {
             if !state.city_info_dialog_action_enabled(action) {
                 return true;

@@ -191,12 +191,14 @@ pub fn run() -> Result<()> {
     let tile_set_root = asset_profile.tile_set_root();
     let prefer_replacement = asset_profile.preference().prefers_replacement();
     let palette_logical = ui::palette_logical_size(AppMode::CityView);
-    let single_window = platform_ui::single_window_ui();
+    // Keep the tool palette in the game window on desktop as well as tablets.
+    // The native macOS menu remains independently controlled by platform_ui.
+    let single_window = true;
     let palette_window =
         palette_window::build_palette_window(&video, &window, palette_logical, single_window)?;
     if single_window {
         log::info!(
-            "single-window UI: docked Tools palette + in-game menubar (tablet / CITYGAME_SINGLE_WINDOW)"
+            "single-window UI: movable in-game Tools palette"
         );
     }
     let mut palette_renderer = if let Some(palette_window) = &palette_window {

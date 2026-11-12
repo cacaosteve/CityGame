@@ -130,6 +130,45 @@ fn startup_newspaper_waits_for_editor_and_respects_suppression_without_save_writ
 }
 
 #[test]
+fn movable_panels_keep_hit_coordinates_aligned() {
+    let city = City::new_blank("/tmp/movable-panels.sc2", "Oak Bay").unwrap();
+    let mut state = test_state(city);
+    let size = (1280, 800);
+    state.city_info_dialog = Some(CityInfoDialog::Graphs);
+    let (base, origin, _) = state.info_panel_transform(size).unwrap();
+    let start = origin + Vec2::new(20.0, 12.0);
+    assert!(state.begin_info_panel_drag(start, size));
+    assert!(state.drag_info_panel(start + Vec2::new(70.0, 40.0), size));
+    state.info_panel_drag = None;
+    let (_, moved, scale) = state.info_panel_transform(size).unwrap();
+    assert_eq!(moved, origin + Vec2::new(70.0, 40.0));
+    let corner = moved + Vec2::new(base.w * scale - 2.0, base.h * scale - 2.0);
+    assert!(state.begin_info_panel_drag(corner, size));
+    assert!(state.drag_info_panel(corner - Vec2::new(100.0, 100.0), size));
+    state.info_panel_drag = None;
+    let (_, moved, scale) = state.info_panel_transform(size).unwrap();
+    assert!(scale < 1.0);
+    let close = city_info_close_rect(base);
+    let logical = Vec2::new(close.x + close.w / 2.0, close.y + close.h / 2.0);
+    let actual = moved + (logical - Vec2::new(base.x, base.y)) * scale;
+    assert_eq!(city_info_dialog_hit_test(state.info_panel_input_point(actual, size), size, CityInfoDialog::Graphs), Some(CityInfoDialogAction::Close));
+    for dialog in [CityInfoDialog::Map, CityInfoDialog::Graphs, CityInfoDialog::Population, CityInfoDialog::Industry, CityInfoDialog::Neighbors, CityInfoDialog::Budget] {
+        state.city_info_dialog = Some(dialog);
+        let (base, origin, scale) = state.info_panel_transform(size).unwrap();
+        let close = if dialog == CityInfoDialog::Budget { budget_window::close_rect(base) } else { city_info_close_rect(base) };
+        let point = Vec2::new(close.x + close.w * 0.5, close.y + close.h * 0.5);
+        let transformed = origin + (point - Vec2::new(base.x, base.y)) * scale;
+        assert_eq!(city_info_dialog_hit_test(state.info_panel_input_point(transformed, size), size, dialog), Some(CityInfoDialogAction::Close));
+    }
+    let status_start = Vec2::new(size.0 as f32 - 30.0, MenubarUi::occupied_top(1.0) + 20.0);
+    assert!(state.begin_status_panel_drag(status_start, size, 1.0));
+    let target = Vec2::new(40.0, MenubarUi::occupied_top(1.0) + 50.0);
+    assert!(state.drag_status_panel(target));
+    state.end_status_panel_drag();
+    assert!(state.point_in_status_panel(target, size, 1.0));
+}
+
+#[test]
 fn startup_status_panel_shows_tool_notice_and_weather_within_window_bounds() {
     let city = City::new_blank("/tmp/startup-status.sc2", "Oak Bay").unwrap();
     let mut state = test_state(city);
@@ -148,7 +187,7 @@ fn startup_status_panel_shows_tool_notice_and_weather_within_window_bounds() {
             for dark in [false, true] {
                 state.dark_appearance = dark;
                 let mut solids = Vec::new();
-                state.push_status_panel(size, ps, &mut solids);
+                state.push_status_panel(size, ps, &mut solids, None, &mut Vec::new());
                 assert!(!solids.is_empty());
                 for solid in solids {
                     assert!(solid.x >= 0.0 && solid.y >= 0.0);

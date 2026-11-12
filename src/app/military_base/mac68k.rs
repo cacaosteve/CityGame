@@ -275,3 +275,102 @@ fn connector_terrain_faces_axis(terrain: u8, x_axis: bool) -> bool {
             | 0x56..=0x57 | 0x59 | 0x5b..=0x64 | 0x66..=0x67 | 0x69 | 0x6b..=0x74 | 0x76..=0x89)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::connect_military_route;
+    use crate::city::{City, CityFileKind, TileBits};
+
+    #[test]
+    fn mac_military_empty_corridor_matches_native_worker_replay_on_both_layouts() {
+        for extension in ["city", "sc2"] {
+            let path = std::env::temp_dir().join(format!(
+                "citygame-mac-military-corridor-{}.{extension}",
+                std::process::id()
+            ));
+            let mut city = City::new_blank(&path, "Military corridor").expect("blank city");
+            city.kind = if extension == "sc2" {
+                CityFileKind::WinSc2
+            } else {
+                CityFileKind::MacCity
+            };
+            if city.kind == CityFileKind::WinSc2 {
+                city.prepare_mac_fidelity_from_saved_city();
+                city.mac_xbld_census_runtime[0x1d] = 1;
+                city.mac_xbld_census_runtime[0x1e] = 1;
+                city.pe_dw_tile_count[0x1d] = 1;
+                city.pe_dw_tile_count[0x1e] = 1;
+                city.pe_military_tile_count[0] = 2;
+            } else {
+                city.set_mac_state_misc_u32_at(0x01f0 + 0x1d * 4, 1);
+                city.set_mac_state_misc_u32_at(0x01f0 + 0x1e * 4, 1);
+                city.set_mac_state_misc_u32_at(0x0fa8, 2);
+            }
+            city.set_mac_state_misc_u32_at(0x01f0, 16_384);
+
+            for x in 20..=24 {
+                city.set_zone(x, 40, 3);
+                city.set_tile_bits(x, 40, TileBits::new(0x80));
+            }
+            city.set_zone(20, 40, 7);
+            city.set_zone(24, 40, 7);
+            city.set_building(20, 40, 0x1d);
+            city.set_building(24, 40, 0x1e);
+
+            connect_military_route(&mut city, (20, 40), (24, 40));
+
+            let expected_buildings = [0xde, 0x1e, 0x1e, 0x1e, 0xde];
+            let expected_zones = [0xf7, 0x00, 0x00, 0x00, 0xf7];
+            for (index, x) in (20..=24).enumerate() {
+                assert_eq!(
+                    city.building_at(x, 40),
+                    expected_buildings[index],
+                    "{extension} ({x},40)"
+                );
+                assert_eq!(
+                    city.zone_at(x, 40).expect("zone").raw_bits(),
+                    expected_zones[index],
+                    "{extension} ({x},40)"
+                );
+                assert_eq!(city.terrain_at(x, 40), 0, "{extension} ({x},40)");
+                assert_eq!(
+                    city.tile_bits_at(x, 40).expect("tile bits").raw_bits(),
+                    0x80
+                );
+            }
+            for x in 0..128 {
+                for y in 0..128 {
+                    if !(20..=24).contains(&x) || y != 40 {
+                        assert_eq!(city.building_at(x, y), 0, "{extension} XBLD ({x},{y})");
+                        assert_eq!(
+                            city.zone_at(x, y).expect("zone").raw_bits(),
+                            0,
+                            "{extension} XZON ({x},{y})"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                city.mac_xbld_tile_count(0x1d),
+                1,
+                "{extension} general census"
+            );
+            assert_eq!(
+                city.mac_xbld_tile_count(0x1e),
+                4,
+                "{extension} general census"
+            );
+            assert_eq!(
+                city.mac_zone7_census_count(0),
+                0,
+                "{extension} military census"
+            );
+            assert_eq!(
+                city.mac_zone7_census_count(2),
+                2,
+                "{extension} military census"
+            );
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}

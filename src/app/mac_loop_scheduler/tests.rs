@@ -9919,3 +9919,57 @@ fn mac_police_and_fire_dispatchers_compete_for_one_live_fire_marker() {
         );
     }
 }
+
+#[test]
+fn mac_police_and_military_dispatchers_compete_for_one_live_riot_marker() {
+    use crate::win95_overlay::DispatchKind;
+
+    for path in [
+        "mac-police-military-riot-contention.city",
+        "mac-police-military-riot-contention.sc2",
+    ] {
+        let mut city = blank_city_layout_fixture(path, "Police and military response");
+        city.prepare_mac_fidelity_from_saved_city();
+        for x in 100..116 {
+            city.set_building(x, 100, 210);
+            city.set_building(x, 101, 211);
+        }
+        city.set_mac_state_misc_u32_at(915 * 4, 3);
+
+        let fidelity = EngineFidelity::Mac68k;
+        city.reset_emergency_dispatch_for_engine(fidelity);
+        assert!(
+            city.place_dispatch_actor_for_engine(45, 40, DispatchKind::Police, fidelity,)
+        );
+        assert!(
+            city.place_dispatch_actor_for_engine(47, 40, DispatchKind::Military, fidelity,)
+        );
+        // The shared XTXT 0xfe is east of police and west of military.
+        city.set_text_overlay(46, 40, 0xfe);
+        scenario_action::begin_action(&mut city, scenario_action::OAKLAND_ACTION);
+
+        // Police's first draw probes the empty fire neighbor; its second
+        // selects +X and clears the riot marker. Military still consumes both
+        // response directions later in the X-major scan.
+        let mut rng = MacToolboxRng::new(2);
+        let mut expected_rng = MacToolboxRng::new(2);
+        let expected_draws: Vec<_> = (0..4).map(|_| expected_rng.random_u16()).collect();
+        assert_eq!(expected_draws, [33_614, 30_178, 22_963, 6_228]);
+        let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+
+        assert!(pass.complete, "{path}");
+        assert!(!pass.riot_sound, "{path}");
+        assert_eq!(rng.seed(), expected_rng.seed(), "{path}");
+        for (x, y) in [(45, 40), (46, 40), (47, 40), (45, 41)] {
+            assert_eq!(city.text_overlay_at(x, y), Some(0), "{path} ({x},{y})");
+        }
+        let actors = city.traffic_overlays().unwrap();
+        assert_eq!(actors[1].kind, 0, "{path} police proxy cleanup");
+        assert_eq!(actors[2].kind, 0, "{path} military proxy cleanup");
+        assert_eq!(city.mac_state_misc_u32_at(0x1048), Some(0));
+        assert_eq!(
+            city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_GAMEPLAY),
+        );
+    }
+}

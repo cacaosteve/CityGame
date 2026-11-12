@@ -603,8 +603,10 @@ fn mac_engine_publishes_native_power_summary_for_win_layout_city() {
         "a first Mac-fidelity open follows the native loader's raw MISC slot interpretation"
     );
     state.city.set_microsim_tile_id(1, 0xc9);
+    let mut expected_rng = MacToolboxRng::new(1);
+    let expected_plant_stat =
+        (raw_power_slot as u16).wrapping_add(expected_rng.random_u16() & 7);
     let mut xmic_rng = MacToolboxRng::new(1);
-    let expected_plant_stat = (raw_power_slot as u16).wrapping_add(xmic_rng.random_u16() & 7);
     state.city.refresh_mac_monthly_random_xmic_rows(0, 0, 0, 0, 0, true, &mut xmic_rng);
     assert_eq!(
         state.city.microsim_at(1).unwrap().stat2,

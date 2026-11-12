@@ -7884,7 +7884,8 @@ fn mac_engine_publishes_native_water_summary_for_win_layout_city() {
     )
     .expect("blank city");
     city.kind = CityFileKind::WinSc2;
-    city.set_misc_u32_at(101 * 4, 0x8765_4321);
+    let raw_water_slot = 0x8765_4321;
+    city.set_misc_u32_at(1049 * 4, raw_water_slot);
     city.set_building(40, 40, 220);
     city.set_building(41, 40, 0x70);
     city.set_underground(40, 40, 16);
@@ -7899,7 +7900,7 @@ fn mac_engine_publishes_native_water_summary_for_win_layout_city() {
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.sim_calendar_day20_water();
 
-    assert_eq!(state.city.misc_u32_at(101 * 4), Some(0x8765_4321));
+    assert_eq!(state.city.misc_u32_at(1049 * 4), Some(raw_water_slot));
 
     assert_eq!(
         state.city.mac_water_service_summary(),
@@ -7917,6 +7918,44 @@ fn mac_engine_publishes_native_water_summary_for_win_layout_city() {
         expected_water_stat0,
         "the following Mac XMIC pass reads the newly published water percentage"
     );
+}
+
+#[test]
+fn mac_first_open_water_summary_seeds_annual_xmic_for_win_layout_city() {
+    let mut city = City::new_blank(
+        "/tmp/sc2000-mac-first-open-win-water-summary.sc2",
+        "MacFirstOpenWinWaterSummary",
+    )
+    .expect("blank city");
+    city.kind = CityFileKind::WinSc2;
+    let raw_water_slot = 0x89ab_cdef;
+    city.set_misc_u32_at(1049 * 4, raw_water_slot);
+    city.set_microsim_tile_id(1, 0xf4);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.city.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(
+        state.city.mac_water_service_summary(),
+        raw_water_slot,
+        "a first Mac-fidelity open loads the water summary from its raw MISC slot"
+    );
+
+    let mut expected_rng = MacToolboxRng::new(1);
+    let expected_stat0 = (raw_water_slot as u8)
+        .wrapping_add((expected_rng.random_u16() & 7) as u8);
+    let mut xmic_rng = MacToolboxRng::new(1);
+    state
+        .city
+        .refresh_mac_monthly_random_xmic_rows(0, 0, 0, 0, 0, true, &mut xmic_rng);
+
+    assert_eq!(
+        state.city.microsim_at(1).unwrap().stat0,
+        expected_stat0,
+        "the annual water-treatment row consumes the prior raw summary's low BYTE before phase 20"
+    );
+    assert_eq!(state.city.mac_water_service_summary(), raw_water_slot);
+    assert_eq!(state.city.misc_u32_at(1049 * 4), Some(raw_water_slot));
 }
 
 #[test]

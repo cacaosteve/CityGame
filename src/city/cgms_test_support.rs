@@ -83,6 +83,28 @@ pub(crate) fn city_from_cgms_v4_for_test(bytes: &[u8]) -> Result<City> {
         data: misc,
     }];
     city.chunk_index.insert("MISC".to_owned(), 0);
+    // `City::load` hydrates these shared runtime caches from MISC. The CGMS
+    // diagnostic decoder bypasses that loader, but Mac phase-21 demand and
+    // national economy consume the difficulty, population/value, tax, and
+    // trend caches after restoring the saved Mac values.
+    city.pe_dw_national_population = city
+        .mac_state_misc_u32_at(MISC_NATIONAL_POPULATION_OFFSET)
+        .unwrap_or(0);
+    city.pe_dw_national_value = city
+        .mac_state_misc_u32_at(MISC_NATIONAL_VALUE_OFFSET)
+        .unwrap_or(0);
+    city.pe_w_national_tax = city
+        .mac_state_misc_u32_at(MISC_NATIONAL_TAX_OFFSET)
+        .map(|value| misc_word_from_saved_dword(value, city.kind))
+        .unwrap_or(0);
+    city.pe_w_national_trend = city
+        .mac_state_misc_u32_at(MISC_NATIONAL_TREND_OFFSET)
+        .map(|value| misc_word_from_saved_dword(value, city.kind))
+        .unwrap_or(0);
+    city.pe_w_city_difficulty = city
+        .mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET)
+        .map(|value| misc_word_from_saved_dword(value, city.kind))
+        .unwrap_or(0);
     city.traffic_overlays = Some(decode_xthg_records(xthg)?);
     city.traffic_overlays_from_file = true;
     city.saved_rotation = city.mac_state_misc_u32_at(8).unwrap_or(0) as u8;
@@ -113,6 +135,32 @@ pub(crate) fn city_from_cgms_v4_for_test(bytes: &[u8]) -> Result<City> {
     city.pe_rebuild_dw_tile_count_434f80();
     city.modified = false;
     Ok(city)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cgms_v4_decoder_hydrates_mac_phase21_runtime_caches() {
+        let mut city = City::new_blank("/tmp/cgms-difficulty.sc2", "Happyland").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_mac_state_misc_u32_at(MISC_NATIONAL_POPULATION_OFFSET, 57_925);
+        city.set_mac_state_misc_u32_at(MISC_NATIONAL_VALUE_OFFSET, 54_493);
+        city.set_mac_state_misc_u32_at(MISC_NATIONAL_TAX_OFFSET, 6);
+        city.set_mac_state_misc_u32_at(MISC_NATIONAL_TREND_OFFSET, 3);
+        city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
+
+        let encoded = cgms_v4_from_city_for_test(&city).unwrap();
+        let decoded = city_from_cgms_v4_for_test(&encoded).unwrap();
+
+        assert_eq!(decoded.kind, CityFileKind::MacCity);
+        assert_eq!(decoded.pe_dw_national_population, 57_925);
+        assert_eq!(decoded.pe_dw_national_value, 54_493);
+        assert_eq!(decoded.pe_w_national_tax, 6);
+        assert_eq!(decoded.pe_w_national_trend, 3);
+        assert_eq!(decoded.pe_w_city_difficulty, 1);
+    }
 }
 
 pub(crate) fn cgms_v4_from_city_for_test(city: &City) -> Result<Vec<u8>> {

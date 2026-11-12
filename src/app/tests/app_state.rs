@@ -756,26 +756,23 @@ fn pe_fb_tick_rejects_xtxt_ge_0x33_neighbor() {
 fn pe_fb_degrade_2x2_uses_abandon_not_invent_0x8c() {
     let mut city = City::new_blank("/tmp/sc2000-fb-2x2.sc2", "Fb2").expect("blank");
     stamp_complete_building_for_test(&mut city, 40, 40, RESIDENTIAL_2X2_BUILDINGS[0], 2);
-    // Stale wrong corners must be rewritten by CAP `0x4370e9`.
+    // Keep the struck southwest corner valid. ChooseAndPlace restamps the other corners.
     city.set_zone(40, 40, ZONE_RESIDENTIAL_DENSE | 0x80);
     city.set_zone(41, 40, ZONE_RESIDENTIAL_DENSE | 0x10);
-    city.set_zone(40, 41, ZONE_RESIDENTIAL_DENSE | 0x20);
+    let corner_bits = pe_choose_and_place_corner_bits(city.rotation());
+    city.set_zone(40, 41, ZONE_RESIDENTIAL_DENSE | corner_bits[2]);
     city.set_zone(41, 41, ZONE_RESIDENTIAL_DENSE | 0x40);
     city.set_traffic_density(40, 40, 0x31);
     city.set_traffic_density(41, 41, 0x31);
     let mut crt = Win95CrtRand::new(1);
-    let mut lfsr = Win95Lfsr::new(1);
-    assert!(pe_fb_zone_degradable(city.building_at(40, 40)));
-    assert!(pe_fb_degrade_under_cloud(
-        &mut city, 40, 40, &mut crt, &mut lfsr
-    ));
+    assert!(pe_fb_zone_degradable(city.building_at(40, 41)));
+    assert!(pe_fb_degrade_under_cloud(&mut city, 40, 41, &mut crt));
     let b = city.building_at(40, 40);
     assert!(
         ABANDONED_POP2_BUILDINGS.contains(&b),
         "expected CAP abandon pop2, got {b:#04x}"
     );
     assert_eq!(city.building_at(41, 41), b);
-    let corner_bits = pe_choose_and_place_corner_bits(city.rotation());
     for &(tx, ty) in &[(40, 40), (41, 40), (40, 41), (41, 41)] {
         let expected =
             ZONE_RESIDENTIAL_DENSE | building_zone_bits_for_tile(40, 40, tx, ty, 2, corner_bits);
@@ -1028,12 +1025,10 @@ fn simulation_day22_grants_mayor_house_on_first_progression_milestone() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
 
-    let day22 = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let day22 = state.sim_calendar_day22_scenario(population);
 
     assert!(day22.status_announced);
-    assert!(!day22.ambient_disaster_started);
     assert_eq!(
         state.city.misc_u32_at(MISC_CITY_PROGRESSION_OFFSET),
         Some(1)
@@ -1054,9 +1049,8 @@ fn simulation_day22_advances_only_one_progression_level_per_pass() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
 
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
 
     assert_eq!(
         state.city.misc_u32_at(MISC_CITY_PROGRESSION_OFFSET),
@@ -1065,6 +1059,55 @@ fn simulation_day22_advances_only_one_progression_level_per_pass() {
     );
     assert_eq!(state.city.rewards_available_mask() & 0b0_0001, 0b0_0001);
     assert_eq!(state.city.rewards_available_mask() & 0b0_0010, 0);
+}
+
+#[test]
+fn simulation_day22_level_six_rebuilds_tech_unlocks_and_grants_arcologies() {
+    let mut city = City::new_blank("/tmp/citygame-level-six-arcology.sc2", "LevelSix")
+        .expect("blank city");
+    city.pe_w_city_progression = 5;
+    city.set_pe_dw_city_population(120_001);
+    city.set_pe_zone_pops([0; 3]);
+    for index in 0..17 {
+        city.set_pe_w_neighbor_fame_rank(index, 1900);
+    }
+    for index in 12..=15 {
+        city.set_pe_w_neighbor_fame_rank(index, 0);
+    }
+    let mut state = test_state(city);
+    state.no_disasters_enabled = true;
+
+    let _ = state.sim_calendar_day22_scenario(PopulationStats::default());
+
+    assert_eq!(state.city.pe_w_city_progression, 6);
+    assert_eq!(state.city.pe_w_tech_unlock_high_zero_count(), 4);
+    assert_eq!(state.city.rewards_available_mask() & (1 << 4), 1 << 4);
+}
+
+#[test]
+fn opening_win95_city_rebuilds_tech_unlocks_from_saved_schedule() {
+    let path = std::env::temp_dir().join(format!(
+        "citygame-tech-unlock-open-{}.sc2",
+        std::process::id()
+    ));
+    let mut city = City::new_blank(&path, "TechOpen").expect("blank city");
+    city.pe_w_city_progression = 6;
+    for index in 0..17 {
+        city.set_pe_w_neighbor_fame_rank(index, 1900);
+    }
+    for index in 12..=15 {
+        city.set_pe_w_neighbor_fame_rank(index, 0);
+    }
+    city.save(&path).expect("save city fixture");
+
+    let initial = City::new_blank("/tmp/citygame-tech-open-initial.sc2", "Initial")
+        .expect("initial city");
+    let mut state = test_state(initial);
+    state.load_city(&path, (1280, 800), 1.0).expect("open city");
+
+    assert_eq!(state.city.pe_w_tech_unlock_high_zero_count(), 4);
+    assert_eq!(state.city.rewards_available_mask() & (1 << 4), 1 << 4);
+    std::fs::remove_file(path).expect("remove city fixture");
 }
 
 #[test]
@@ -1190,32 +1233,16 @@ fn january_year_roll_consumes_process_lfsr_for_arco() {
 }
 
 #[test]
-fn january_opinion_poll_consumes_process_crt() {
-    // PE `0x472510` shares the year-roll process CRT (100 samples) with microsim CRT.
+fn january_microsim_publication_preserves_process_crt_when_no_row_draws() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.provision_microsim_for_building(243).expect("mayor");
     city.persist_pe_day22_population_leftover(10_000);
-    city.set_saved_date_and_day(
-        CityDate {
-            year: 1900,
-            month: 12,
-        },
-        1,
-    );
+    city.set_pe_mayor_approval(63);
     let mut state = test_state(city);
     let before = state.pe_process_crt_seed();
-    let mut preview = state.pe_process_crt;
-    state
-        .city
-        .run_pe_opinion_poll_with_rng(10_000, 100, 100, 100, &mut preview);
-    assert_ne!(preview.seed(), before, "poll alone advances CRT");
-    state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
-    assert_ne!(
-        state.pe_process_crt_seed(),
-        before,
-        "January year-roll must consume pe_process_crt for opinion poll"
-    );
-    assert!(state.city.pe_mayor_approval() > 0);
+    state.sim_calendar_yearly_updates();
+    assert_eq!(state.pe_process_crt_seed(), before);
+    assert_eq!(state.city.pe_mayor_approval(), 63);
 }
 
 #[test]
@@ -1455,21 +1482,18 @@ fn january_eq_le_fertile_averages_write_life_eq_and_workforce() {
 }
 
 #[test]
-fn january_opinion_poll_sets_mayor_approval_when_populated() {
+fn january_mayor_row_uses_latched_opinion_poll_result() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     let mayor = city.provision_microsim_for_building(243).expect("mayor");
     let mayor_index = usize::from(mayor - MIN_SIM_TEXT_ENTRIES);
     city.refresh_structure_microsim_yearly(0, 100, 100, 100, 100, 100);
-    assert_eq!(city.pe_mayor_approval(), 0, "pop < 100 skips the poll");
+    assert_eq!(city.pe_mayor_approval(), 0);
     assert_eq!(city.microsim_at(mayor_index).map(|r| r.stat2), Some(0));
 
+    city.set_pe_mayor_approval(63);
     city.refresh_structure_microsim_yearly(10_000, 100, 100, 100, 100, 100);
-    let approval = city.pe_mayor_approval();
-    assert!(approval > 0 && approval <= 100, "got {approval}");
-    assert_eq!(
-        city.microsim_at(mayor_index).map(|r| r.stat2),
-        Some(approval)
-    );
+    assert_eq!(city.pe_mayor_approval(), 63);
+    assert_eq!(city.microsim_at(mayor_index).map(|r| r.stat2), Some(63));
 }
 
 #[test]
@@ -1576,8 +1600,8 @@ fn january_stadium_attendance_divides_by_stadium_tiles() {
     // attendance is the tile quotient plus CRT jitter (no 25k cap roll).
     assert_eq!(
         (record.stat0, record.stat1),
-        (20, 3_716),
-        "pop / 16 stadium tiles + CRT jitter (after shared opinion-poll CRT)"
+        (12, 3_532),
+        "pop / 16 stadium tiles + CRT jitter"
     );
 }
 
@@ -1631,7 +1655,7 @@ fn january_fills_prison_zoo_and_llama_flavor_stats() {
             .map(|r| (r.stat0, r.stat1, r.stat2, r.stat3)),
         Some((3, 2_793, 300, 94))
     );
-    // PE zoo: four independent CRT `rand() % 100` rolls.
+    // PE zoo uses four draws from the separate game LCG.
     assert_eq!(
         city.microsim_at(zoo_index)
             .map(|r| (r.stat0, r.stat1, r.stat2, r.stat3)),
@@ -1642,8 +1666,8 @@ fn january_fills_prison_zoo_and_llama_flavor_stats() {
     assert_eq!(
         city.microsim_at(llama_index)
             .map(|r| (r.stat0, r.stat1, r.stat2, r.stat3)),
-        Some((31, 7_968, 1_044, 508)),
-        "PE CRT stream reaches llama after the annual opinion poll and earlier XMIC slots"
+        Some((190, 7_882, 1_082, 536)),
+        "PE CRT stream reaches llama after the police and prison slot draws"
     );
 }
 
@@ -1764,6 +1788,507 @@ fn arco_microsim_refuses_corner_all_nibble() {
 }
 
 #[test]
+fn mac_newspaper_poll_matches_native_quickdraw_and_mayor_rows() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/mac-calendar-poll.sc2", "Poll").unwrap();
+        city.kind = kind;
+        for (offset, value) in [(0x48, 10), (0x4c, 25), (0xfa4, 12), (0x102c, 2_001)] {
+            city.set_mac_state_misc_u32_at(offset, value);
+        }
+        city.set_budget_misc_u32_values(0x0780, &[7]);
+        for (index, score) in (4..).zip([10, 20, 40, 30]) {
+            city.set_chunk_u32_values("XGRP", index * 52 * 4, &[score]);
+        }
+        city.set_microsim_tile_id(10, 0xf3);
+        city.set_microsim_stat2(10, 63);
+
+        let fixture = |seed| {
+            let mut state = test_state(city.clone());
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.mac_process_rng = MacToolboxRng::new(seed);
+            state.no_disasters_enabled = true;
+            state
+        };
+        let assert_poll = |mut state: ViewerState, seed, score| {
+            state.city.refresh_mac_monthly_random_xmic_rows(
+                100,
+                100,
+                100,
+                100,
+                100,
+                false,
+                &mut state.mac_process_rng,
+            );
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert_eq!(state.city.microsim_at(10).unwrap().stat2, score);
+        };
+
+        for (mode, growth, admitted) in [
+            (AppMode::CityView, 100, true),
+            (AppMode::CityView, 99, false),
+            (AppMode::EditNewMap, 100, false),
+        ] {
+            let mut state = fixture(123);
+            state.mode = mode;
+            state.menu_checks.citygame_newspaper = false;
+            state.city.set_mac_state_misc_u32_at(0x1004, 0);
+            state.city.set_mac_state_misc_u32_at(0x1008, 0);
+            state.city.set_mac_state_misc_u32_at(0x102c, growth);
+            let command = app_command_for_menu_command(crate::menu_model::CMD_OPEN_COURIER)
+                .expect("manual Newspaper menu command");
+            state.city.set_mac_newspaper_suppressed(true);
+            assert!(state.apply_state_app_command(&command).is_some());
+            assert_eq!(state.mac_process_rng.seed(), 123);
+            state.city.set_mac_newspaper_suppressed(false);
+            assert!(state.apply_state_app_command(&command).is_some());
+            assert_eq!(state.city_info_dialog, None);
+            let (seed, score) = if admitted {
+                (200_870_715, 29)
+            } else {
+                (123, 0)
+            };
+            assert_poll(state, seed, score);
+        }
+
+        for (month, subscribed, suppressed, admitted) in [
+            (4, true, false, true),
+            (8, true, false, true),
+            (5, true, false, false),
+            (4, false, false, false),
+            (4, true, true, false),
+        ] {
+            let mut state = fixture(123);
+            state.city.set_mac_newspaper_suppressed(suppressed);
+            state.city.set_mac_state_misc_u32_at(0x1008, 0);
+            if subscribed {
+                state.toggle_newspaper_subscription();
+            }
+            assert_eq!(state.menu_checks.newspaper_subscription, subscribed);
+            state.finish_sim_calendar_day0_publication(1955, month, 1);
+            let (seed, score) = if admitted {
+                (200_870_715, 29)
+            } else {
+                (123, 0)
+            };
+            assert_poll(state, seed, score);
+        }
+
+        for (growth, extra, suppressed, admitted) in [
+            (2_001, 1, false, true),
+            (2_000, 1, false, false),
+            (2_001, 0, false, false),
+            (2_001, 1, true, false),
+        ] {
+            let mut state = fixture(123);
+            state.city.set_mac_newspaper_suppressed(suppressed);
+            state.city.set_mac_state_misc_u32_at(0x1008, extra);
+            state.city.set_mac_state_misc_u32_at(0x102c, growth);
+            state.handle_simulation_day_advanced(1955, 1, 22);
+            let (seed, score) = if admitted {
+                (200_870_715, 29)
+            } else {
+                (123, 0)
+            };
+            assert_poll(state, seed, score);
+        }
+
+        for (index, extra, suppressed) in
+            [(0, 1, false), (7, 1, false), (7, 0, false), (7, 1, true)]
+        {
+            let mut state = fixture(8);
+            state.city.set_mac_newspaper_suppressed(suppressed);
+            state.city.set_mac_state_misc_u32_at(0x1008, extra);
+            state
+                .city
+                .set_mac_state_misc_u32_at(Technology::ALL[index].misc_offset(), 1955);
+            // Hold the pre-technology prefix fixed and enter the native gate
+            // with seed 8. The next draw after the poll is the weather choice.
+            let mut prefix = [1; 11].into_iter();
+            let found = super::super::rci::mac_consume_phase21_pre_weather_event_draws(
+                &mut state.city,
+                1955,
+                || {
+                    prefix
+                        .next()
+                        .unwrap_or_else(|| state.mac_process_rng.random_u16())
+                },
+            );
+            assert_eq!(found, Some(index));
+            state.mac_process_rng.random_u16();
+            let (seed, score) = if extra != 0 && !suppressed {
+                (1_596_308_235, 30)
+            } else {
+                (112_318_345, 0)
+            };
+            assert_poll(state, seed, score);
+        }
+    }
+}
+
+#[test]
+fn mac_city_open_keeps_process_newspaper_state_and_advances_reset_draws() {
+    let mut state =
+        test_state(City::new_blank("/tmp/mac-open-bootstrap.sc2", "Bootstrap").unwrap());
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mac_process_rng = MacToolboxRng::new(123);
+
+    for (extension, saved, approval, seed) in [
+        ("city", 69, 0, 1_106_567_514),
+        ("sc2", 0, 29, 2_014_346_391),
+    ] {
+        let file = std::env::temp_dir().join(format!(
+            "citygame-mac-open-approval-{}.{}",
+            std::process::id(),
+            extension
+        ));
+        let mut city = blank_city_layout_fixture(&file, "Poll");
+        city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        city.set_microsim_tile_id(10, 0xf3);
+        city.set_microsim_stat2(10, saved);
+        city.save(&file).unwrap();
+        state.load_city(&file, (1280, 800), 1.0).unwrap();
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(state.city.microsim_at(10).unwrap().stat2, saved);
+
+        state.city.refresh_mac_monthly_random_xmic_rows(
+            100,
+            100,
+            100,
+            100,
+            100,
+            false,
+            &mut state.mac_process_rng,
+        );
+        assert_eq!(state.city.microsim_at(10).unwrap().stat2, approval);
+        assert_eq!(state.mac_process_rng.seed(), seed);
+        // Both saves can poll from the same fixture values. Only the
+        // process suppression set before the second open should block it.
+        for (offset, value) in [(0x48, 10), (0x4c, 25), (0xfa4, 12), (0x102c, 100)] {
+            state.city.set_mac_state_misc_u32_at(offset, value);
+        }
+        state.city.set_budget_misc_u32_values(0x0780, &[7]);
+        for (index, score) in (4..).zip([10, 20, 40, 30]) {
+            state
+                .city
+                .set_chunk_u32_values("XGRP", index * 52 * 4, &[score]);
+        }
+        let mut poll_rng = MacToolboxRng::new(123);
+        state.city.mac_poll_for_newspaper(|| poll_rng.random_u16());
+        assert_eq!(
+            poll_rng.seed(),
+            if approval == 0 { 200_870_715 } else { 123 }
+        );
+        state.city.set_mac_newspaper_suppressed(true);
+    }
+}
+
+#[test]
+fn pe_city_open_preserves_approval_and_consumes_native_neighbor_reset_draws() {
+    for (extension, seed, expected_seed) in [("sc2", 1, 2_503_793_637), ("city", 2, 723_476_577)] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-pe-open-reset-{}.{extension}",
+            std::process::id()
+        ));
+        let mut saved = blank_city_layout_fixture(&path, "Saved neighbors");
+        saved.set_misc_u32_at(0x06d8, 33);
+        ensure_default_city_options(&mut saved);
+        saved.save(&path).unwrap();
+        let mut state =
+            test_state(City::new_blank("/tmp/pe-open-bootstrap.sc2", "Bootstrap").unwrap());
+        state.pe_process_crt = Win95CrtRand::new(seed);
+        state.city.set_pe_mayor_approval(63);
+        let opened = state.load_city(&path, (1280, 800), 1.0);
+        std::fs::remove_file(&path).unwrap();
+        opened.unwrap();
+
+        assert_eq!(state.pe_process_crt.seed(), expected_seed, "{extension}");
+        assert_eq!(state.city.pe_mayor_approval(), 63);
+        assert_eq!(state.city.misc_u32_at(0x06d8), Some(33));
+    }
+}
+
+#[test]
+fn mac_phase22_civic_progression_uses_native_scalar_on_both_layouts() {
+    for extension in ["city", "sc2"] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-mac-milestones-{}.{}",
+            std::process::id(),
+            extension
+        ));
+        let mut city = blank_city_layout_fixture(&path, "Mac Milestones");
+        const HIGH_LATCH_BIT: u32 = 0x2000;
+        const LOW_LATCH_BIT: u32 = 0x20;
+        const PE_ARCOLOGY: u32 = 1 << 4;
+        const MAC_MAYOR_HOUSE: u32 = 1;
+        if city.kind == CityFileKind::WinSc2 {
+            city.set_rewards_available_mask(PE_ARCOLOGY);
+        }
+        city.prepare_mac_fidelity_from_saved_city();
+        city.set_mac_civic_latch(HIGH_LATCH_BIT | LOW_LATCH_BIT);
+        city.set_city_funds(1_000_000);
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.query_is_inspect = false;
+
+        state.city.set_mac_state_misc_u32_at(0x102c, 2_000);
+        state.handle_simulation_day_advanced(1900, 1, 22);
+        assert_eq!(state.city.mac_city_progression(), 0);
+        assert!(!state.ui_action_enabled(UiAction::SelectTool(EditTool::MayorHouse)));
+
+        state.city.set_mac_state_misc_u32_at(0x102c, 0x8000_0000);
+        state.handle_simulation_day_advanced(1900, 2, 22);
+        assert_eq!(state.city.mac_city_progression(), 1);
+        assert_eq!(state.query_line, "Reward Available");
+        assert!(state.ui_action_enabled(UiAction::SelectTool(EditTool::MayorHouse)));
+        assert!(!state.ui_action_enabled(UiAction::SelectTool(EditTool::Arcologies)));
+        assert_eq!(
+            state.city.mac_civic_latch(),
+            HIGH_LATCH_BIT | LOW_LATCH_BIT | MAC_MAYOR_HOUSE
+        );
+
+        state.tool = EditTool::MayorHouse;
+        assert!(state.apply_tool_at_tile(20, 20));
+        assert_eq!(state.city.building_at(20, 20), 0xf3);
+        // CODE 5 consumes the reward through a low-byte mask.
+        assert_eq!(state.city.mac_civic_latch(), LOW_LATCH_BIT);
+        state.tool = EditTool::Bulldoze;
+        assert!(state.apply_tool_at_tile(20, 20));
+        assert_ne!(state.city.building_at(20, 20), 0xf3);
+        assert!(state.ui_action_enabled(UiAction::SelectTool(EditTool::MayorHouse)));
+        assert_eq!(
+            state.city.mac_civic_latch(),
+            LOW_LATCH_BIT | MAC_MAYOR_HOUSE
+        );
+        state.tool = EditTool::MayorHouse;
+        assert!(state.apply_tool_at_tile(25, 25));
+        assert_eq!(state.city.mac_civic_latch(), LOW_LATCH_BIT);
+        state.handle_simulation_day_advanced(1900, 3, 22);
+        state.handle_simulation_day_advanced(1900, 4, 22);
+        assert_eq!(state.city.mac_city_progression(), 3);
+        assert_eq!(state.active_reward_mask(), 0b00110);
+        state.handle_simulation_day_advanced(1900, 5, 22);
+        assert_eq!(
+            state.city.mac_city_progression(),
+            3,
+            "the offer has no saved result yet"
+        );
+
+        state.city.save(&path).unwrap();
+        state.load_city(&path, (800, 600), 1.0).unwrap();
+        assert_eq!(state.city.mac_city_progression(), 3);
+        assert_eq!(state.city.mac_civic_latch(), LOW_LATCH_BIT | 0b00110);
+        state.handle_simulation_day_advanced(1900, 6, 22);
+        assert!(state.military_base_dialog.is_some());
+        state.decline_military_base_offer();
+        assert_eq!(state.city.mac_city_progression(), 4);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x0e4c), Some(1));
+        if state.city.kind == CityFileKind::WinSc2 {
+            assert_eq!(state.city.rewards_available_mask(), PE_ARCOLOGY);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn mac_phase22_military_offer_matches_original_mixed_plot_on_both_layouts() {
+    let building_rows = [
+        [0, 0, 0xde, 0, 0, 0xde, 0, 0],
+        [0, 0, 0x1e, 0, 0, 0x1e, 0, 0],
+        [0xde, 0x1d, 0x2b, 0x1d, 0x1d, 0x2b, 0x1d, 0xde],
+        [0, 0, 0x1e, 0, 0, 0x1e, 0, 0],
+        [0, 0, 0x1e, 0, 0, 0x1e, 0, 0],
+        [0xde, 0x1d, 0x2b, 0x1d, 0x1d, 0x2b, 0x1d, 0xde],
+        [0, 0, 0x1e, 0, 0, 0x1e, 0, 0],
+        [0, 0, 0xde, 0, 0, 0xde, 0, 0],
+    ];
+    for extension in ["city", "sc2"] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-mac-military-mixed-replay-{}.{extension}",
+            std::process::id()
+        ));
+        let mut city = blank_city_layout_fixture(&path, "Military Plot");
+        city.set_mac_state_misc_u32_at(0x1008, 0);
+        city.set_mac_state_misc_u32_at(0x01f0, 16384);
+        city.prepare_mac_fidelity_from_saved_city();
+        city.set_mac_city_progression(3);
+        city.set_mac_state_misc_u32_at(0x0e44, 0);
+        for x in 12..20 {
+            for y in 25..33 {
+                city.set_altitude(x, y, u8::from(x >= 17), 0);
+            }
+        }
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = MacToolboxRng::new(17_316);
+        state.city.set_mac_state_misc_u32_at(0x102c, 60_000);
+        state.handle_simulation_day_advanced(1900, 1, 22);
+        assert!(state.military_base_dialog.is_none());
+        state.city.set_mac_state_misc_u32_at(0x102c, 60_001);
+        state.handle_simulation_day_advanced(1900, 2, 22);
+        assert!(state.military_base_dialog.is_some());
+        assert_eq!(state.city.mac_city_progression(), 3);
+        assert_eq!(state.mac_process_rng.seed(), 17_316);
+        assert!(state.accept_military_base_offer());
+        assert_eq!(state.city.mac_city_progression(), 4);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x0e4c), Some(2));
+        assert_eq!(state.mac_process_rng.seed(), 1_521_147_465);
+        assert_eq!(state.pending_disaster_auto_goto, Some((16, 29)));
+        assert_eq!(state.city.mac_xbld_tile_count(0), 16320);
+        assert_eq!(state.city.mac_zone7_census_count(0), 56);
+        assert_eq!(state.city.mac_zone7_census_count(2), 8);
+        for x in 0..128 {
+            for y in 0..128 {
+                let inside = (12..20).contains(&x) && (25..33).contains(&y);
+                let building = if inside {
+                    building_rows[x - 12][y - 25]
+                } else {
+                    0
+                };
+                let zone = if building == 0xde {
+                    0xf7
+                } else if inside {
+                    7
+                } else {
+                    0
+                };
+                assert_eq!(
+                    state.city.building_at(x, y),
+                    building,
+                    "{extension} ({x},{y})"
+                );
+                assert_eq!(
+                    state.city.zone_at(x, y).unwrap().raw_bits(),
+                    zone,
+                    "{extension} ({x},{y})"
+                );
+            }
+        }
+        state.city.save(&path).unwrap();
+        state.load_city(&path, (800, 600), 1.0).unwrap();
+        assert_eq!(state.city.mac_city_progression(), 4);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x0e4c), Some(2));
+        assert_eq!(state.city.mac_zone7_census_count(0), 56);
+        assert_eq!(state.city.mac_zone7_census_count(2), 8);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn mac_phase22_siting_replays_coastal_runs_and_overlapping_fallback() {
+    use super::super::military_base::place_mac_military_base;
+
+    for (orientation, center) in [(0, (99, 65)), (1, (65, 28)), (2, (28, 62)), (3, (62, 99))] {
+        let mut city = blank_city_layout_fixture(
+            format!("/tmp/mac-military-coast-{orientation}.city"),
+            "Coastal Plot",
+        );
+        city.saved_rotation = orientation;
+        city.set_mac_state_misc_u32_at(0x0e44, 1);
+        city.set_mac_state_misc_u32_at(0x01f0, 16384);
+        for x in 0..128 {
+            for y in 0..128 {
+                let salt = [x >= 100, y < 28, x < 28, y >= 100][usize::from(orientation)];
+                city.set_tile_bits(x, y, TileBits::new(if salt { 5 } else { 0 }));
+            }
+        }
+        if orientation == 0 {
+            for run in [11, 12] {
+                let mut short_coast = city.clone();
+                for y in run..128 {
+                    short_coast.set_terrain(99, y, 1);
+                }
+                let mut draws = if run == 11 { vec![1, 12, 25] } else { vec![1] }.into_iter();
+                let result = place_mac_military_base(&mut short_coast, || draws.next().unwrap());
+                assert_eq!(draws.next(), None);
+                if run == 11 {
+                    assert_eq!(result, Some((3, (16, 29))));
+                    assert_eq!(short_coast.mac_zone7_census_count(0), 64);
+                } else {
+                    assert_eq!(result, Some((4, (99, 7))));
+                    assert_eq!(short_coast.mac_zone7_census_count(0), 39);
+                    assert_eq!(short_coast.zone_at(99, 12).unwrap().zone_id(), 0);
+                    assert_eq!(short_coast.zone_at(98, 12).unwrap().zone_id(), 7);
+                }
+            }
+        }
+        let mut draws = [1].into_iter();
+        assert_eq!(
+            place_mac_military_base(&mut city, || draws.next().unwrap()),
+            Some((4, center))
+        );
+        assert_eq!(draws.next(), None);
+        assert_eq!(city.mac_xbld_tile_count(0), 16344);
+        assert_eq!(city.mac_zone7_census_count(0), 40);
+    }
+
+    let mut city = blank_city_layout_fixture("/tmp/mac-military-fallback.city", "Patch Plot");
+    city.set_mac_state_misc_u32_at(0x01f0, 16384);
+    for (index, (x, y)) in (12..20)
+        .flat_map(|x| (25..33).map(move |y| (x, y)))
+        .enumerate()
+    {
+        city.set_altitude(x, y, u8::from(index >= 39), 0);
+    }
+    for x in 45..48 {
+        for y in 67..70 {
+            city.set_altitude(x, y, 0, 0);
+        }
+    }
+    let mut draws = [12, 25].into_iter().chain([45, 67].repeat(6));
+    assert_eq!(
+        place_mac_military_base(&mut city, || draws.next().unwrap()),
+        Some((5, (45, 67)))
+    );
+    assert_eq!(draws.next(), None);
+    assert_eq!(city.mac_xbld_tile_count(0), 16330);
+    assert_eq!(city.mac_zone7_census_count(0), 54);
+    assert_eq!(city.zone_at(46, 68).unwrap().zone_id(), 7);
+    assert_eq!(city.zone_at(12, 25).unwrap().zone_id(), 0);
+}
+
+#[test]
+fn mac_phase22_arcology_latch_requires_both_native_gates() {
+    for extension in ["city", "sc2"] {
+        let mut city = blank_city_layout_fixture(
+            format!("/tmp/mac-arcology-milestone.{extension}"),
+            "Arcology Milestone",
+        );
+        city.prepare_mac_fidelity_from_saved_city();
+        city.set_mac_state_misc_u32_at(0x1008, 0);
+        for technology in &Technology::ALL[12..16] {
+            city.set_mac_state_misc_u32_at(technology.misc_offset(), 2200);
+        }
+        city.set_mac_city_progression(4);
+        city.set_mac_state_misc_u32_at(0x102c, 120_001);
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.handle_simulation_day_advanced(2200, 1, 22);
+        assert_eq!(state.city.mac_city_progression(), 5);
+        assert_eq!(state.active_reward_mask(), 1 << 3);
+        state.handle_simulation_day_advanced(2200, 2, 22);
+        assert_eq!(state.city.mac_city_progression(), 6);
+        assert_eq!(state.active_reward_mask(), 1 << 3);
+
+        let mut draws = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into_iter();
+        let discovered = super::super::rci::mac_consume_phase21_pre_weather_event_draws(
+            &mut state.city,
+            2200,
+            || draws.next().unwrap(),
+        );
+        assert_eq!(discovered, Some(12));
+        assert_eq!(draws.next(), None);
+        assert_eq!(state.active_reward_mask(), 0b11000);
+        assert!(state.ui_action_enabled(UiAction::SelectTool(EditTool::ArcologyPlymouth)));
+
+        state.city.set_mac_civic_latch(0);
+        state.city.set_mac_city_progression(5);
+        state.handle_simulation_day_advanced(2200, 3, 22);
+        assert_eq!(state.city.mac_city_progression(), 6);
+        assert_eq!(state.active_reward_mask(), 1 << 4);
+    }
+}
+
+#[test]
 fn simulation_day22_grants_llama_dome_at_fifth_progression() {
     let mut state = test_state(City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank"));
     state.no_disasters_enabled = true;
@@ -1776,9 +2301,8 @@ fn simulation_day22_grants_llama_dome_at_fifth_progression() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
 
-    let day22 = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let day22 = state.sim_calendar_day22_scenario(population);
 
     assert!(day22.status_announced);
     assert_eq!(
@@ -1825,31 +2349,36 @@ fn simulation_month_runs_day23_and_day24_ui_passes() {
         .set_misc_u32_at(NEIGHBOR_CONNECTION_MISC_OFFSET, 99);
     state
         .city
-        .set_misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET, 1);
+        .set_misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET, 1);
     state.city.set_rewards_available_mask(0);
 
     state.handle_simulation_month_advanced();
 
-    assert_eq!(state.city.rewards_available_mask() & 0b0_1111, 0b0_1111);
+    assert_eq!(
+        state.city.rewards_available_mask() & 0b0_1111,
+        0,
+        "monthly presentation does not synthesize milestone rewards"
+    );
     assert_eq!(
         state.city.misc_u32_at(NEIGHBOR_CONNECTION_MISC_OFFSET),
         Some(1)
     );
-    assert_ne!(
-        state.city.misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET),
+    assert_eq!(
+        state.city.misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET),
         Some(1),
-        "month helper should run day-23 census refresh"
+        "view refresh leaves the saved growth block alone"
     );
 }
 
 #[test]
-fn simulation_day24_alone_writes_neighbor_connections() {
+fn simulation_day24_updates_neighbor_summary_without_synthesizing_links() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(
         0,
         10,
         network_building_for_mask(NetworkKind::Road, NETWORK_LEFT | NETWORK_RIGHT),
     );
+    city.set_text_overlay(0, 11, 0xfa);
     let mut state = test_state(city);
     state.refresh_live_misc_current_values();
     state
@@ -1866,10 +2395,8 @@ fn simulation_day24_alone_writes_neighbor_connections() {
         state.city.misc_u32_at(NEIGHBOR_CONNECTION_MISC_OFFSET),
         Some(1)
     );
-    assert_eq!(
-        state.city.text_overlay_at(0, 10),
-        Some(crate::trip_generator::TRIP_NEIGHBOR_CONNECTION_OVERLAY)
-    );
+    assert_eq!(state.city.text_overlay_at(0, 10), Some(0));
+    assert_eq!(state.city.text_overlay_at(0, 11), Some(0xfa));
     assert!(state.city.has_dirty_tiles());
 }
 

@@ -68,19 +68,39 @@ impl ViewerState {
 
     pub(super) fn zone_drag_cost(&self) -> Option<u32> {
         let drag = self.zone_drag?;
-        if self.engine_fidelity == EngineFidelity::Mac68k
-            && self
-                .city
-                .tile_bits_at(drag.start.0, drag.start.1)
-                .is_some_and(TileBits::water_tile)
-        {
-            // Mac CODE 13 FUN_00022438 refuses a drag whose initial XBIT has
-            // water bit 0x04, before it starts the preview interaction.
+        if self.mac_zone_start_rejected(drag.start) {
             return None;
         }
         let billable_tiles =
             self.zone_drag_billable_tile_count(drag.start, drag.current, drag.zone_id);
-        Some(zone_build_cost(drag.zone_id).saturating_mul(billable_tiles as u32))
+        Some(
+            self.zone_unit_cost(drag.zone_id)
+                .saturating_mul(billable_tiles as u32),
+        )
+    }
+
+    pub(super) fn zone_unit_cost(&self, zone_id: u8) -> u32 {
+        if self.engine_fidelity == EngineFidelity::Mac68k && zone_id == 0 {
+            // CODE 13 selects the original tool-0/state-4 price WORD.
+            1
+        } else {
+            zone_build_cost(zone_id)
+        }
+    }
+
+    fn mac_zone_start_rejected(&self, (x, y): (usize, usize)) -> bool {
+        // CODE 13 checks water before entering the drag and rejects
+        // radioactivity or a military zone in its initial-cell helper.
+        self.engine_fidelity == EngineFidelity::Mac68k
+            && (self
+                .city
+                .tile_bits_at(x, y)
+                .is_some_and(TileBits::water_tile)
+                || self.city.building_at(x, y) == 5
+                || self
+                    .city
+                    .zone_at(x, y)
+                    .is_some_and(|zone| zone.zone_id() == ZONE_MILITARY))
     }
 
     pub(super) fn sign_placement_at(&self, x: usize, y: usize) -> ToolPlacement {
@@ -171,19 +191,13 @@ impl ViewerState {
         end: (usize, usize),
         zone_id: u8,
     ) -> usize {
-        if self.engine_fidelity == EngineFidelity::Mac68k
-            && self
-                .city
-                .tile_bits_at(start.0, start.1)
-                .is_some_and(TileBits::water_tile)
-        {
-            // The Mac interaction worker rejects this before a zone preview or
-            // commit begins; a dry endpoint elsewhere in the drag does not
-            // make a water-origin drag valid.
+        let mac = self.engine_fidelity == EngineFidelity::Mac68k;
+        if self.mac_zone_start_rejected(start) {
             return 0;
         }
 
-        let total_cost = zone_build_cost(zone_id)
+        let total_cost = self
+            .zone_unit_cost(zone_id)
             .saturating_mul(self.zone_drag_billable_tile_count(start, end, zone_id) as u32);
         if total_cost == 0 || !self.can_afford_build_cost(total_cost) {
             // PE FUN_004495F0 and Mac CODE 13 export 181 both refuse a zero
@@ -201,27 +215,29 @@ impl ViewerState {
         for (x, y) in tile_rectangle(start, end) {
             if self.can_zone_tile(x, y) {
                 let building = self.city.building_at(x, y);
-                // PE @ `0x4499fb`–`0x449a1a`: PlaceTile(0) for XBLD `1..=4` only when
-                // zone-type word `[0x4c7d5c]==0` (dezone). Paint (`!=0`) skips.
                 if zone_id == 0 && (1..=4).contains(&building) {
-                    pe_place_tile_441f00(&mut self.city, x, y, 0);
+                    if mac {
+                        self.city.set_building(x, y, 0);
+                    } else {
+                        pe_place_tile_441f00(&mut self.city, x, y, 0);
+                    }
                 }
-                // PE @ `0x449a26`: `mov al,[0x4c7d5c]` / `jle` skips XZON nibble replace
-                // when type ≤0 (dezone). Paint keeps corner bits (`0x449a3c`–`0x449a4e`).
-                if zone_id != 0 {
+                // Mac replaces the low nibble for paint and De-Zone.
+                // Win95's De-Zone skips the nibble write.
+                if mac || zone_id != 0 {
                     let corners = self
                         .city
                         .zone_at(x, y)
                         .map(|zone| zone.raw_bits() & 0xf0)
                         .unwrap_or(0);
-                    let zone_bits = if corners == 0 {
+                    // Mac export 181 preserves the upper nibble verbatim.
+                    let zone_bits = if !mac && corners == 0 {
                         zone_id | ZONE_CORNER_ALL
                     } else {
                         zone_id | corners
                     };
                     self.city.set_zone(x, y, zone_bits);
                 }
-                // PE zone tool: XZON write only on paint — leave watered/piped/XTRF alone.
                 placed_tiles.push((x, y));
                 placed += 1;
             }
@@ -232,10 +248,11 @@ impl ViewerState {
             } else {
                 self.clear_zone_growth_for_player_tiles(&placed_tiles);
             }
-            // PE zone/dezone path: no invent citywide water-network refresh.
-            self.refresh_live_misc_current_values();
-            self.refresh_budget_service_rows_from_live_counts();
-            self.refresh_reward_availability();
+            if !mac {
+                self.refresh_live_misc_current_values();
+                self.refresh_budget_service_rows_from_live_counts();
+                self.refresh_reward_availability();
+            }
             self.query_is_inspect = false;
             self.refresh_status_line();
         }

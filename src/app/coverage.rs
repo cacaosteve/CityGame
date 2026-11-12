@@ -287,49 +287,15 @@ pub(super) fn population_stats_for_city_with_mode(
         arcology_population_for_city(city)
     };
 
-    let (
-        normal_population,
-        arcology_population,
-        populated_tiles,
-        residential_tiles,
-        commercial_tiles,
-        industrial_tiles,
-    ) = match mode {
-        PopulationStatsMode::SavedFloor if city.kind == CityFileKind::MacCity => (
-            census.population,
-            live_arcology_population,
-            live_populated_tiles,
-            census.residential_tiles,
-            census.commercial_tiles,
-            census.industrial_tiles,
-        ),
-        PopulationStatsMode::SavedFloor => (
+    let (normal_population, arcology_population) = match mode {
+        PopulationStatsMode::SavedFloor if city.kind != CityFileKind::MacCity => (
             city.misc_u32_at(MISC_NORMAL_POPULATION_OFFSET)
                 .unwrap_or(0)
                 .max(census.population),
             city.pe_dw_arcology_population()
                 .max(live_arcology_population),
-            city.misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET)
-                .unwrap_or(0)
-                .max(live_populated_tiles),
-            city.misc_u32_at(MISC_RESIDENTIAL_TILE_COUNT_OFFSET)
-                .unwrap_or(0)
-                .max(census.residential_tiles),
-            city.misc_u32_at(MISC_COMMERCIAL_TILE_COUNT_OFFSET)
-                .unwrap_or(0)
-                .max(census.commercial_tiles),
-            city.misc_u32_at(MISC_INDUSTRIAL_TILE_COUNT_OFFSET)
-                .unwrap_or(0)
-                .max(census.industrial_tiles),
         ),
-        PopulationStatsMode::LiveCensus => (
-            census.population,
-            live_arcology_population,
-            live_populated_tiles,
-            census.residential_tiles,
-            census.commercial_tiles,
-            census.industrial_tiles,
-        ),
+        _ => (census.population, live_arcology_population),
     };
     let work_force = match mode {
         PopulationStatsMode::SavedFloor => {
@@ -351,10 +317,10 @@ pub(super) fn population_stats_for_city_with_mode(
         residential_population: census.population,
         commercial_population: census.commercial_population,
         industrial_population: census.industrial_population,
-        populated_tiles,
-        residential_tiles,
-        commercial_tiles,
-        industrial_tiles,
+        populated_tiles: live_populated_tiles,
+        residential_tiles: census.residential_tiles,
+        commercial_tiles: census.commercial_tiles,
+        industrial_tiles: census.industrial_tiles,
         work_force,
     }
 }

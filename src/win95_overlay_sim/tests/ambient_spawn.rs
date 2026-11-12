@@ -66,6 +66,9 @@ fn ambient_port_spawn_uses_pe_kind_height_table() {
             .expect("seed for each PE edge-table arm");
         let mut city = City::new_blank(std::path::Path::new("/tmp/plane-edge.sc2"), "PlaneEdge")
             .expect("city");
+        let mut slots = empty_overlay_table();
+        slots[1].saved_b = 0x17;
+        city.set_traffic_overlays_for_test(slots);
         let mut crt = Win95CrtRand::new(edge_seed);
         let mut expect = crt;
         assert!(expect.random_u16() % 10 < 5);
@@ -88,6 +91,7 @@ fn ambient_port_spawn_uses_pe_kind_height_table() {
         assert_eq!(plane.height, crate::win95_overlay::XTHG_AIRCRASH_HEIGHT);
         assert_eq!((plane.tile_x, plane.tile_y), (tile_x, tile_y));
         assert_eq!(plane.lane, lane);
+        assert_eq!(plane.saved_b, 0x17);
         assert_eq!(plane.state, 2u8.wrapping_shl(4).wrapping_add(3));
         assert_eq!(crt.seed(), expect.seed());
     }
@@ -105,6 +109,9 @@ fn ambient_port_spawn_uses_pe_kind_height_table() {
         "PlaneAirport",
     )
     .expect("city");
+    let mut slots = empty_overlay_table();
+    slots[1].saved_b = 0x17;
+    airport.set_traffic_overlays_for_test(slots);
     let mut crt = Win95CrtRand::new(airport_seed);
     let mut expect = crt;
     assert!(expect.random_u16() % 10 >= 5);
@@ -118,6 +125,7 @@ fn ambient_port_spawn_uses_pe_kind_height_table() {
         .expect("airport plane");
     assert_eq!((plane.tile_x, plane.tile_y), (40, 40));
     assert_eq!(plane.height, 0);
+    assert_eq!(plane.saved_b, 0x17);
     assert_eq!(plane.state, 0);
     assert_eq!((plane.target_x, plane.target_y), (0x14, 0x14));
     assert_eq!(crt.seed(), expect.seed());

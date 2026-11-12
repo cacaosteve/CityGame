@@ -14,23 +14,98 @@ pub(super) fn generate_mac68k_height_plane(
     rng: &mut MacToolboxRng,
     game_rng: &mut MacGameLcgRng,
 ) -> (Vec<u16>, Vec<u8>) {
+    let mut heights = build_mac68k_height_lattice(hills, coast_enabled, rng);
+    let mut coast_water = vec![0u8; CITY_TILES];
+    let sea_level =
+        ((u16::from(water) + 4) >> 3).max(u16::from(coast_enabled || river_enabled) * 4);
+    if coast_enabled {
+        // FUN_00014134 uses the app-owned game LCG, not QuickDraw `_Random`.
+        // It starts with LCG(10)+10 and walks one step per row toward an
+        // LCG(30) target. Water lies east of the boundary.
+        let mut inset = 10 + usize::from(game_rng.bounded(10));
+        for y in 0..CITY_HEIGHT {
+            let boundary_x = CITY_WIDTH - inset;
+            for x in boundary_x..CITY_WIDTH {
+                let index = city_index(x, y);
+                let band = if x == boundary_x {
+                    0xfeu16 + sea_level
+                } else {
+                    0xfdu16 + sea_level
+                };
+                heights[index] = (heights[index] & !0x1f) | (band & 0x1f);
+                coast_water[index] = u8::from(x > boundary_x);
+            }
+            let destination = usize::from(game_rng.bounded(30));
+            inset = match destination.cmp(&inset) {
+                std::cmp::Ordering::Greater => inset + 1,
+                std::cmp::Ordering::Less => inset - 1,
+                std::cmp::Ordering::Equal => inset,
+            };
+        }
+    }
+    if river_enabled {
+        // FUN_00014206 lays seven river cells with two one-cell shoulders,
+        // then advances the center from the east edge toward the west.
+        let mut center = 64i16;
+        let mut retained_delta = game_rng.bounded(3) as i16 - 1;
+        for x in (0..CITY_WIDTH).rev() {
+            for y in center - 3..=center + 3 {
+                let index = city_index(x, y as usize);
+                heights[index] = (heights[index] & !0x1f) | ((0xfdu16 + sea_level) & 0x1f);
+            }
+            for y in [center - 4, center + 4] {
+                let index = city_index(x, y as usize);
+                heights[index] = (heights[index] & !0x1f) | ((0xfeu16 + sea_level) & 0x1f);
+            }
+            if game_rng.bounded(8) == 0 {
+                retained_delta = game_rng.bounded(3) as i16 - 1;
+            }
+            center += game_rng.bounded(3) as i16 + retained_delta - 1;
+            center = center.clamp(5, 122);
+        }
+    }
+
+    // FUN_00014034 copies the plane to scratch before each pass, but combines
+    // each scratch neighbor average with the scratch center. Missing neighbors
+    // duplicate the center. The routine runs twice before normalization.
+    smooth_mac68k_height_plane(&mut heights);
+    smooth_mac68k_height_plane(&mut heights);
+    for height in &mut heights {
+        *height = normalize_mac68k_height(*height);
+    }
+    smooth_mac68k_height_plane(&mut heights);
+
+    // Keep the Mac recursion's scan-order semantics separate from the PE
+    // implementation. The rooted worker recursively relaxes cardinal slopes.
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            relax_mac68k_slope(&mut heights, x, y);
+        }
+    }
+    (heights, coast_water)
+}
+
+pub(super) fn build_mac68k_height_lattice(
+    hills: u8,
+    coast_enabled: bool,
+    rng: &mut MacToolboxRng,
+) -> Vec<u16> {
     let hills = u16::from(hills);
     let modulus = hills + 11;
     let outside_height = hills + 10;
     let mut heights = vec![0u16; CITY_TILES];
-    let mut coast_water = vec![0u8; CITY_TILES];
 
-    // FUN_00013dda visits y first, then x, in 16-tile intervals. `_Random`
+    // FUN_00013dda visits the native ALTM X-major rows. `_Random`
     // returns a signed low word, but this worker divides the word unsigned.
-    for y in (0..CITY_HEIGHT).step_by(16) {
-        for x in (0..CITY_WIDTH).step_by(16) {
+    for x in (0..CITY_WIDTH).step_by(16) {
+        for y in (0..CITY_HEIGHT).step_by(16) {
             heights[city_index(x, y)] = rng.random_u16() % modulus + 1;
         }
     }
 
     for (step, alignment_mask) in [(8usize, 15usize), (4, 7), (2, 3), (1, 1)] {
-        for y in (0..CITY_HEIGHT).step_by(step) {
-            for x in (0..CITY_WIDTH).step_by(step) {
+        for x in (0..CITY_WIDTH).step_by(step) {
+            for y in (0..CITY_HEIGHT).step_by(step) {
                 if x & alignment_mask == 0 && y & alignment_mask == 0 {
                     continue;
                 }
@@ -95,86 +170,14 @@ pub(super) fn generate_mac68k_height_plane(
         }
     }
 
-    let sea_level =
-        ((u16::from(water) + 4) >> 3).max(u16::from(coast_enabled || river_enabled) * 4);
-    if coast_enabled {
-        // FUN_00014134 uses the app-owned game LCG, not QuickDraw `_Random`.
-        // It starts with LCG(10)+10 and walks one step per row toward an
-        // LCG(30) target. Water lies east of the boundary.
-        let mut inset = 10 + usize::from(game_rng.bounded(10));
-        for y in 0..CITY_HEIGHT {
-            let boundary_x = CITY_WIDTH - inset;
-            for x in boundary_x..CITY_WIDTH {
-                let index = city_index(x, y);
-                let band = if x == boundary_x {
-                    0xfeu16 + sea_level
-                } else {
-                    0xfdu16 + sea_level
-                };
-                heights[index] = (heights[index] & !0x1f) | (band & 0x1f);
-                coast_water[index] = u8::from(x > boundary_x);
-            }
-            let destination = usize::from(game_rng.bounded(30));
-            inset = match destination.cmp(&inset) {
-                std::cmp::Ordering::Greater => inset + 1,
-                std::cmp::Ordering::Less => inset - 1,
-                std::cmp::Ordering::Equal => inset,
-            };
-        }
-    }
-    if river_enabled {
-        // FUN_00014206 lays seven river cells with two one-cell shoulders,
-        // then advances the center from the south edge toward the north.
-        let mut center = 64i16;
-        let mut retained_delta = game_rng.bounded(3) as i16 - 1;
-        for y in (0..CITY_HEIGHT).rev() {
-            for x in center - 3..=center + 3 {
-                let index = city_index(x as usize, y);
-                heights[index] = (heights[index] & !0x1f) | ((0xfdu16 + sea_level) & 0x1f);
-            }
-            for x in [center - 4, center + 4] {
-                let index = city_index(x as usize, y);
-                heights[index] = (heights[index] & !0x1f) | ((0xfeu16 + sea_level) & 0x1f);
-            }
-            if game_rng.bounded(8) == 0 {
-                retained_delta = game_rng.bounded(3) as i16 - 1;
-            }
-            center += game_rng.bounded(3) as i16 + retained_delta - 1;
-            center = center.clamp(5, 122);
-        }
-    }
-
-    // FUN_00014034 copies the plane to scratch before each pass, but combines
-    // each scratch neighbor average with the scratch center. Missing neighbors
-    // duplicate the center. The routine runs twice before normalization.
-    smooth_mac68k_height_plane(&mut heights);
-    smooth_mac68k_height_plane(&mut heights);
-    for height in &mut heights {
-        *height = normalize_mac68k_height(*height);
-    }
-    smooth_mac68k_height_plane(&mut heights);
-
-    // Keep the Mac recursion's scan-order semantics separate from the PE
-    // implementation. The rooted worker recursively relaxes cardinal slopes.
-    for y in 0..CITY_HEIGHT {
-        for x in 0..CITY_WIDTH {
-            relax_mac68k_slope(&mut heights, x, y);
-        }
-    }
-    (heights, coast_water)
+    heights
 }
 
 pub(super) fn normalize_mac68k_height(height: u16) -> u16 {
     // export_132's 0x12ec8..0x12ef0 pass stores the transformed word directly
     // into ALTM; it does not repack it into either of the five-bit fields.
-    let mut value = (i32::from(height) + 3) >> 1;
-    value -= 4;
-    if value < 0 {
-        value += 4;
-    }
-    if value < 4 {
-        value = 4;
-    }
+    let value = ((height as i16).wrapping_add(3) >> 1) - 4;
+    let value = if value < 0 { value + 4 } else { value.max(4) };
     value as u16
 }
 
@@ -185,11 +188,15 @@ fn mac_height_sample(
     outside_height: u16,
     coast_enabled: bool,
 ) -> u16 {
-    if x < 0 || y < 0 || y >= CITY_HEIGHT as isize {
+    // CODE 3 checks X before Y, so the east coast also wins at the corners.
+    if x < 0 {
         return outside_height;
     }
     if x >= CITY_WIDTH as isize {
         return if coast_enabled { 0 } else { outside_height };
+    }
+    if y < 0 || y >= CITY_HEIGHT as isize {
+        return outside_height;
     }
     heights[city_index(x as usize, y as usize)]
 }
@@ -237,7 +244,7 @@ fn relax_mac68k_slope(heights: &mut [u16], x: usize, y: usize) {
     }
 
     // FUN_00013862 lowers its own low-five-bit height by exactly one, then
-    // recursively visits cardinal neighbors that are now lower than it.
+    // recursively visits cardinal neighbors that are now higher than it.
     level -= 1;
     heights[index] = (heights[index] & !0x1f) | level;
     for (nx, ny) in neighbors {
@@ -245,7 +252,7 @@ fn relax_mac68k_slope(heights: &mut [u16], x: usize, y: usize) {
             continue;
         }
         let neighbor_index = city_index(nx as usize, ny as usize);
-        if heights[neighbor_index] & 0x1f < level {
+        if heights[neighbor_index] & 0x1f > level {
             relax_mac68k_slope(heights, nx as usize, ny as usize);
         }
     }
@@ -747,7 +754,7 @@ fn repair_mac68k_water_component_on(map: &mut impl MacWaterMap, x: usize, y: usi
 }
 
 pub(super) fn classify_mac68k_terrain(
-    heights: Vec<u16>,
+    mut heights: Vec<u16>,
     sea_level: u8,
 ) -> (Vec<u8>, Vec<AltmSample>, Vec<bool>) {
     // A5 data at ffffab34/ffffab46 and ffffacc8/ffffacd0. Neighbor order is
@@ -763,8 +770,8 @@ pub(super) fn classify_mac68k_terrain(
     let mut terrain = vec![0u8; CITY_TILES];
     let mut altm = vec![AltmSample::default(); CITY_TILES];
     let mut water_bits = vec![false; CITY_TILES];
-    for y in 0..CITY_HEIGHT {
-        for x in 0..CITY_WIDTH {
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
             let index = city_index(x, y);
             let packed_altm = heights[index];
             let height = packed_altm & 0x1f;
@@ -787,11 +794,14 @@ pub(super) fn classify_mac68k_terrain(
             // This is a terrain write even when the tile stays dry.
             let land_word = if class == 0x32 { height + 1 } else { height };
             let land = (land_word & 0x1f) as u8;
-            let wet = u16::from(land) < u16::from(sea_level);
+            let wet = land_word < u16::from(sea_level);
             // The original helper preserves the existing upper ALTM fields
             // on its dry arm. The 0x32 increment can carry into water height;
             // its wet arm then replaces that field with the selected level.
             let incremented_altm = (packed_altm & !0x1f) | land_word;
+            // Later cells read the incremented land height in the original
+            // X-major classification loop.
+            heights[index] = incremented_altm;
             let water = if wet {
                 sea_level
             } else {

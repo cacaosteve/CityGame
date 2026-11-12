@@ -17,6 +17,9 @@ use crate::city::{CITY_HEIGHT, CITY_WIDTH, City, ZONE_CORNER_ALL};
 use crate::win95_random::Win95GameRand;
 use std::collections::HashSet;
 
+mod mac68k;
+pub(super) use mac68k::place_mac_military_base;
+
 pub(super) const MILITARY_BASE_PLOT_SIZE: usize = 8;
 
 pub(super) const MILITARY_BASE_MIN_VALID_TILES: usize = 40;

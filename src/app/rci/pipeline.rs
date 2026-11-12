@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::building_placement::clipped_building_footprint_from_origin;
 
 mod construction;
 mod publication;
@@ -390,16 +391,93 @@ impl ViewerState {
         mut process_crt: Option<&mut Win95CrtRand>,
     ) -> Option<RciDevelopmentCandidate> {
         let zone_id = self.city.zone_at(x, y)?.zone_id();
-        if !rci_zone_id(zone_id)
-            || !rci_zone_has_saved_demand(&self.city, zone_id)
-            || !self.can_develop_zone_tile(x, y)
-            || !self.tile_has_growth_trip_access(x, y)
-        {
+        if !rci_zone_id(zone_id) {
+            return None;
+        }
+        let origin_building = self.city.building_at(x, y);
+        let trip_succeeded = self.tile_has_growth_trip_access(x, y);
+        if self.engine_fidelity.uses_win95() && is_abandoned_building(origin_building) {
+            // BUILD_ABANDON goes straight from the threshold comparison to
+            // ChooseAndPlace, passing the raw scanned corner at 0x43620f.
+            let pop = rci_building_pop_level(origin_building)?;
+            if !xzon_corner_check(&self.city, x, y) || reserved[y * CITY_WIDTH + x] {
+                return None;
+            }
+            let threshold = if trip_succeeded
+                && rci_zone_has_saved_demand(&self.city, zone_id)
+                && power_water::growth_powered_cross_for_engine(power_maps, x, y)
+            {
+                let demand = rci_demand_for_kind(&self.city, rci_kind_for_zone(zone_id)?);
+                rci_abandoned_redevelop_threshold(demand, pop)
+            } else {
+                0
+            };
+            if !pe_rci_abandoned_redevelop_roll_succeeds_optional(
+                threshold,
+                x,
+                y,
+                GROWTH_ROLL_ABANDON_REDEVELOP_KEY,
+                process_crt.as_deref_mut(),
+            ) {
+                return None;
+            }
+            let origin = (x, y.saturating_sub(choose_and_place_half_pop(pop)));
+            let size = pop_level_footprint_size(pop);
+            let footprint = clipped_building_footprint_from_origin(origin.0, origin.1, size);
+            let quality_score = rci_development_quality_score_for_footprint(
+                &self.city,
+                zone_id,
+                &footprint,
+                city_outcomes,
+                development_services,
+            );
+            let quality_band = rci_development_quality_band_for_score(quality_score);
+            let building = rci_choose_and_place_for_city_optional(
+                &self.city,
+                zone_id,
+                pop,
+                x,
+                y,
+                quality_band,
+                process_crt,
+            )?;
+            // The picker runs even when the raw call will fail the bounds check.
+            if !choose_and_place_multitile_call_in_bounds(x, y, pop) {
+                return None;
+            }
+            return Some(RciDevelopmentCandidate {
+                plan: ZoneDevelopmentPlan {
+                    origin,
+                    zone_id,
+                    building,
+                    footprint,
+                    place_as_construction: false,
+                },
+            });
+        }
+        if !trip_succeeded {
+            if self.engine_fidelity.uses_win95() {
+                if rci_tile_is_vacant_growth_surface(origin_building)
+                    && game_is_valid_transit_items(&self.city, x, y)
+                {
+                    // 0x43603e admits this vacancy before the power/route check.
+                    // StartBuilding at 0x4362b2 draws even with current demand zero.
+                    pe_rci_startbuilding_growth_roll_succeeds_optional(
+                        0,
+                        x,
+                        y,
+                        GROWTH_ROLL_START_VACANT_KEY,
+                        process_crt,
+                    );
+                }
+            }
+            return None;
+        }
+        if !rci_zone_has_saved_demand(&self.city, zone_id) || !self.can_develop_zone_tile(x, y) {
             return None;
         }
 
         // BUILD_ABANDON → ChooseAndPlace at the abandoned pop level (no construction).
-        let origin_building = self.city.building_at(x, y);
         if is_abandoned_building(origin_building) {
             let pop = rci_building_pop_level(origin_building)?;
             let demand = rci_demand_for_kind(&self.city, rci_kind_for_zone(zone_id)?);
@@ -571,10 +649,11 @@ impl ViewerState {
         let zone_id = self.city.zone_at(x, y)?.zone_id();
         let kind = rci_kind_for_zone(zone_id)?;
         // Light zones only StartBuilding from empty (pop NONE); dense can size-up.
+        let trip_succeeded = self.tile_has_growth_trip_access(x, y);
         if !zone_is_dense_rci(zone_id)
-            || !rci_zone_has_saved_demand(&self.city, zone_id)
+            || (trip_succeeded && !rci_zone_has_saved_demand(&self.city, zone_id))
+            || (!trip_succeeded && !self.engine_fidelity.uses_win95())
             || !rci_redevelopment_origin_can_start_at(&self.city, x, y, zone_id, kind)
-            || !self.tile_has_growth_trip_access(x, y)
         {
             return None;
         }
@@ -585,8 +664,16 @@ impl ViewerState {
         // before `rand()` at `0x004362B2`.
         let next_pop =
             pe_startbuilding_pre_roll_target_pop(&self.city, x, y, zone_id, current_pop)?;
+        if !trip_succeeded && !xzon_corner_check(&self.city, x, y) {
+            return None;
+        }
+        let threshold = if trip_succeeded {
+            rci_growth_start_threshold(demand, current_pop)
+        } else {
+            0
+        };
         if !pe_rci_startbuilding_growth_roll_succeeds_optional(
-            rci_growth_start_threshold(demand, current_pop),
+            threshold,
             x,
             y,
             GROWTH_ROLL_START_EXISTING_KEY,

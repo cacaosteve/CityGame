@@ -101,6 +101,7 @@ pub struct ScenarioEntry {
     pub path: PathBuf,
     pub title: String,
     pub brief: String,
+    pub mac_action: Option<u16>,
     preview: Vec<[f32; 4]>,
 }
 
@@ -128,6 +129,12 @@ pub const DIFFICULTIES: [(&str, u16, i32); 3] = [
 pub const YEARS: [u16; 4] = [1900, 1950, 2000, 2050];
 
 impl TitleScreen {
+    pub(super) fn refresh_scenarios(&mut self, profile: &AssetProfile) {
+        self.scenarios = discover_scenarios(profile);
+        self.scenario_index = 0;
+        self.scenario_offset = 0;
+    }
+
     pub fn new(profile: &AssetProfile) -> Self {
         let generation_seed = random_generation_seed();
         Self {
@@ -821,6 +828,7 @@ impl TitleScreen {
 
 fn scenario_paths(roots: impl IntoIterator<Item = PathBuf>) -> BTreeSet<PathBuf> {
     let mut paths = BTreeSet::new();
+    let include_mac = !crate::engine_fidelity::EngineFidelity::from_env().uses_win95();
     for root in roots {
         for directory in [
             root.join("catalog/scenarios"),
@@ -834,6 +842,7 @@ fn scenario_paths(roots: impl IntoIterator<Item = PathBuf>) -> BTreeSet<PathBuf>
                     if path
                         .extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("scn"))
+                        || (include_mac && crate::mac_scenario::MacScenario::read(&path).is_some())
                     {
                         paths.insert(path);
                     }
@@ -1009,15 +1018,20 @@ fn discover_scenarios(profile: &AssetProfile) -> Vec<ScenarioEntry> {
         .into_iter()
         .filter_map(|path| {
             let city = City::load(&path).ok()?;
+            let mac = (city.kind == crate::city::CityFileKind::MacCity)
+                .then(|| crate::mac_scenario::MacScenario::read(&path))
+                .flatten();
             let title = city.name.trim().to_string();
             let title = if title.is_empty() {
                 path.file_stem()?.to_string_lossy().into_owned()
             } else {
                 title
             };
-            let brief = scenario_text_for_city(&city).selection.unwrap_or_else(|| {
-                "Open this scenario to read its goals and briefing.".to_string()
-            });
+            let brief = mac
+                .as_ref()
+                .and_then(|scenario| scenario.text.clone())
+                .or_else(|| scenario_text_for_city(&city).selection)
+                .unwrap_or_else(|| "Open this scenario to read its goals and briefing.".into());
             let palette = palettes
                 .iter()
                 .find(|(root, _)| path.starts_with(root))
@@ -1025,14 +1039,13 @@ fn discover_scenarios(profile: &AssetProfile) -> Vec<ScenarioEntry> {
                 .map(|(_, palette)| palette);
             let preview = std::fs::read(&path)
                 .ok()
-                .and_then(|data| {
-                    palette.and_then(|palette| scenario_picture_preview(&data, palette))
-                })
+                .and_then(|data| scenario_picture_preview(&data, palette?))
                 .unwrap_or_else(|| city_map_preview(&city));
             Some(ScenarioEntry {
                 path,
                 title,
                 brief,
+                mac_action: mac.map(|scenario| scenario.start.action),
                 preview,
             })
         })
@@ -1321,6 +1334,125 @@ fn preview(out: &mut Vec<UiSolid>, rect: Rect, colors: &[[f32; 4]], depth: f32) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires locally extracted Macintosh Scenario Disk data and forks"]
+    fn mac_scenario_retail_catalog_and_fresh_start() {
+        use super::*;
+        use crate::app::tests::test_state;
+        use crate::engine_fidelity::EngineFidelity;
+        use crate::mac_scenario::MacScenario;
+        let root = PathBuf::from(std::env::var_os("CITYGAME_MAC_SCENARIO_FIXTURES").unwrap());
+        let paths = scenario_paths([root.clone()]);
+        assert_eq!(paths.len(), 5);
+        for (name, action, point, months, population) in [
+            ("Charleston", 16, (68, 99), 60, 45_000),
+            ("Dullsville", 0, (0, 0), 121, 20_000),
+            ("Flint", 0, (0, 0), 60, 0),
+            ("Hollywood", 8, (80, 52), 60, 100_000),
+            ("Oakland", 12, (36, 48), 60, 50_000),
+        ] {
+            let path = root.join(name);
+            assert!(paths.contains(&path));
+            let scenario = MacScenario::read(&path).unwrap();
+            assert_eq!(scenario.start.action, action);
+            assert_eq!(scenario.start.point, point);
+            assert_eq!(&scenario.start.goals[..2], &[months, population]);
+            assert!(scenario.text.unwrap().contains(name));
+
+            let saved_city = City::load(&path).unwrap();
+            let mut state = test_state(saved_city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            if crate::app::mac_loop_scheduler::scenario_action::mac_scenario_action_supported(
+                action,
+            ) {
+                state.load_mac_scenario(&path, (1280, 800), 1.0).unwrap();
+                assert_eq!(state.city.misc_u32_at(0x106c), Some(months));
+                assert_eq!(state.city.misc_u32_at(0x1068).unwrap() as u8, 0xff);
+                assert_ne!(state.city.path, path);
+                assert_eq!(state.city.mac_pending_action(), u32::from(action));
+                if action != 0 {
+                    state.traffic.set_speed(crate::traffic::GameSpeed::Paused);
+                    state.mac_process_rng = crate::mac_random::MacToolboxRng::new(1);
+                    assert_eq!(
+                        state
+                            .advance_mac_frame_simulation(std::time::Duration::ZERO)
+                            .days,
+                        0
+                    );
+                    assert!(
+                        crate::app::mac_loop_scheduler::scenario_action::mac_scenario_action_active(
+                            &state.city
+                        )
+                    );
+                }
+                let save_path = state.city.path.clone();
+                state.save_city(&save_path, (1280, 800), 1.0).unwrap();
+                let reloaded = City::load(&save_path).unwrap();
+                if action == crate::app::mac_loop_scheduler::scenario_action::HOLLYWOOD_ACTION {
+                    let opening = [5, 2, 0, 80, 52, 15, 8, 8, 0x27, 0x71, 0, 0];
+                    assert_eq!(reloaded.traffic_overlays().unwrap()[1].to_bytes(), opening);
+                    assert_eq!(reloaded.text_overlay_at(80, 52), Some(0xca));
+                    assert_eq!(state.mac_process_rng.seed(), 282_475_249);
+                    state.load_city(&save_path, (1280, 800), 1.0).unwrap();
+                    assert_eq!(state.city.misc_u32_at(0x04), Some(2));
+                    let clock = state.game_clock;
+                    state.traffic.set_speed(crate::traffic::GameSpeed::Cheetah);
+                    let advance =
+                        state.advance_mac_frame_simulation(std::time::Duration::from_secs(1));
+                    assert_eq!(advance.days, 0);
+                    assert_eq!(state.game_clock, clock);
+                    assert_eq!(
+                        state.city.traffic_overlays().unwrap()[1].to_bytes(),
+                        [5, 7, 0, 80, 52, 14, 0, 0, 0, 0, 0, 0],
+                    );
+                    assert_eq!(state.mac_process_rng.seed(), 282_475_249);
+                    let mut monster = state.city.traffic_overlays().unwrap()[1];
+                    monster.state = 3;
+                    state.city.set_mac_object_slot_record(1, monster);
+                    let frame = std::time::Duration::from_secs(1);
+                    assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
+                    assert_eq!(state.city.traffic_overlays().unwrap()[1].kind, 0);
+                    assert_eq!(state.city.text_overlay_at(80, 52), Some(0));
+                    assert_eq!(state.city.misc_u32_at(0x04), Some(1));
+                    assert_eq!(state.advance_mac_frame_simulation(frame).days, 1);
+                } else if action
+                    == crate::app::mac_loop_scheduler::scenario_action::HURRICANE_ACTION
+                {
+                    assert_eq!(reloaded.misc_u32_at(0x10b0), Some(49));
+                    assert_eq!(reloaded.misc_u32_at(0x10b4), Some(59));
+                    assert_eq!(
+                        reloaded.traffic_density_slice(),
+                        state.city.traffic_density_slice()
+                    );
+                    state.load_city(&save_path, (1280, 800), 1.0).unwrap();
+                    assert_eq!(state.city.misc_u32_at(0x04), Some(2));
+                    let clock = state.game_clock;
+                    state.traffic.set_speed(crate::traffic::GameSpeed::Cheetah);
+                    let frame = std::time::Duration::from_secs(1);
+                    assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
+                    assert_eq!(state.game_clock, clock);
+                    assert_eq!(state.city.misc_u32_at(0x10b0), Some(48));
+                    assert_eq!(state.city.misc_u32_at(0x10b4), Some(58));
+                    for _ in 0..240 {
+                        if state.city.misc_u32_at(0x04) == Some(1) {
+                            break;
+                        }
+                        assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
+                    }
+                    assert_eq!(state.city.misc_u32_at(0x04), Some(1));
+                    assert_eq!(state.advance_mac_frame_simulation(frame).days, 1);
+                }
+                std::fs::remove_file(&save_path).unwrap();
+                assert_eq!(reloaded.misc_u32_at(0x106c), Some(months));
+                assert!(reloaded.mac_scenario_active());
+                assert_ne!(City::load(&path).unwrap().misc_u32_at(0x106c), Some(months));
+            } else {
+                assert!(state.load_mac_scenario(&path, (1280, 800), 1.0).is_err());
+                assert_eq!(state.city.path, path);
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1459,6 +1591,7 @@ mod tests {
                 path: PathBuf::from(format!("scenario-{number}.scn")),
                 title: format!("Scenario {number}"),
                 brief: "A city challenge".to_string(),
+                mac_action: None,
                 preview: vec![[0.2, 0.5, 0.3, 1.0]; 24 * 24],
             })
             .collect();

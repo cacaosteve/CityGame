@@ -59,7 +59,6 @@ pub(super) fn mac_sane_industry_scale(
 /// standard SANE environment. The returned total is accumulated during the
 /// loop and may differ from the final weights after later row transforms.
 /// Original SANE runtime and the whole-session random sequence remain unverified.
-#[allow(dead_code)]
 pub(super) fn mac_industry_modified_residuals(
     prior: [i16; PE_INDUSTRY_COUNT],
     taxes: [i16; PE_INDUSTRY_COUNT],
@@ -121,10 +120,7 @@ pub(super) fn mac_industry_neutral_residuals(
 }
 
 /// CODE 8 export 238's two industry-mix WORD outputs, after its population
-/// balancing. The live scheduler cannot call this yet: that earlier balancing
-/// and its QuickDraw chronology are not integrated. A zero denominator is an
-/// unsupported native divide exception, rather than a fabricated output.
-#[allow(dead_code)]
+/// balancing. The caller preserves the prior outputs for a zero divisor.
 pub(super) fn mac_industry_mix_bonuses(
     industrial_total: u32,
     populations: [u32; PE_INDUSTRY_COUNT],
@@ -158,10 +154,7 @@ pub(super) fn mac_industry_mix_bonuses(
 /// CODE 8 export 238's population balancing, given the already computed
 /// nonnegative residual weights, their separately accumulated total, and a
 /// stream of Toolbox random words. Later row transforms can change earlier
-/// weights after their contributions entered that total. The
-/// preceding demand/ordinance transforms and process-wide RNG chronology are
-/// still unported, so this bounded worker is not scheduled on its own.
-#[allow(dead_code)]
+/// weights after their contributions entered that total.
 pub(super) fn mac_industry_rebalance<F: FnMut() -> u16>(
     target: u32,
     mut populations: [u32; PE_INDUSTRY_COUNT],
@@ -208,7 +201,7 @@ pub(super) fn mac_industry_rebalance<F: FnMut() -> u16>(
     populations
 }
 
-/// Win95 Pollution Controls ordinance bit (`0x4caa40` bit `0x80000`).
+/// Shared Pollution Controls ordinance bit (PE `0x4caa40`, Mac `ffffeff2`).
 pub(super) const PE_INDUSTRY_POLLUTION_CONTROLS: u32 = 0x80000;
 
 pub(super) const PE_NATIONAL_POP_CAP: u32 = 5_000_000;
@@ -453,9 +446,33 @@ impl City {
         }
     }
 
-    /// Mac CODE 8 `export_238` phase-21 deterministic national-population and
-    /// value drift. The later QuickDraw-gated tax/trend event arm is separate.
-    pub(crate) fn advance_mac_national_metric_drift_month(&mut self) {
+    /// The national prelude of Mac CODE 8 `export_238` (0x39124..0x3944e).
+    pub(crate) fn advance_mac_national_economy_month(&mut self, rng: &mut MacToolboxRng) {
+        self.advance_mac_national_metric_drift_month();
+        let Some(event) = mac_national_event(
+            self.pe_dw_national_value,
+            self.pe_dw_national_population,
+            self.pe_w_national_tax,
+            self.pe_w_national_trend,
+            || rng.random_u16(),
+        ) else {
+            return;
+        };
+        if event.tax != self.pe_w_national_tax {
+            self.set_mac_state_misc_u32_at(
+                MISC_NATIONAL_TAX_OFFSET,
+                misc_word_to_saved_dword(event.tax, self.kind),
+            );
+        }
+        if event.trend != self.pe_w_national_trend {
+            self.set_mac_state_misc_u32_at(
+                MISC_NATIONAL_TREND_OFFSET,
+                misc_word_to_saved_dword(event.trend, self.kind),
+            );
+        }
+    }
+
+    pub(super) fn advance_mac_national_metric_drift_month(&mut self) {
         let trend = i32::from(self.pe_w_national_trend as i16);
         let population = self.pe_dw_national_population;
         let value = self.pe_dw_national_value;
@@ -479,6 +496,58 @@ impl City {
                 mac_sane_national_apply_drift(value, MAC_NATIONAL_VALUE_CAP, value_speed);
             self.set_mac_state_misc_u32_at(MISC_NATIONAL_VALUE_OFFSET, next_value);
             self.pe_dw_national_value = next_value;
+        }
+    }
+
+    /// Mac CODE 8 `export_238` neighbor pass (0x3944e..0x39770), using the
+    /// national tax and trend just updated on the same QuickDraw stream.
+    pub(crate) fn advance_mac_neighbor_economy_month(&mut self, rng: &mut MacToolboxRng) {
+        let trend = self.pe_w_national_trend;
+        let Some(&value_speed) = MAC_NATIONAL_VALUE_TREND_SPEED.get(usize::from(trend)) else {
+            // The native value-speed lookup escapes the table for this saved trend.
+            return;
+        };
+        let tax = i32::from(self.pe_w_national_tax as i16);
+        for index in 0..PE_NEIGHBOR_COUNT {
+            let pop_offset = pe_neighbor_field_offset(index, PE_NEIGHBOR_POP_FIELD);
+            let population = self.mac_state_misc_u32_at(pop_offset).unwrap_or(0);
+            if population == 0 {
+                continue;
+            }
+            let speed = u64::from(trend.wrapping_add(rng.random_u16() % 3));
+            // Population truncates the SANE delta before adjusting the DWORD.
+            let delta = (u64::from(population) * speed / 1200) as u32;
+            let next_population = if delta == 0 {
+                population.wrapping_add(u32::from(rng.random_u16() & 1))
+            } else if population > MAC_NATIONAL_POP_CAP {
+                population.wrapping_sub(delta)
+            } else {
+                population.wrapping_add(delta)
+            };
+            self.set_mac_state_misc_u32_at(pop_offset, next_population);
+
+            let value_offset = pe_neighbor_field_offset(index, PE_NEIGHBOR_VALUE_FIELD);
+            let value = self.mac_state_misc_u32_at(value_offset).unwrap_or(0);
+            let prosperity = mac_prosperity(value, next_population);
+            let residue = i32::from(rng.random_u16() % 5);
+            if let Some(prosperity) = prosperity {
+                let local_class = pe_national_trend_from_prosperity(prosperity);
+                let speed = value_speed + residue - tax - local_class;
+                // Value instead rounds the delta to single and truncates the sum.
+                let next_value =
+                    mac_sane_national_apply_drift(value, MAC_NATIONAL_VALUE_CAP, speed);
+                self.set_mac_state_misc_u32_at(value_offset, next_value);
+            }
+        }
+
+        if rng.random_u16() & 63 == 0 {
+            let index = usize::from(rng.random_u16() & 3);
+            let pop_offset = pe_neighbor_field_offset(index, PE_NEIGHBOR_POP_FIELD);
+            let value_offset = pe_neighbor_field_offset(index, PE_NEIGHBOR_VALUE_FIELD);
+            let population = self.mac_state_misc_u32_at(pop_offset).unwrap_or(0);
+            let value = self.mac_state_misc_u32_at(value_offset).unwrap_or(0);
+            self.set_mac_state_misc_u32_at(pop_offset, (u64::from(population) * 3 / 4) as u32);
+            self.set_mac_state_misc_u32_at(value_offset, value / 2);
         }
     }
 
@@ -544,40 +613,120 @@ impl City {
     /// the minimum of three `100 + rand()%7400` draws; value is population
     /// divided by `1 + rand()%3`, and the initial fame field is zero.
     pub fn pe_initialize_new_city_neighbors_40e250(&mut self, crt: &mut Win95CrtRand) {
+        for (index, [name, population, value]) in Self::pe_sample_city_reset_neighbors_40e250(crt)
+            .into_iter()
+            .enumerate()
+        {
+            let base = pe_neighbor_field_offset(index, PE_NEIGHBOR_NAME_FIELD);
+            self.set_misc_u32_at(base, name);
+            self.set_misc_u32_at(base + PE_NEIGHBOR_POP_FIELD, population);
+            self.set_misc_u32_at(base + PE_NEIGHBOR_VALUE_FIELD, value);
+            self.set_misc_u32_at(base + PE_NEIGHBOR_FAME_FIELD, 0);
+        }
+    }
+
+    /// The PE also samples these rows before opening a save, which replaces them.
+    pub(crate) fn pe_sample_city_reset_neighbors_40e250(
+        crt: &mut Win95CrtRand,
+    ) -> [[u32; 3]; PE_NEIGHBOR_COUNT] {
         let mut names = [0u16; PE_NEIGHBOR_COUNT];
-        for index in 0..PE_NEIGHBOR_COUNT {
+        std::array::from_fn(|index| {
             let mut name = crt.random_u15() % 0x24 + 1;
             while names[..index].contains(&name) {
                 name = crt.random_u15() % 0x24 + 1;
             }
             names[index] = name;
-
             let population = (0..3)
                 .map(|_| u32::from(crt.random_u15() % 0x1ce8 + 100))
                 .min()
                 .expect("three population draws");
             let value_divisor = u32::from(crt.random_u15() % 3 + 1);
+            [u32::from(name), population, population / value_divisor]
+        })
+    }
+
+    /// Mac CODE 3 export 143 samples each neighbor independently from STR# 1000.
+    pub(crate) fn mac_initialize_new_city_neighbors(&mut self, rng: &mut MacToolboxRng) {
+        const CITY_NAME_COUNT: u16 = 36;
+        for index in 0..PE_NEIGHBOR_COUNT {
+            let name = u32::from(rng.random_u16() % CITY_NAME_COUNT + 1);
+            let population = (0..3)
+                .map(|_| u32::from(rng.random_u16() % 7400 + 100))
+                .min()
+                .expect("three population draws");
+            let divisor = u32::from(rng.random_u16() % 3 + 1);
             let base = pe_neighbor_field_offset(index, PE_NEIGHBOR_NAME_FIELD);
-            self.set_misc_u32_at(base, u32::from(name));
-            self.set_misc_u32_at(base + PE_NEIGHBOR_POP_FIELD, population);
-            self.set_misc_u32_at(base + PE_NEIGHBOR_VALUE_FIELD, population / value_divisor);
-            self.set_misc_u32_at(base + PE_NEIGHBOR_FAME_FIELD, 0);
+            for (field, value) in [
+                (PE_NEIGHBOR_NAME_FIELD, name),
+                (PE_NEIGHBOR_POP_FIELD, population),
+                (PE_NEIGHBOR_VALUE_FIELD, population / divisor),
+                (PE_NEIGHBOR_FAME_FIELD, 0),
+            ] {
+                self.set_mac_state_misc_u32_at(base + field, value);
+            }
         }
     }
 
-    /// The deterministic demand-word slice of Mac CODE 8 export 238.
-    /// The app-owned LFSR starts at zero and is a fixed point, so its four
-    /// samples per row contribute zero. MULS.W followed by EXT.L retains the
-    /// low signed WORD of the product before the signed division by four.
-    /// Mac's subsequent industry balancing remains a separate, unported step.
-    pub(crate) fn advance_mac_industry_demand_words_month(&mut self) {
-        // Both save layouts carry the same 11 demand/tax/population triples.
-        // The selected engine, not the source-file layout, owns this update.
-        for index in 0..PE_INDUSTRY_COUNT {
-            let offset = MISC_INDUSTRY_TABLE_OFFSET + index * PE_INDUSTRY_RECORD_BYTES;
-            let prior = self.mac_state_misc_u32_at(offset).unwrap_or(0) as u16 as i16;
-            let next = mac_industry_smoothed_demand(prior);
-            self.set_mac_state_misc_u32_at(offset, i32::from(next) as u32);
+    /// CODE 11 setup replaces the first neighbor with ocean when coast is on.
+    pub(crate) fn mac_clear_coastal_neighbor(&mut self) {
+        for field in [
+            PE_NEIGHBOR_NAME_FIELD,
+            PE_NEIGHBOR_POP_FIELD,
+            PE_NEIGHBOR_VALUE_FIELD,
+            PE_NEIGHBOR_FAME_FIELD,
+        ] {
+            self.set_mac_state_misc_u32_at(pe_neighbor_field_offset(0, field), 0);
+        }
+    }
+
+    /// Mac CODE 8 export 238's industry update (0x39770..0x39dea).
+    pub(crate) fn advance_mac_industry_mix_month(&mut self, rng: &mut MacToolboxRng) {
+        let read_row_field = |index, field| {
+            self.mac_state_misc_u32_at(pe_industry_field_offset(index, field))
+                .unwrap_or(0)
+        };
+        let prior = std::array::from_fn(|i| read_row_field(i, PE_INDUSTRY_DEMAND_FIELD) as i16);
+        let taxes = std::array::from_fn(|i| read_row_field(i, PE_INDUSTRY_TAX_FIELD) as i16);
+        let populations = std::array::from_fn(|i| read_row_field(i, PE_INDUSTRY_POP_FIELD));
+        let pollution_controls =
+            self.ordinance_flags_for_saved_layout() & PE_INDUSTRY_POLLUTION_CONTROLS != 0;
+        let growth_modifier = self.mac_population_change_balances[0] != 0;
+        let education = self
+            .mac_state_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET)
+            .unwrap_or(0);
+        let Some((demand, weights, weight_total)) = mac_industry_modified_residuals(
+            prior,
+            taxes,
+            pollution_controls,
+            growth_modifier,
+            education,
+        ) else {
+            return;
+        };
+        let target = self.mac_rci_pair_totals()[2] as u32;
+        let populations =
+            mac_industry_rebalance(target, populations, weights, weight_total, || {
+                rng.random_u16()
+            });
+        for (index, (demand, population)) in demand.into_iter().zip(populations).enumerate() {
+            self.set_mac_state_misc_u32_at(
+                pe_industry_field_offset(index, PE_INDUSTRY_DEMAND_FIELD),
+                i32::from(demand) as u32,
+            );
+            self.set_mac_state_misc_u32_at(
+                pe_industry_field_offset(index, PE_INDUSTRY_POP_FIELD),
+                population,
+            );
+        }
+        if let Some((pollution, mix)) = mac_industry_mix_bonuses(target, populations) {
+            self.set_mac_state_misc_u32_at(
+                MISC_INDUSTRIAL_MIX_POLLUTION_BONUS_OFFSET,
+                i32::from(pollution) as u32,
+            );
+            self.set_mac_state_misc_u32_at(
+                MISC_INDUSTRIAL_MIX_BONUS_OFFSET,
+                misc_word_to_saved_dword(mix as u16, self.kind),
+            );
         }
     }
 
@@ -624,8 +773,6 @@ impl City {
     pub fn advance_pe_industry_mix_month(
         &mut self,
         industrial_zone_pop: u32,
-        rci_zone_people: u32,
-        city_population: u32,
         rng: &mut Win95CrtRand,
         lfsr: &mut Win95Lfsr,
     ) {
@@ -633,7 +780,9 @@ impl City {
             pe_industry_era_weights(self.year_founded().unwrap_or(1900), self.pe_elapsed_years());
         let pollution_controls =
             self.ordinance_flags_for_saved_layout() & PE_INDUSTRY_POLLUTION_CONTROLS != 0;
-        let construction_boost = rci_zone_people > city_population;
+        // 0x469273 reads the population influx retained by the RCI fold
+        // before EQ/LE spends it in the cohort pass.
+        let construction_boost = self.pe_eq_leftover_deaths() != 0;
         let education = self
             .misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET)
             .unwrap_or(0);
@@ -842,12 +991,13 @@ pub fn pe_national_prosperity(value: u32, pop: u32) -> i32 {
 
 /// Mac CODE 8 `export_238`: multiply the unsigned value by 100 before
 /// dividing by the wrapped population-plus-one, then truncate to a LONG.
-/// The discretionary event is not scheduled until its QuickDraw chronology
-/// is recovered. Unsupported zero-divisor and signed-LONG overflow states are
-/// left to the caller instead of guessing SANE exception handling.
-#[allow(dead_code)]
+/// Unsupported zero-divisor and signed-LONG overflow states are left to the
+/// caller instead of guessing SANE exception handling.
 pub(crate) fn mac_national_prosperity(value: u32, population: u32) -> Option<i32> {
-    let denominator = population.wrapping_add(1);
+    mac_prosperity(value, population.wrapping_add(1))
+}
+
+fn mac_prosperity(value: u32, denominator: u32) -> Option<i32> {
     if denominator == 0 {
         return None;
     }
@@ -858,8 +1008,7 @@ pub(crate) fn mac_national_prosperity(value: u32, population: u32) -> Option<i32
 }
 
 /// Result of CODE 8's discretionary national event. Story selectors are kept
-/// in native call order for the eventual scheduler/queue integration.
-#[allow(dead_code)]
+/// in native call order for comparison with the original worker.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MacNationalEvent {
     pub tax: u16,
@@ -868,9 +1017,7 @@ pub(crate) struct MacNationalEvent {
 }
 
 /// Execute the bounded event with an explicitly supplied QuickDraw stream.
-/// This is deliberately unscheduled until the incoming stream position is
-/// known. `None` leaves native numeric/divide exceptions unresolved.
-#[allow(dead_code)]
+/// `None` leaves native numeric/divide exceptions unresolved.
 pub(crate) fn mac_national_event(
     value: u32,
     population: u32,
@@ -912,15 +1059,7 @@ pub(crate) fn mac_national_event(
         }
     }
     if random_word() % 3 == 0 {
-        let next = if score < 45 {
-            0
-        } else if score < 60 {
-            1
-        } else if score < 75 {
-            2
-        } else {
-            3
-        };
+        let next = pe_national_trend_from_prosperity(score) as u16;
         if result.trend != next {
             result.trend = next;
             result.stories.push((7, next));
@@ -1015,7 +1154,7 @@ fn pe_round_unsigned_ratio_nearest_even(
     }
 }
 
-/// Win95 trend class from prosperity at `0x468ef9`.
+/// Prosperity tiers shared by Win95 `0x468ef9` and Mac CODE 8 `export_238`.
 pub fn pe_national_trend_from_prosperity(prosperity: i32) -> i32 {
     if prosperity < 45 {
         0

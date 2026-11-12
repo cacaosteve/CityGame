@@ -24,97 +24,187 @@ impl City {
     }
 
     pub(super) fn update_chunks_from_layers(&mut self) {
+        upsert_chunk(
+            &mut self.chunks,
+            &mut self.chunk_index,
+            CITYGAME_MAP_PLANES_CHUNK,
+            CITYGAME_MAP_PLANES_VERSION,
+        );
         if let Some(data) = &self.terrain {
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XTER", data);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XTER",
+                data,
+                self.kind,
+            );
         }
         if let Some(data) = &self.buildings {
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XBLD", data);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XBLD",
+                data,
+                self.kind,
+            );
         }
         if let Some(data) = &self.underground {
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XUND", data);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XUND",
+                data,
+                self.kind,
+            );
         }
         if let Some(data) = &self.zones {
             let raw = data.iter().map(|zone| zone.raw_bits()).collect::<Vec<_>>();
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XZON", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XZON",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(data) = &self.text_overlays {
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XTXT", data);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XTXT",
+                data,
+                self.kind,
+            );
         }
         if let Some(labels) = &self.labels {
             let raw = encode_labels(labels);
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XLAB", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XLAB",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(microsims) = &self.microsims {
-            upsert_chunk(
+            upsert_chunk_for_kind(
                 &mut self.chunks,
                 &mut self.chunk_index,
                 "XMIC",
                 &encode_xmic(microsims),
+                self.kind,
             );
         }
         if let Some(data) = &self.tile_bits {
             let raw = data.iter().map(|bits| bits.raw_bits()).collect::<Vec<_>>();
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XBIT", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XBIT",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(data) = &self.traffic_density {
             let raw = encode_xtrf_for_save(self.kind, self.xtrf_storage, data);
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XTRF", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XTRF",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(data) = &self.land_value_density {
             let raw = encode_microsim64_for_save(self.kind, data);
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XVAL", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XVAL",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(data) = &self.crime_density {
             let raw = encode_microsim64_for_save(self.kind, data);
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XCRM", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XCRM",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(data) = &self.pollution_density {
-            upsert_chunk(
+            upsert_chunk_for_kind(
                 &mut self.chunks,
                 &mut self.chunk_index,
                 "XPLT",
                 &encode_microsim64_for_save(self.kind, data),
+                self.kind,
             );
         }
         if let Some(data) = &self.police_coverage {
-            upsert_chunk(
+            upsert_chunk_for_kind(
                 &mut self.chunks,
                 &mut self.chunk_index,
                 "XPLC",
                 &encode_microsim32_for_save(data),
+                self.kind,
             );
         }
         if let Some(data) = &self.fire_coverage {
-            upsert_chunk(
+            upsert_chunk_for_kind(
                 &mut self.chunks,
                 &mut self.chunk_index,
                 "XFIR",
                 &encode_microsim32_for_save(data),
+                self.kind,
+            );
+            upsert_chunk(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                CITYGAME_FIRE_COVERAGE_CHUNK,
+                CITYGAME_FIRE_COVERAGE_VERSION,
             );
         }
         if let Some(data) = &self.population_density {
-            upsert_chunk(
+            upsert_chunk_for_kind(
                 &mut self.chunks,
                 &mut self.chunk_index,
                 "XPOP",
                 &encode_microsim32_for_save(data),
+                self.kind,
             );
         }
         if let Some(data) = &self.rate_of_growth {
-            upsert_chunk(
+            upsert_chunk_for_kind(
                 &mut self.chunks,
                 &mut self.chunk_index,
                 "XROG",
                 &encode_microsim32_for_save(data),
+                self.kind,
             );
         }
         if let Some(data) = &self.traffic_overlays {
             let raw = encode_xthg_records(data).expect("XTHG encode");
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "XTHG", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "XTHG",
+                &raw,
+                self.kind,
+            );
         }
         if let Some(data) = &self.altm {
             let raw = encode_altm(data);
-            upsert_chunk(&mut self.chunks, &mut self.chunk_index, "ALTM", &raw);
+            upsert_chunk_for_kind(
+                &mut self.chunks,
+                &mut self.chunk_index,
+                "ALTM",
+                &raw,
+                self.kind,
+            );
         }
         self.persist_pe_city_value_to_misc_432ee0();
         self.persist_pe_dw_city_land_value_to_misc_432eee();
@@ -155,6 +245,7 @@ impl City {
                     .cloned()
             } else {
                 (self.mac_cross_layout_active
+                    || self.mac_scenario_runtime.is_some()
                     || existing_extension
                         .as_ref()
                         .is_some_and(|extension| extension.mac_saved_state.is_some()))
@@ -380,10 +471,11 @@ impl City {
         if self.kind != CityFileKind::MacCity {
             self.persist_pe_w_city_garbage_to_misc_433b42();
         }
-        // Both editions publish matching cohort-derived workforce/life/EQ
-        // summaries. Write them when PE fidelity is active on a Mac layout,
-        // while preserving the inactive PE cache for a Mac-engine save.
-        if self.kind != CityFileKind::MacCity || self.pe_cross_layout_active {
+        // Mac publishes the summaries directly to MISC on either layout.
+        // PE saveback applies its own workforce cap only for PE fidelity.
+        if (self.kind != CityFileKind::MacCity && !self.mac_cross_layout_active)
+            || self.pe_cross_layout_active
+        {
             self.persist_pe_eq_workforce_to_misc_433b49();
             self.persist_pe_city_pollution_rate_to_misc_432f5e();
             self.persist_pe_city_crime_rate_to_misc_432f6c();
@@ -457,15 +549,16 @@ impl City {
             .find(|chunk| chunk.name == "MISC")
             .cloned();
         let misc_rotation = if self.kind == CityFileKind::MacCity {
-            decode_rotation(&self.chunks).unwrap_or(self.saved_rotation)
+            decode_rotation_for_kind(&self.chunks, self.kind).unwrap_or(self.saved_rotation)
         } else {
             self.saved_rotation
         };
-        upsert_chunk(
+        upsert_chunk_for_kind(
             &mut self.chunks,
             &mut self.chunk_index,
             "MISC",
-            &encode_misc(misc_rotation, misc_chunk.as_ref()),
+            &encode_misc(misc_rotation, misc_chunk.as_ref(), self.kind),
+            self.kind,
         );
         let cnam_raw = encode_cnam(
             &self.name,
@@ -517,9 +610,9 @@ fn encode_xmic(microsims: &[MicrosimRecord]) -> Vec<u8> {
     raw
 }
 
-fn encode_misc(rotation: u8, existing: Option<&CityChunk>) -> Vec<u8> {
+fn encode_misc(rotation: u8, existing: Option<&CityChunk>, kind: CityFileKind) -> Vec<u8> {
     let mut raw = existing
-        .map(|chunk| sc2_rle_decode(&chunk.data).unwrap_or_else(|_| chunk.data.clone()))
+        .map(|chunk| city_rle_decode(&chunk.data, kind).unwrap_or_else(|_| chunk.data.clone()))
         .unwrap_or_default();
     raw.resize(raw.len().max(12), 0);
     let rot_word = u32::from_be_bytes(raw[8..12].try_into().unwrap());

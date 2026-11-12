@@ -269,6 +269,92 @@ fn mac_rail_handler_prefix_matches_original_68020() {
 }
 
 #[test]
+fn mac_rail_handler_moves_native_single_free_slot_alias() {
+    // CODE 6's unchecked constructor writes both failed follower allocations
+    // through reserved slot zero. The next sweep sees head -> slot 0 -> slot
+    // 0. The original handler still advances the head and its XTXT marker.
+    let mut city = City::new_blank("/tmp/mac-rail-slot-zero-alias.sc2", "Rail").unwrap();
+    for (x, y) in [(64, 61), (63, 61), (65, 61), (64, 60), (64, 62)] {
+        city.set_building(x, y, 0x2c);
+        city.set_underground(x, y, 0);
+    }
+    city.set_mac_object_slot_record(0, record("0b0000403d00403d8daf0010"));
+    city.set_mac_object_slot_record(1, record("0a0000403d00403c1e960050"));
+    city.set_text_overlay(64, 61, 0xca);
+
+    let mut draws = 0;
+    let result = mac_rail_handler_prefix(&mut city, 1, || {
+        draws += 1;
+        0
+    });
+
+    assert_eq!(result, Some(MacRailPrefixOutcome::Moved));
+    assert_eq!(draws, 1);
+    assert_eq!(city.text_overlay_at(64, 61), Some(0));
+    assert_eq!(city.text_overlay_at(64, 60), Some(0xca));
+    let records = city.traffic_overlays().unwrap();
+    assert_eq!(records[1].tile_x, 64);
+    assert_eq!(records[1].tile_y, 60);
+    assert_eq!(records[0].kind, 11);
+    assert_eq!(records[0].tile_x, 64);
+    assert_eq!(records[0].tile_y, 61);
+}
+
+#[test]
+fn mac_rail_handler_retires_native_single_free_slot_alias() {
+    // The original teardown clears the aliased slot-zero follower and reuses
+    // the head as a kind-6 effect without removing the head's XTXT proxy.
+    let mut city = City::new_blank("/tmp/mac-rail-slot-zero-teardown.sc2", "Rail").unwrap();
+    for (x, y) in [(64, 61), (63, 61), (65, 61), (64, 60), (64, 62)] {
+        city.set_building(x, y, 0x2c);
+        city.set_underground(x, y, 0);
+    }
+    city.set_building(64, 61, 0);
+    city.set_mac_object_slot_record(0, record("0b0000403d00403d8daf0010"));
+    city.set_mac_object_slot_record(1, record("0a0000403d00403c1e960050"));
+    city.set_text_overlay(64, 61, 0xca);
+
+    let mut draws = 0;
+    let result = mac_rail_handler_prefix(&mut city, 1, || {
+        draws += 1;
+        0
+    });
+
+    assert_eq!(result, Some(MacRailPrefixOutcome::Retired));
+    assert_eq!(draws, 1);
+    assert_eq!(city.text_overlay_at(64, 61), Some(0xca));
+    let records = city.traffic_overlays().unwrap();
+    assert_eq!(records[0], record("000000403d00403d8daf0010"));
+    assert_eq!(records[1], record("060000403d0008081e960000"));
+}
+
+#[test]
+fn mac_rail_handler_retires_native_two_free_slot_alias() {
+    // With two usable records, the constructor stores its third allocation in
+    // reserved slot zero. Native teardown clears slots 2 and 0, turns the head
+    // into a kind-6 effect, and retains its map proxy.
+    let mut city = City::new_blank("/tmp/mac-rail-two-free-slot-teardown.sc2", "Rail").unwrap();
+    city.set_mac_object_slot_record(0, record("0b0008403d00403dd1e5004b"));
+    city.set_mac_object_slot_record(1, record("0a0002403d00403c6cd60005"));
+    city.set_mac_object_slot_record(2, record("0b0000403d00403d01840011"));
+    city.set_text_overlay(64, 61, 0xca);
+
+    let mut draws = 0;
+    let result = mac_rail_handler_prefix(&mut city, 1, || {
+        draws += 1;
+        0
+    });
+
+    assert_eq!(result, Some(MacRailPrefixOutcome::Retired));
+    assert_eq!(draws, 1);
+    assert_eq!(city.text_overlay_at(64, 61), Some(0xca));
+    let records = city.traffic_overlays().unwrap();
+    assert_eq!(records[0], record("000008403d00403dd1e5004b"));
+    assert_eq!(records[1], record("060002403d0008086cd60000"));
+    assert_eq!(records[2], record("000000403d00403d01840011"));
+}
+
+#[test]
 fn mac_rail_admission_matches_original_68020() {
     let fixture = include_str!("../../../../tests/fixtures/simulation/mac/mac_rail_admission.csv");
     let mut city = City::new_blank("/tmp/mac-rail-admission.sc2", "Rail").unwrap();

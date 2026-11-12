@@ -550,6 +550,9 @@ impl AssetProfile {
                 "use Choose Replacement Pack for authored artwork"
             );
             copy_city_catalog(&source, &source)?;
+            if format == PackFormat::Mac68k {
+                copy_mac_scenario_catalog(&source, &source)?;
+            }
             self.register_imported_pack(format, source.clone())?;
             return Ok((format, source));
         }
@@ -573,6 +576,9 @@ impl AssetProfile {
         }
         if format != PackFormat::Windows95 {
             copy_city_catalog(&source, &output)?;
+        }
+        if format == PackFormat::Mac68k {
+            copy_mac_scenario_catalog(&source, &output)?;
         }
         let extracted_format = detect_extracted_pack(&output)?;
         self.register_imported_pack(extracted_format, output.clone())?;
@@ -889,6 +895,52 @@ fn copy_city_catalog(source: &Path, output: &Path) -> Result<()> {
             })?;
         }
         break;
+    }
+    Ok(())
+}
+
+fn copy_mac_scenario_catalog(source: &Path, output: &Path) -> Result<()> {
+    use crate::mac_scenario::{read_scenario_sidecar, scenario_sidecar_path};
+    let destination = output.join("catalog/scenarios");
+    let roots = [source.to_path_buf(), source.join("catalog/scenarios")]
+        .into_iter()
+        .chain(
+            ["CITIES", "SCENARIO", "scenarios"]
+                .into_iter()
+                .filter_map(|name| {
+                    find_case_insensitive_path(source, &[name]).filter(|path| path.is_dir())
+                }),
+        );
+    for root in roots {
+        if root == destination || !root.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(root)?.flatten() {
+            let path = entry.path();
+            if !path.is_file()
+                || path.extension().is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("scn") || ext.eq_ignore_ascii_case("sc2")
+                })
+            {
+                continue;
+            }
+            let Some(fork) = read_scenario_sidecar(&path) else {
+                continue;
+            };
+            // Confirm the paired data file is a readable Mac-layout city.
+            if crate::city::City::load(&path).is_err() {
+                continue;
+            }
+            fs::create_dir_all(&destination)?;
+            let target = destination.join(entry.file_name());
+            if !target.exists() {
+                fs::copy(&path, &target)?;
+            }
+            let sidecar = scenario_sidecar_path(&target);
+            if !sidecar.exists() {
+                fs::write(sidecar, fork)?;
+            }
+        }
     }
     Ok(())
 }

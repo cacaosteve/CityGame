@@ -365,8 +365,7 @@ fn pe_heli_state2_avoids_xbld_ff_three_tiles_ahead() {
 fn pe_heli_state2_reroll_uses_w_city_center() {
     let mut city =
         City::new_blank(std::path::Path::new("/tmp/heli-center.sc2"), "HeliCenter").expect("city");
-    // Single building pulls wCityCenter away from the blank-map midpoint.
-    city.set_building(90, 90, 112);
+    city.set_pe_city_center(44, 44);
     assert!(city.place_ambient_port_actor(10, 10, XTHG_HELICOPTER, 2));
     let (slot, mut record) = city
         .traffic_overlays()
@@ -394,7 +393,7 @@ fn pe_heli_state2_reroll_uses_w_city_center() {
         &mut lfsr,
         slot
     ));
-    assert_eq!((record.target_x, record.target_y), (0x0c, 0x0c)); // (90 / 4 * 2) - 0x20
+    assert_eq!((record.target_x, record.target_y), (0x0c, 0x0c)); // Saved center minus 0x20
     assert_ne!((record.target_x, record.target_y), (0x20, 0x20));
 }
 

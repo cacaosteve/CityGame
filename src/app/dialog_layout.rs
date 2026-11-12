@@ -117,6 +117,7 @@ pub(super) fn city_info_dialog_rect_for(
             | CityInfoDialog::RailBridge { .. }
             | CityInfoDialog::PowerBridge { .. }
             | CityInfoDialog::HighwayWaterBridge { .. }
+            | CityInfoDialog::StadiumTeam { .. }
     ) {
         let w = 620.0_f32.min(window_size.0 as f32 - 24.0).max(320.0);
         let h = 330.0_f32.min(window_size.1 as f32 - 24.0).max(260.0);
@@ -126,7 +127,10 @@ pub(super) fn city_info_dialog_rect_for(
             w,
             h,
         }
-    } else if dialog == CityInfoDialog::FiscalCrisis {
+    } else if matches!(
+        dialog,
+        CityInfoDialog::FiscalCrisis | CityInfoDialog::TunnelQuote { .. }
+    ) {
         let w = 600.0_f32.min(window_size.0 as f32 - 24.0).max(200.0);
         let h = 260.0_f32.min(window_size.1 as f32 - 24.0).max(160.0);
         FloatRect {
@@ -146,6 +150,15 @@ pub(super) fn road_bridge_choice_rect(dialog: FloatRect, ordinal: usize) -> Floa
         y: dialog.y + 96.0 + ordinal as f32 * 58.0,
         w: dialog.w - 68.0,
         h: 46.0,
+    }
+}
+
+pub(super) fn stadium_team_choice_rect(dialog: FloatRect, team: u8) -> FloatRect {
+    FloatRect {
+        x: dialog.x + 34.0,
+        y: dialog.y + 54.0 + f32::from(team) * 38.0,
+        w: dialog.w - 68.0,
+        h: 32.0,
     }
 }
 

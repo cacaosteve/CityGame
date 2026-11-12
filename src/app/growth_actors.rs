@@ -14,7 +14,6 @@ use crate::city::{City, MAX_SIM_TEXT_ENTRIES, MIN_SIM_TEXT_ENTRIES, ZONE_CORNER_
 use crate::mac_random::MacToolboxRng;
 use crate::win95_overlay::{
     XTHG_AIRPLANE, XTHG_CARGO_SHIP, XTHG_DIRECTION_EAST, XTHG_DIRECTION_NORTH, XTHG_HELICOPTER,
-    XTHG_SAILBOAT,
 };
 use crate::win95_overlay_sim::ambient_train_spawn_direction;
 use crate::win95_random::{Win95CrtRand, Win95Lfsr};
@@ -313,29 +312,22 @@ impl ViewerState {
                 // PE @ `0x435298`: `cmp ax,[0x4e99d0]` then `jng` refuse —
                 // capacity is `wSailingBoats`, not live XTHG sailboat count.
                 let active_boats = u32::from(self.city.pe_sailboat_budget);
-                if marina_units <= active_boats {
+                if marina_units <= active_boats || active_boats >= 4 {
                     return 0;
                 }
-                // PE `0x402978`→`0x453380`: try each marina face until SpawnSailBoat
-                // succeeds. Face scan is water+XTXT; XBLD==0 is inside the spawn.
+                // 0x453380 checks its cap on entry, then tries all four faces.
+                // The constructor draws a lane only after a face and slot are available.
                 let faces: Vec<(usize, usize)> = self
                     .city
                     .pe_sailboat_spawn_faces_from_marina(x, y)
                     .collect();
-                for (boat_x, boat_y) in faces {
-                    // PE SpawnSailBoat checks XBLD==0 @ `0x453491` before `0x401cad(3)`.
-                    if self.city.building_at(boat_x, boat_y) != 0 {
-                        continue;
-                    }
-                    let direction = lfsr.random_mod(3) as u8;
-                    if self
-                        .city
-                        .place_ambient_port_actor(boat_x, boat_y, XTHG_SAILBOAT, direction)
-                    {
-                        return 1;
-                    }
-                }
-                0
+                faces
+                    .into_iter()
+                    .filter(|&(boat_x, boat_y)| {
+                        self.city
+                            .place_pe_sailboat(boat_x, boat_y, || lfsr.random_mod(3) as u8)
+                    })
+                    .count()
             }
             _ => 0,
         }

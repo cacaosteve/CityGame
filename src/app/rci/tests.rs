@@ -659,6 +659,26 @@ fn pe_startbuilding_xval_samples_the_rotation_corner_microsim_cell() {
 }
 
 #[test]
+fn pe_choose_and_place_can_complete_large_sites_in_light_zones() {
+    let cases = [
+        (ZONE_RESIDENTIAL_LIGHT, 0xae, 4),
+        (ZONE_COMMERCIAL_LIGHT, 0xb2, 10),
+        (ZONE_INDUSTRIAL_LIGHT, 0xbc, 6),
+    ];
+    for (zone, base, count) in cases {
+        let mut actual_crt = Win95CrtRand::new(2_317_907_988);
+        let mut expected_crt = actual_crt;
+        let expected = base + expected_crt.random_mod(count) as u8;
+        assert_eq!(
+            rci_choose_and_place_building_with_rng(zone, 4, None, &mut actual_crt),
+            Some(expected),
+        );
+        assert_eq!(actual_crt.seed(), expected_crt.seed());
+        assert!(rci_development_buildings_for_zone_and_size(zone, 3).is_none());
+    }
+}
+
+#[test]
 fn pe_choose_and_place_pop3_variant_table_does_not_depend_on_xval() {
     let mut low_xval_crt = Win95CrtRand::new(0x0043_6EA0);
     let mut high_xval_crt = Win95CrtRand::new(0x0043_6EA0);

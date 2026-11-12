@@ -35,6 +35,15 @@ pub(in crate::app) fn pe_set_flatten_mark(city: &mut City, x: usize, y: usize, m
 
 /// Win95 `0x40237e` / `0x443cb0`: military, water, or max height cannot flatten.
 pub(in crate::app) fn pe_volcano_flatten_check(city: &mut City, x: usize, y: usize) -> bool {
+    pe_mark_terrain_raise(city, x, y, false)
+}
+
+pub(super) fn pe_mark_terrain_raise(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    allow_water: bool,
+) -> bool {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return true;
     }
@@ -44,7 +53,7 @@ pub(in crate::app) fn pe_volcano_flatten_check(city: &mut City, x: usize, y: usi
     {
         return false;
     }
-    if city.tile_bits_at(x, y).is_some_and(TileBits::water_tile) {
+    if !allow_water && city.tile_bits_at(x, y).is_some_and(TileBits::water_tile) {
         return false;
     }
     if city.tile_bits_at(x, y).is_some_and(TileBits::flatten_mark) {
@@ -52,7 +61,7 @@ pub(in crate::app) fn pe_volcano_flatten_check(city: &mut City, x: usize, y: usi
     }
     pe_set_flatten_mark(city, x, y, true);
     if city.altitude_at(x, y) >= PE_VOLCANO_FLATTEN_MAX_HEIGHT {
-        pe_set_flatten_mark(city, x, y, false);
+        // 0x443dd3 refuses after setting the mark.
         return false;
     }
     for (&dx, &dy) in PE_VOLCANO_FLATTEN_DX
@@ -65,7 +74,7 @@ pub(in crate::app) fn pe_volcano_flatten_check(city: &mut City, x: usize, y: usi
         if city
             .zone_at(nx, ny)
             .is_some_and(|zone| zone.zone_id() == ZONE_MILITARY)
-            || city.tile_bits_at(nx, ny).is_some_and(TileBits::water_tile)
+            || (!allow_water && city.tile_bits_at(nx, ny).is_some_and(TileBits::water_tile))
         {
             pe_set_flatten_mark(city, x, y, false);
             return false;
@@ -82,7 +91,7 @@ pub(in crate::app) fn pe_volcano_flatten_check(city: &mut City, x: usize, y: usi
         if city.altitude_at(nx, ny) >= land {
             continue;
         }
-        if !pe_volcano_flatten_check(city, nx, ny) {
+        if !pe_mark_terrain_raise(city, nx, ny, allow_water) {
             pe_set_flatten_mark(city, x, y, false);
             return false;
         }
@@ -162,14 +171,26 @@ pub(in crate::app) fn pe_terrain_nesw_land_copy_442a30(
 
 pub(in crate::app) fn pe_terrain_nesw_land_copy_442a30_with_crt(
     city: &mut City,
-    mut crt: Option<&mut Win95CrtRand>,
+    crt: Option<&mut Win95CrtRand>,
     x: usize,
     y: usize,
 ) -> (u32, u32) {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return (0, 0);
     }
-    let center_land = city.altitude_at(x, y);
+    // The separate Spread brush samples its own center for each stamp.
+    let height = city.altitude_at(x, y);
+    pe_copy_level_height_to_neighbors(city, crt, x, y, height, false)
+}
+
+pub(super) fn pe_copy_level_height_to_neighbors(
+    city: &mut City,
+    mut crt: Option<&mut Win95CrtRand>,
+    x: usize,
+    y: usize,
+    height: u8,
+    refresh_adjusted_neighbors: bool,
+) -> (u32, u32) {
     let mut neighbor_447490 = 0u32;
     let mut waits_445b50 = 0u32;
     for (&dx, &dy) in PE_POST_FLATTEN_NEIGHBOR_DX
@@ -179,9 +200,13 @@ pub(in crate::app) fn pe_terrain_nesw_land_copy_442a30_with_crt(
         let Some((nx, ny)) = offset_city_tile(x, y, dx, dy) else {
             continue;
         };
-        city.set_altitude(nx, ny, center_land, city.water_height_at(nx, ny));
-        waits_445b50 =
-            waits_445b50.wrapping_add(pe_post_flatten_neighbor_altm_445b50(city, nx, ny));
+        city.set_altitude(nx, ny, height, city.water_height_at(nx, ny));
+        let waits = if refresh_adjusted_neighbors {
+            pe_smooth_and_refresh_terrain_neighbors(city, crt.as_deref_mut(), nx, ny)
+        } else {
+            pe_post_flatten_neighbor_altm_445b50(city, nx, ny)
+        };
+        waits_445b50 = waits_445b50.wrapping_add(waits);
         pe_terrain_neighbor_fun_00447020_447490(city, crt.as_deref_mut(), nx, ny);
         neighbor_447490 = neighbor_447490.wrapping_add(1);
     }
@@ -189,12 +214,35 @@ pub(in crate::app) fn pe_terrain_nesw_land_copy_442a30_with_crt(
 }
 
 /// Win95 `0x401a78` / `0x445b50`: after raise, pull NESW neighbors within 1 ALTM of center.
-/// Skips XBLD `>= 0x0d`. Returns PE `0x4012c1` wait count (one per adjusted neighbor @
-/// `0x445c15`/`0x445c5a`, including recursive pulls).
+/// Skips XBLD `>= 0x0d`. Returns the wait count for each adjusted tile and its refresh.
 pub(in crate::app) fn pe_post_flatten_neighbor_altm_445b50(
     city: &mut City,
     x: usize,
     y: usize,
+) -> u32 {
+    // The existing map editor uses altitude-only smoothing.
+    pe_smooth_terrain_neighbors(city, x, y, &mut |_, _, _| 1)
+}
+
+pub(super) fn pe_smooth_and_refresh_terrain_neighbors(
+    city: &mut City,
+    mut crt: Option<&mut Win95CrtRand>,
+    x: usize,
+    y: usize,
+) -> u32 {
+    pe_smooth_terrain_neighbors(city, x, y, &mut |city, nx, ny| {
+        // PE 0x445ca7 recurses before 0x445cb1 refreshes the adjusted neighbor.
+        pe_terrain_neighbor_fun_00447020_447490(city, crt.as_deref_mut(), nx, ny);
+        // 0x4012c1 runs both before and after the altitude write.
+        2 + PE_447490_UI_WAIT_4012C1_PER_CALL
+    })
+}
+
+fn pe_smooth_terrain_neighbors(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    refresh: &mut impl FnMut(&mut City, usize, usize) -> u32,
 ) -> u32 {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return 0;
@@ -221,27 +269,24 @@ pub(in crate::app) fn pe_post_flatten_neighbor_altm_445b50(
         } else {
             center.saturating_add(1).min(0x1f)
         };
-        // PE @ `0x445c15`/`0x445c5a`: `0x4012c1` before writing the adjusted neighbor.
-        waits = waits.wrapping_add(1);
         city.set_altitude(nx, ny, new_land, city.water_height_at(nx, ny));
-        waits = waits.wrapping_add(pe_post_flatten_neighbor_altm_445b50(city, nx, ny));
+        waits = waits.wrapping_add(pe_smooth_terrain_neighbors(city, nx, ny, refresh));
+        waits = waits.wrapping_add(refresh(city, nx, ny));
     }
     waits
 }
 
-/// Win95 `0x402f3b` / `0x4441c0`: clear flatten mark, raise land, spend `0x19` dummy funds.
-/// Returns PE `0x4012c1` wait count from `0x445b50` adjusts + `0x447490` (9×2) per successful raise,
-/// including NESW recurse.
+/// Win95 `0x402f3b` / `0x4441c0`: raise marked tiles against the tool's cash balance.
 pub(in crate::app) fn pe_volcano_apply_flatten(
     city: &mut City,
     x: usize,
     y: usize,
     funds: &mut u32,
 ) -> u32 {
-    pe_volcano_apply_flatten_with_crt(city, None, x, y, funds)
+    pe_apply_marked_terrain_raise(city, None, x, y, funds)
 }
 
-pub(in crate::app) fn pe_volcano_apply_flatten_with_crt(
+pub(in crate::app) fn pe_apply_marked_terrain_raise(
     city: &mut City,
     mut crt: Option<&mut Win95CrtRand>,
     x: usize,
@@ -268,7 +313,7 @@ pub(in crate::app) fn pe_volcano_apply_flatten_with_crt(
             continue;
         };
         if city.altitude_at(nx, ny) < land {
-            waits = waits.wrapping_add(pe_volcano_apply_flatten_with_crt(
+            waits = waits.wrapping_add(pe_apply_marked_terrain_raise(
                 city,
                 crt.as_deref_mut(),
                 nx,
@@ -286,7 +331,12 @@ pub(in crate::app) fn pe_volcano_apply_flatten_with_crt(
         city.set_zone(x, y, zone.raw_bits() & 0xf0);
     }
     // PE @ `0x4443a4`: `0x401a78`→`0x445b50` after raise + XZON clear; `0x40215d`→`0x447490`.
-    waits = waits.wrapping_add(pe_post_flatten_neighbor_altm_445b50(city, x, y));
+    waits = waits.wrapping_add(pe_smooth_and_refresh_terrain_neighbors(
+        city,
+        crt.as_deref_mut(),
+        x,
+        y,
+    ));
     pe_terrain_neighbor_fun_00447020_447490(city, crt, x, y);
     waits.wrapping_add(PE_447490_UI_WAIT_4012C1_PER_CALL)
 }

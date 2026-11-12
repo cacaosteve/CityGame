@@ -252,8 +252,21 @@ pub(super) fn run_title_screen(
                         Choice::SelectScenario(index) => screen.scenario_index = index,
                         Choice::PlayScenario => {
                             if let Some(entry) = screen.scenarios.get(screen.scenario_index) {
-                                push_command(AppCommand::OpenPath(entry.path.clone()));
-                                enter_game = true;
+                                match entry.mac_action {
+                                    Some(action) if super::mac_loop_scheduler::scenario_action::mac_scenario_action_supported(action) => {
+                                        push_command(AppCommand::StartMacScenario(
+                                            entry.path.clone(),
+                                        ));
+                                        enter_game = true;
+                                    }
+                                    Some(_) => {
+                                        screen.status = Some("This Mac scenario's opening event is not implemented yet.".into());
+                                    }
+                                    None => {
+                                        push_command(AppCommand::OpenPath(entry.path.clone()));
+                                        enter_game = true;
+                                    }
+                                }
                             }
                         }
                         Choice::BrowseScenario => {
@@ -291,6 +304,9 @@ pub(super) fn run_title_screen(
                                         Ok(()) => {
                                             music =
                                                 crate::title_music::TitleMusic::new(audio, profile);
+                                            if choice == Choice::ImportOriginal {
+                                                screen.refresh_scenarios(profile);
+                                            }
                                             screen.status = Some(format!("{purpose} updated"));
                                         }
                                         Err(error) => {

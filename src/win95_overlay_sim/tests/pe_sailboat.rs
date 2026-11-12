@@ -127,8 +127,8 @@ fn pe_sailboat_tick_budget_despawns_fifth_handler_call() {
 }
 
 #[test]
-fn pe_spawn_sailboat_gates_on_budget_not_live_count() {
-    // PE SpawnSailBoat @ 0x453460 gates on word[0x4e99d0] >= 4, not live XTHG count.
+fn direct_ambient_sailboat_placement_uses_the_scanner_budget_gate() {
+    // Direct placement applies the same entry cap as the native marina scan.
     // Four sailboats written directly leave budget 0, so spawn still succeeds.
     let mut city = City::new_blank(
         std::path::Path::new("/tmp/sail-budget-spawn.sc2"),

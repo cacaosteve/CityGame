@@ -4,16 +4,11 @@ pub(in crate::app) fn road_neighbor_link_is_available(
     state: &ViewerState,
     candidate: RoadNeighborLinkCandidate,
 ) -> bool {
-    candidate.endpoint.0 < CITY_WIDTH
-        && candidate.endpoint.1 < CITY_HEIGHT
-        && state.engine_fidelity == EngineFidelity::Win95
-        && candidate.initial_xtxt != 0xfa
-        && (0x1d..=0x2b).contains(
-            &state
-                .city
-                .building_at(candidate.endpoint.0, candidate.endpoint.1),
-        )
-        && state.city.city_funds() >= 1_000
+    let (x, y) = candidate.endpoint;
+    if x >= CITY_WIDTH || y >= CITY_HEIGHT || !state.can_afford_build_cost(1_000) {
+        return false;
+    }
+    state.city.text_overlay_at(x, y) != Some(0xfa) || state.city.is_synthetic_trip_marker(x, y)
 }
 
 pub(in crate::app) fn apply_road_neighbor_link_confirmation(
@@ -27,11 +22,23 @@ pub(in crate::app) fn apply_road_neighbor_link_confirmation(
     let (x, y) = candidate.endpoint;
     state.city.debit_city_funds(1_000);
     state.city.set_text_overlay(x, y, 0xfa);
-    // PE thunk 0x401c76 -> FUN_0044aed0 reshapes this endpoint only.
-    state.refresh_network_tile_with_pe_neighbor_gates(x, y, NetworkKind::Road, true, false);
-    state.refresh_live_misc_current_values();
-    state.refresh_budget_service_rows_from_live_counts();
-    state.refresh_reward_availability();
+    if state.engine_fidelity.uses_win95() {
+        // PE thunk 0x401c76 -> FUN_0044aed0 reshapes this endpoint only.
+        state.refresh_pe_road_tile_44aed0(x, y);
+        // 0x449e5c credits the Road counter for every accepted Road link.
+        if !crate::app::pe_xbld_counts_fa_network_overlay_4cc4d8(state.city.building_at(x, y)) {
+            state.city.pe_road_link_census_delta =
+                state.city.pe_road_link_census_delta.wrapping_add(1);
+        }
+        state.refresh_live_misc_current_values();
+        state.refresh_budget_service_rows_from_live_counts();
+        state.refresh_reward_availability();
+    } else {
+        // CODE 13 @ 0x234c2..0x234da writes the paid marker, reshapes the
+        // endpoint and increments the saved Mac network tally.
+        state.refresh_mac_road_tile(x, y);
+        state.city.mac_increment_road_neighbor_link_count();
+    }
     state.refresh_status_line();
     true
 }
@@ -81,13 +88,11 @@ pub(in crate::app) fn rail_neighbor_link_is_available(
     state: &ViewerState,
     candidate: RailNeighborLinkCandidate,
 ) -> bool {
-    candidate.endpoint.0 < CITY_WIDTH
-        && candidate.endpoint.1 < CITY_HEIGHT
-        && state.engine_fidelity == EngineFidelity::Win95
-        && state
-            .city
-            .text_overlay_at(candidate.endpoint.0, candidate.endpoint.1)
-            != Some(0xfa)
+    let (x, y) = candidate.endpoint;
+    x < CITY_WIDTH
+        && y < CITY_HEIGHT
+        && (state.city.text_overlay_at(x, y) != Some(0xfa)
+            || state.city.is_synthetic_trip_marker(x, y))
         && state.city.city_funds() >= 1_500
 }
 
@@ -102,12 +107,22 @@ pub(in crate::app) fn apply_rail_neighbor_link_confirmation(
     let (x, y) = candidate.endpoint;
     state.city.debit_city_funds(1_500);
     state.city.set_text_overlay(x, y, 0xfa);
-    // PE thunk 0x401843 -> FUN_0044B3A0 reshapes this endpoint only.
-    state.refresh_network_tile_with_pe_neighbor_gates(x, y, NetworkKind::Rail, false, true);
-    state.city.pe_nonnetwork_neighbor_links =
-        state.city.pe_nonnetwork_neighbor_links.wrapping_add(1);
-    state.refresh_live_misc_current_values();
-    state.refresh_budget_service_rows_from_live_counts();
+    if state.engine_fidelity.uses_win95() {
+        // PE thunk 0x401843 -> FUN_0044B3A0 reshapes this endpoint only.
+        state.refresh_pe_rail_tile_44b3a0(x, y);
+        if crate::app::pe_xbld_counts_fa_network_overlay_4cc4d8(state.city.building_at(x, y)) {
+            state.city.pe_road_link_census_delta =
+                state.city.pe_road_link_census_delta.wrapping_sub(1);
+        }
+        state.city.pe_nonnetwork_neighbor_links =
+            state.city.pe_nonnetwork_neighbor_links.wrapping_add(1);
+        state.refresh_live_misc_current_values();
+        state.refresh_budget_service_rows_from_live_counts();
+    } else {
+        // CODE 13 @ 0x23716..0x2372a increments the non-road tally.
+        state.refresh_mac_rail_tile(x, y);
+        state.city.mac_increment_rail_neighbor_link_count();
+    }
     state.refresh_status_line();
     true
 }

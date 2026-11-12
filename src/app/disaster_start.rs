@@ -165,42 +165,38 @@ impl ViewerState {
         self.start_disaster_at(kind, self.disaster_target_tile())
     }
 
-    pub(super) fn start_ambient_disaster_if_due(
-        &mut self,
-        population: PopulationStats,
-        outcomes: CityServiceOutcomes,
-    ) -> bool {
-        // This is the Win95 day-22 direct-start path. Mac CODE 14 phase 24
-        // calls CODE 7's separate proposal worker, which queues ffffd604;
-        // CODE 2's pending/timed calls to CODE 10 export 246 are statically
-        // rooted, but native Mac action/actor integration and session RNG
-        // chronology are not. Do not route Mac through this seeded PE fallback.
-        if !self.engine_fidelity.uses_win95() {
+    pub(super) fn queue_pe_monthly_disaster_if_due(&mut self) -> bool {
+        if !self.engine_fidelity.uses_win95() || self.no_disasters_enabled {
             return false;
         }
-        if self.no_disasters_enabled || self.city.has_active_disaster() {
-            return false;
-        }
-        // Peek process LFSR for Win95 air-crash tile proposal; seed_pe_aircrash
-        // consumes the live stream once after kind selection.
-        let mut peek_lfsr = self.pe_process_lfsr;
-        let candidate = ambient_disaster_for_month_with_rng(
+        let Some(proposal) = pe_monthly_disaster_proposal(
             &self.city,
             self.game_clock,
-            population,
-            outcomes,
-            EngineFidelity::Win95,
             &mut self.pe_process_crt,
-            Some(&mut peek_lfsr),
-        );
-        let Some((kind, (x, y))) = candidate else {
+            &mut self.pe_process_lfsr,
+        ) else {
             return false;
         };
-        self.queue_pe_disaster_start_effects(kind, (x, y));
-        self.seed_disaster_footprint(kind, x, y);
-        self.city.mark_all_dirty();
-        self.query_is_inspect = false;
-        self.set_sim_status_announcement(format!("{} Reported", kind.label()));
+        let (kind, point) = match proposal {
+            PeDisasterProposal::Queue(kind, point) => (kind, point),
+            PeDisasterProposal::ToxicSpillWithoutTarget => {
+                let y = self
+                    .pe_idle_scheduler
+                    .pending_disaster_point
+                    .map_or(0, |(_, y)| y);
+                self.pe_idle_scheduler.pending_disaster_point = Some((-1, y));
+                return false;
+            }
+        };
+        let trigger = disaster_kind_misc_type(kind);
+        self.city.pe_w_trigger_disaster = trigger as u16;
+        if pe_misc_mirror_storage_active(&self.city, self.engine_fidelity) {
+            self.city
+                .set_misc_u32_at(MISC_TRIGGER_DISASTER_OFFSET, trigger);
+        }
+        if let Some(point) = point {
+            self.pe_idle_scheduler.pending_disaster_point = Some(point);
+        }
         true
     }
 
@@ -209,11 +205,8 @@ impl ViewerState {
     }
 
     pub(super) fn start_disaster_at(&mut self, kind: DisasterKind, (x, y): (usize, usize)) -> bool {
-        // Manual Mac actions belong to its native pending-selector/action-mode
-        // worker. Until that lifecycle is integrated, do not write a PE trigger
-        // or run PE start workers under Mac fidelity.
         if !self.engine_fidelity.uses_win95() {
-            return false;
+            return self.queue_mac_manual_disaster(kind);
         }
         if self.no_disasters_enabled {
             return false;
@@ -221,13 +214,19 @@ impl ViewerState {
         self.close_tool_menu();
         self.close_modal_dialogs();
         self.cancel_active_drag();
+        self.pe_idle_scheduler.pending_disaster_point = None;
         let trigger = disaster_kind_misc_type(kind);
         self.city.pe_w_trigger_disaster = trigger as u16;
         if pe_misc_mirror_storage_active(&self.city, self.engine_fidelity) {
             self.city
                 .set_misc_u32_at(MISC_TRIGGER_DISASTER_OFFSET, trigger);
         }
-        self.consume_pe_trigger_disaster_at((x, y))
+        self.consume_pe_trigger_disaster_at((x as isize, y as isize))
+    }
+
+    pub(super) fn pe_pending_trigger_in_gameplay_mode(&self) -> bool {
+        self.city.pe_w_city_mode == CITY_MODE_GAMEPLAY as u16
+            && self.city.pe_w_trigger_disaster != 0
     }
 
     /// Win95 `0x45cf40`: consume `wSetTriggerDisasterType` and start that disaster.
@@ -237,22 +236,51 @@ impl ViewerState {
             // exported consumer/cadence is not the PE trigger-disaster poll.
             return false;
         }
-        self.consume_pe_trigger_disaster_at(self.disaster_target_tile())
+        let trigger = u32::from(self.city.pe_w_trigger_disaster);
+        if trigger == 0 {
+            return false;
+        }
+        let point = self.pe_idle_scheduler.pending_disaster_point;
+        // Flood replaces the Point on success and leaves it intact on rejection.
+        if trigger != disaster_kind_misc_type(DisasterKind::Flood) {
+            self.pe_idle_scheduler.pending_disaster_point = None;
+        }
+        let target = point
+            .map(|(x, y)| (isize::from(x), isize::from(y)))
+            .unwrap_or_else(|| {
+                let (x, y) = self.disaster_target_tile();
+                (x as isize, y as isize)
+            });
+        self.consume_pe_trigger_disaster_at(target)
     }
 
-    fn consume_pe_trigger_disaster_at(&mut self, (x, y): (usize, usize)) -> bool {
+    fn consume_pe_trigger_disaster_at(&mut self, origin: (isize, isize)) -> bool {
+        let (x, y) = (
+            origin.0.clamp(0, CITY_WIDTH as isize - 1) as usize,
+            origin.1.clamp(0, CITY_HEIGHT as isize - 1) as usize,
+        );
         // PE `0x45cf40` reads/clears BSS word `wSetTriggerDisasterType` @ `0x4ca420`.
+        let gameplay_trigger = self.pe_pending_trigger_in_gameplay_mode();
         let trigger = u32::from(self.city.pe_w_trigger_disaster);
         self.city.pe_w_trigger_disaster = 0;
         if pe_misc_mirror_storage_active(&self.city, self.engine_fidelity) {
             self.city.set_misc_u32_at(MISC_TRIGGER_DISASTER_OFFSET, 0);
         }
-        if trigger == 0 || self.no_disasters_enabled || self.city.has_active_disaster() {
+        if trigger == 0 {
             return false;
         }
         let Some(kind) = scenario_disaster_kind(u16::try_from(trigger).unwrap_or(0)) else {
             return false;
         };
+        if kind == DisasterKind::Tornado {
+            // The native pending-type arm calls the constructor even if a
+            // previous action is active. The Things counter owns this gate.
+            if !pe_tornado_constructor_ready(&self.city) {
+                return false;
+            }
+        } else if self.city.has_active_disaster() && !gameplay_trigger {
+            return false;
+        }
         if kind == DisasterKind::Meltdown && pe_meltdown_plant_tile(&self.city, (x, y)).is_none() {
             return false;
         }
@@ -268,11 +296,16 @@ impl ViewerState {
         } {
             return false;
         }
-        if kind == DisasterKind::Flood && pe_flood_source_tile(&self.city, x, y).is_none() && {
+        if kind == DisasterKind::Flood
+            && pe_flood_source_tile(&self.city, origin.0, origin.1).is_none()
+        {
             let mut peek = self.pe_process_lfsr;
-            pe_flood_overlays_with_lfsr(&self.city, x, y, &mut peek).is_empty()
-        } {
-            return false;
+            if pe_flood_fallback_tile(&self.city, &mut peek).is_none() {
+                // 0x45cf82 executes the worker before testing its result.
+                // Keep all fallback draws even when the trigger is rejected.
+                self.pe_process_lfsr = peek;
+                return false;
+            }
         }
         if kind == DisasterKind::BlizzardFlood && {
             let mut peek_crt = self.pe_process_crt;
@@ -288,10 +321,8 @@ impl ViewerState {
         } {
             return false;
         }
-        if matches!(
-            kind,
-            DisasterKind::AirCrash | DisasterKind::Tornado | DisasterKind::Monster
-        ) && !pe_xthg_disaster_slot_available(&self.city)
+        if matches!(kind, DisasterKind::AirCrash | DisasterKind::Monster)
+            && !pe_xthg_disaster_slot_available(&self.city)
         {
             return false;
         }
@@ -302,75 +333,30 @@ impl ViewerState {
             return false;
         }
         self.queue_pe_disaster_start_effects(kind, (x, y));
-        self.seed_disaster_footprint(kind, x, y);
+        if kind == DisasterKind::Flood {
+            self.seed_disaster_footprint_at(kind, origin);
+        } else {
+            self.seed_disaster_footprint(kind, x, y);
+        }
         self.city.mark_all_dirty();
         self.query_is_inspect = false;
         self.set_sim_status_announcement(format!("{} Reported", kind.label()));
         true
     }
 
-    pub(super) fn seed_loaded_scenario_disaster(&mut self) -> Option<DisasterKind> {
-        if self.city.kind != CityFileKind::WinScenario || self.city.has_active_disaster() {
-            return None;
+    pub(super) fn queue_loaded_pe_scenario_disaster(&mut self) -> bool {
+        if !self.engine_fidelity.uses_win95() || self.city.kind != CityFileKind::WinScenario {
+            return false;
         }
-        let goals = scenario_goals_for_city(&self.city)?;
-        let kind = scenario_disaster_kind(goals.disaster_type)?;
-        let x = usize::from(goals.disaster_x);
-        let y = usize::from(goals.disaster_y);
-        if kind == DisasterKind::Meltdown && pe_meltdown_plant_tile(&self.city, (x, y)).is_none() {
-            return None;
-        }
-        if kind == DisasterKind::Microwave && pe_microwave_plant_tile(&self.city).is_none() {
-            return None;
-        }
-        if kind == DisasterKind::Rioters && pe_rioters_target_tile(&self.city, x, y).is_none() {
-            return None;
-        }
-        if kind == DisasterKind::MassRiot && {
-            let mut peek = self.pe_process_crt;
-            !pe_mass_riot_attempt_ok_with_rng(&self.city, x, y, &mut peek)
-        } {
-            return None;
-        }
-        if kind == DisasterKind::Flood && pe_flood_source_tile(&self.city, x, y).is_none() && {
-            let mut peek = self.pe_process_lfsr;
-            pe_flood_overlays_with_lfsr(&self.city, x, y, &mut peek).is_empty()
-        } {
-            return None;
-        }
-        if kind == DisasterKind::BlizzardFlood && {
-            let mut peek_crt = self.pe_process_crt;
-            let mut peek_lfsr = self.pe_process_lfsr;
-            !pe_blizzard_flood_attempt_ok_with_rng(&self.city, x, y, &mut peek_crt, &mut peek_lfsr)
-        } {
-            return None;
-        }
-        if kind == DisasterKind::Fire && {
-            let mut peek_crt = self.pe_process_crt;
-            let mut peek_lfsr = self.pe_process_lfsr;
-            pe_fire_target_tile_with_rng(&self.city, &mut peek_crt, &mut peek_lfsr).is_none()
-        } {
-            return None;
-        }
-        if matches!(
-            kind,
-            DisasterKind::AirCrash | DisasterKind::Tornado | DisasterKind::Monster
-        ) && !pe_xthg_disaster_slot_available(&self.city)
-        {
-            return None;
-        }
-        if kind == DisasterKind::AirCrash && {
-            let mut peek = self.pe_process_lfsr;
-            pe_aircrash_tile_with_lfsr(&self.city, &mut peek).is_none()
-        } {
-            return None;
-        }
-        self.queue_pe_disaster_start_effects(kind, (x, y));
-        self.seed_disaster_footprint(kind, x, y);
-        self.city.mark_all_dirty();
-        self.query_is_inspect = false;
-        self.set_sim_status_announcement(format!("{} Reported", kind.label()));
-        Some(kind)
+        let Some(goals) = scenario_goals_for_city(&self.city) else {
+            return false;
+        };
+        // The SCEN decoder at 0x43467e publishes both fields, even for selector zero.
+        self.city
+            .set_misc_u32_at(MISC_TRIGGER_DISASTER_OFFSET, u32::from(goals.disaster_type));
+        self.pe_idle_scheduler.pending_disaster_point =
+            Some((i16::from(goals.disaster_x), i16::from(goals.disaster_y)));
+        true
     }
 
     pub(super) fn start_weather_disaster_if_due(&mut self) -> bool {
@@ -389,18 +375,22 @@ impl ViewerState {
             return false;
         };
         // PE FUN_00471bc0 / weather arms draw CRT `rand()` (`0x48cdd8`).
-        let mut rng = self.pe_process_crt;
-        if !weather_disaster_roll_succeeds(&mut rng) {
-            self.pe_process_crt = rng;
+        if !weather_disaster_roll_succeeds(&mut self.pe_process_crt) {
             return false;
         }
-        let started = self.begin_weather_disaster(kind, &mut rng);
-        self.pe_process_crt = rng;
-        started
+        self.begin_weather_disaster(kind)
     }
 
-    fn begin_weather_disaster(&mut self, kind: DisasterKind, rng: &mut Win95CrtRand) -> bool {
-        let (x, y) = ambient_disaster_target_tile(&self.city, rng);
+    fn begin_weather_disaster(&mut self, kind: DisasterKind) -> bool {
+        let (x, y) = weather_disaster_ambient_target_tile(
+            &self.city,
+            &mut self.pe_process_crt,
+            EngineFidelity::Win95,
+            kind,
+        );
+        if kind == DisasterKind::Tornado && !pe_tornado_constructor_ready(&self.city) {
+            return false;
+        }
         self.queue_pe_disaster_start_effects(kind, (x, y));
         self.seed_disaster_footprint(kind, x, y);
         self.city.mark_all_dirty();
@@ -417,7 +407,7 @@ impl ViewerState {
             WEATHER_TREND_TORNADO => DisasterKind::Tornado,
             _ => return false,
         };
-        let mut rng = Win95CrtRand::new(1);
-        self.begin_weather_disaster(kind, &mut rng)
+        self.pe_process_crt = Win95CrtRand::new(1);
+        self.begin_weather_disaster(kind)
     }
 }

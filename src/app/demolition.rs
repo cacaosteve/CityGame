@@ -7,18 +7,19 @@
 use super::{
     ToolPlacement, ToolPreview, UNDER_TILE_BUILDING_PIPE_TEE, UNDER_TILE_GREY_BOX_1,
     UNDER_TILE_GREY_BOX_2, UndergroundKind, ViewerState, ZONE_MILITARY, budget,
-    building_footprint_from_origin, is_bridge_tile, is_decorative_water_terrain, neighbor_tiles,
-    network_kinds_for_building, offset_city_tile, pe_fun_00447020_mode0_xund_slope_sea,
-    pe_fun_00447020_mode1_destroy_and_city_clear_447085, pe_highway_classify_463c40,
-    pe_pipetool_post_place_water_recalc_43f419, pe_place_tile_441f00, pe_place_water_helper_446650,
+    building_footprint_from_origin, is_bridge_tile, is_decorative_water_terrain, is_water_terrain,
+    neighbor_tiles, network_kinds_for_building, offset_city_tile,
+    pe_fun_00447020_mode0_xund_slope_sea, pe_fun_00447020_mode1_destroy_and_city_clear_447085,
+    pe_highway_classify_463c40, pe_place_tile_441f00, pe_place_water_helper_446650,
     pe_place_water_reslope_neighbors_446a66, pe_place_xund_442370,
-    pe_selected_water_height_for_fun_00447020, terrain_generation, underground_user_pipe_tile,
-    xbld_tile_size,
+    pe_selected_water_height_for_fun_00447020, terrain_generation, tunnel_portal_direction,
+    underground_user_pipe_tile, xbld_tile_size,
 };
 use crate::city::{CITY_HEIGHT, CITY_TILES, CITY_WIDTH, City, TileBits};
 use crate::engine_fidelity::EngineFidelity;
 use crate::ui::EditTool;
 use crate::win95_random::Win95CrtRand;
+use sdl3::keyboard::Mod;
 use std::collections::HashSet;
 
 mod bridge;
@@ -30,35 +31,26 @@ pub(super) use destroy_building::*;
 pub(super) use map_tool::*;
 
 impl ViewerState {
-    pub(super) fn win95_bulldozer_click_is_accepted(&self, x: usize, y: usize) -> bool {
-        let zone = self
-            .city
-            .zone_at(x, y)
-            .map(|zone| zone.raw_bits())
-            .unwrap_or(0);
-        let building = self.city.building_at(x, y);
-        let terrain = self.city.terrain_at(x, y);
-        // FUN_00443270 normal-city gates @ 0x4432c9..0x4432ff: reject military
-        // zone 7, reserved XBLD 5, and empty XBLD on low-class XTER terrain.
-        zone & 0x0f != 7 && building != 5 && !(building == 0 && terrain < 0x30)
-    }
-
-    /// Mac CODE 5 `FUN_0000884e` rejects XZON low-nibble 7 before cost and
-    /// map writes in both `ffffe0ca` branches. This unconditional native gate
-    /// is separate from the unresolved XTXT/QDExtensions and mode-specific gates.
-    pub(super) fn mac_bulldozer_military_zone_refusal(&self, x: usize, y: usize) -> bool {
-        self.engine_fidelity == EngineFidelity::Mac68k
-            && self
+    fn bulldozer_cell_refused(&self, x: usize, y: usize) -> bool {
+        // The first gate is CODE 2 isCmdDown on Mac and GetAsyncKeyState(VK_MENU)
+        // on Win95. It applies to the clicked XTXT marker in either view mode.
+        let override_key = if self.engine_fidelity.uses_win95() {
+            Mod::LALTMOD | Mod::RALTMOD
+        } else {
+            Mod::LGUIMOD | Mod::RGUIMOD
+        };
+        if (self.city.text_overlay_at(x, y) == Some(0xff)
+            && !self.modifiers.intersects(override_key))
+            || self
                 .city
                 .zone_at(x, y)
-                .is_some_and(|zone| zone.raw_bits() & 0x0f == 7)
-    }
-
-    /// Mac CODE 5 `FUN_0000884e`'s `ffffe0ca == 0` surface branch refuses
-    /// reserved XBLD 5 and empty cells below the XTER `0x30` boundary.
-    pub(super) fn mac_bulldozer_surface_cell_refusal(&self, x: usize, y: usize) -> bool {
-        if self.engine_fidelity != EngineFidelity::Mac68k || self.show_underground {
-            return false;
+                .is_some_and(|zone| zone.zone_id() == 7)
+        {
+            return true;
+        }
+        if self.show_underground {
+            // Both originals admit XUND, ALTM tunnel level 1 or XBIT piped.
+            return pe_maptool_underground_empty_refuse_443350(&self.city, x, y);
         }
         let building = self.city.building_at(x, y);
         building == 5 || (building == 0 && self.city.terrain_at(x, y) < 0x30)
@@ -70,32 +62,11 @@ impl ViewerState {
         y: usize,
         _legacy_tile_count: usize,
     ) -> u32 {
-        if self.engine_fidelity.uses_win95() {
-            if self.city.dispatch_actor_at(x, y).is_some() {
-                return 1;
-            }
-            if self.show_underground {
-                return u32::from(self.city.underground_at(x, y) != 0);
-            }
-            return u32::from(self.win95_bulldozer_click_is_accepted(x, y));
-        }
-        // Mac selector 0/state 0 indexes the recovered A5-0x2700 cost table
-        // at value 1 and charges once per accepted map click, even when the
-        // removal worker clears a multi-cell footprint.
-        1
+        // Both originals charge once per admitted cursor coordinate.
+        u32::from(!self.bulldozer_cell_refused(x, y))
     }
 
     pub(super) fn bulldoze_placement_at(&self, x: usize, y: usize) -> ToolPlacement {
-        if self.engine_fidelity.uses_win95()
-            && !self.show_underground
-            && !self.win95_bulldozer_click_is_accepted(x, y)
-        {
-            return ToolPlacement {
-                valid_tiles: Vec::new(),
-                invalid_tiles: vec![(x, y)],
-                preview: ToolPreview::Bulldoze,
-            };
-        }
         let tiles = self.bulldoze_clearable_tiles(x, y);
         if tiles.is_empty() {
             ToolPlacement {
@@ -123,10 +94,8 @@ impl ViewerState {
         rng: &mut Win95CrtRand,
     ) {
         // PE DoBudgetTunnelCheck AutoGoto `0x4019ec` @ `0x435aa1` then DestroyBuilding
-        // mode 1 @ `0x435ab3` (`0x402211`) on the landed portal only — `jmp 0x435dda`.
-        // No invent BFS far-portal wipe / tunnel_levels run clear / neighbor reshape /
-        // MISC/budget/reward refresh / status-line string. Elevated portal XBLD
-        // `0x3f..=0x42` clears that tile's ALTM tunnel bits @ `0x4599aa`.
+        // mode 1 @ 0x435ab3, then jump to the budget loop tail. The shared
+        // DestroyBuilding worker owns both portals and the intervening ALTM.
         pe_destroy_building_mode1_optional_crt(&mut self.city, Some(rng), origin_x, origin_y);
     }
 
@@ -178,18 +147,15 @@ impl ViewerState {
 
     /// Underground-view bulldoze: PE MapTool DisplayLayer clear (`0x4433ce`–`0x44342f`).
     pub(super) fn bulldoze_underground_at(&mut self, x: usize, y: usize) {
-        let und = self.city.underground_at(x, y);
-        let mac_native_empty_target = self.engine_fidelity == EngineFidelity::Mac68k
-            && self.show_underground
-            && und == 0
-            && !pe_maptool_underground_empty_refuse_443350(&self.city, x, y);
-        if und == 0 && !mac_native_empty_target {
+        if self.bulldozer_cell_refused(x, y) {
             return;
         }
+        let und = self.city.underground_at(x, y);
         let billable = 1u32;
         if !self.can_afford_tool_build_cost(EditTool::Bulldoze, billable) {
             return;
         }
+        self.debit_tool_build_cost(EditTool::Bulldoze, billable);
         if self.engine_fidelity == EngineFidelity::Mac68k {
             let building = self.city.building_at(x, y);
             if building < 0x70 {
@@ -228,34 +194,21 @@ impl ViewerState {
             // pipe/subway reshapes or the PE-only water recalculation.
             self.mac_export198_retile_surface_neighbors(x, y);
         } else {
-            // PE MapTool DisplayLayer clear: reshape pipes/subway and refresh
-            // water around the cleared underground cell.
-            self.refresh_place_pipes_neighbors_like_pe_4016b8(x, y);
-            self.refresh_place_subway_neighbors_like_pe_401f64(x, y);
-            pe_pipetool_post_place_water_recalc_43f419(&mut self.city);
+            pe_maptool_epilogue_44378e(&mut self.city, x, y);
         }
-        self.debit_tool_build_cost(EditTool::Bulldoze, billable);
         self.query_is_inspect = false;
         self.refresh_status_line();
         self.invalidate_sprite_cache();
     }
 
     pub(super) fn bulldoze_at(&mut self, x: usize, y: usize) {
-        if self.mac_bulldozer_military_zone_refusal(x, y)
-            || self.mac_bulldozer_surface_cell_refusal(x, y)
-        {
+        if self.bulldozer_cell_refused(x, y) {
             return;
         }
         let billable_tiles = self.bulldoze_billable_tiles(x, y);
         // Capture the PE caller's one-unit transaction before any PlaceTile or
         // DestroyBuilding writes change the clicked cell's classification.
         let billable_units = self.bulldoze_cost_units_for_click(x, y, billable_tiles.len());
-        if self.city.remove_dispatch_actor_at(x, y) {
-            self.debit_tool_build_cost(EditTool::Bulldoze, 1);
-            self.query_is_inspect = false;
-            self.refresh_status_line();
-            return;
-        }
         let old_building = self.city.building_at(x, y);
         let mut mac_lowclass_cost_debited = false;
         if self.engine_fidelity.uses_win95() {
@@ -271,6 +224,8 @@ impl ViewerState {
             }
             if old_building < 0x0d {
                 self.win95_player_bulldoze_lowclass_at(x, y, old_building);
+                pe_maptool_epilogue_44378e(&mut self.city, x, y);
+                self.invalidate_sprite_cache();
                 self.query_is_inspect = false;
                 self.refresh_status_line();
                 return;
@@ -322,9 +277,9 @@ impl ViewerState {
                 y,
             );
             // FUN_00443270 resumes after DestroyBuilding with its ordinary-city
-            // XTER/PlaceWater cleanup and then returns; it does not reshape the
-            // surrounding network through the generic editor network refresh.
+            // XTER/PlaceWater cleanup before the common neighbor sweeps.
             pe_maptool_surface_xter_gate_4434de(&mut self.city, x, y, true);
+            pe_maptool_epilogue_44378e(&mut self.city, x, y);
             let changed_tiles: Vec<_> = before
                 .iter()
                 .enumerate()
@@ -351,25 +306,39 @@ impl ViewerState {
             self.refresh_status_line();
             return;
         }
+        let mac_export80_surface = old_building >= 0x0d
+            && !(budget::is_mac_bridge_tile(old_building)
+                && self.mac_surface_bridge_uses_legacy_axis(x, y));
         if self.engine_fidelity == EngineFidelity::Mac68k
             && !self.show_underground
-            && old_building < 0x0d
-            && self.city.text_overlay_at(x, y) != Some(0xff)
+            && (old_building < 0x0d || mac_export80_surface)
         {
-            // CODE 5 FUN_0000884e's ordinary Mac surface branch sends accepted
-            // low-class cells straight to PlaceTile(0), then reaches the
-            // common CODE 13 export-198/199 tail. XTER<0x30 skips water
-            // normalization; ordinary XTER>=0x30 cells clear XBIT water and
-            // XTER, then repair still-wet neighbors through CODE 3 export 136.
-            // The special XTER=0x3e case runs the already-ported export-138
-            // terrain classifier, which owns its XUND, XZON, ALTM, XBIT, and
-            // final XTER writes before the same neighbor-repair loop.
-            // Keep the unresolved XTXT-0xff/QDExtensions gate on the existing
-            // path until its D0 result is observed on the original runtime.
+            // CODE 5 0x884e debits before dispatching PlaceTile(0) for low
+            // classes or export 80 with rendering enabled for buildings.
             if !mac_lowclass_cost_debited {
                 self.debit_tool_build_cost(EditTool::Bulldoze, billable_units);
             }
-            pe_place_tile_441f00(&mut self.city, x, y, 0);
+            if mac_export80_surface {
+                if self.zone_growth_uses_allowlist {
+                    let tiles = self.bulldoze_clearable_tiles(x, y);
+                    self.clear_zone_growth_for_player_tiles(&tiles);
+                }
+                // 0x89ca calls PlaceXUND(0) before export 80 for these IDs.
+                if matches!(old_building, 0x6c..=0x70 | 0xe9) {
+                    self.city.set_underground(x, y, 0);
+                }
+                budget::mac_destroy_building_export80(
+                    &mut self.city,
+                    x,
+                    y,
+                    &mut self.mac_process_rng,
+                    true,
+                );
+            } else {
+                pe_place_tile_441f00(&mut self.city, x, y, 0);
+            }
+            // Normalize water at the click after the removal worker, then
+            // recheck its four surface neighbors through export 198.
             if self.city.terrain_at(x, y) >= 0x30 {
                 if let Some(bits) = self.city.tile_bits_at(x, y) {
                     self.city.set_tile_bits(x, y, bits.with_water_tile(false));
@@ -391,9 +360,11 @@ impl ViewerState {
                 );
             }
             self.mac_export198_retile_surface_neighbors(x, y);
-            self.refresh_live_misc_current_values();
-            self.refresh_budget_service_rows_from_live_counts();
-            self.refresh_reward_availability();
+            if !mac_export80_surface {
+                self.refresh_live_misc_current_values();
+                self.refresh_budget_service_rows_from_live_counts();
+                self.refresh_reward_availability();
+            }
             self.pending_traffic_redraw = true;
             self.query_is_inspect = false;
             self.refresh_status_line();
@@ -430,6 +401,11 @@ impl ViewerState {
         // Do not use pe_flood_destroy's blanket XTXT wipe — PE skips `0xc9..=0xf9`.
         let mac_export80_fa_counter = !self.engine_fidelity.uses_win95()
             && budget::mac_export80_uses_generic_cell_cleanup(old_building);
+        if mac_export80_fa_counter && !tiles.is_empty() {
+            // The Mac surface bulldozer reaches export 80 for high-class
+            // buildings. Reopen the civic tool when its building is removed.
+            budget::mac_export80_update_special_civic_latch(&mut self.city, old_building);
+        }
         for &(tx, ty) in &tiles {
             if !matches!(old_building, 0x3f..=0x42) {
                 // The Mac generic export-80 XTXT `0xfa` arm decrements its
@@ -562,7 +538,7 @@ impl ViewerState {
         debug_assert!(old_building < 0x0d);
         pe_place_tile_441f00(&mut self.city, x, y, 0);
 
-        // FUN_00443270 returns immediately when the saved XTER is below 0x30.
+        // FUN_00443270 skips water normalization when the saved XTER is below 0x30.
         // Higher water/edge classes take a small shared surface-normalization
         // path rather than DestroyBuilding's footprint/XBIT masks.
         let terrain = self.city.terrain_at(x, y);
@@ -607,22 +583,21 @@ impl ViewerState {
     }
 
     pub(super) fn bulldoze_clearable_tiles(&self, x: usize, y: usize) -> Vec<(usize, usize)> {
-        if self.show_underground {
-            let und = self.city.underground_at(x, y);
-            let mac_native_empty_target = self.engine_fidelity == EngineFidelity::Mac68k
-                && und == 0
-                && !pe_maptool_underground_empty_refuse_443350(&self.city, x, y);
-            return if und != 0 || mac_native_empty_target {
-                vec![(x, y)]
-            } else {
-                Vec::new()
-            };
+        if self.bulldozer_cell_refused(x, y) {
+            return Vec::new();
         }
-        if self.city.dispatch_actor_at(x, y).is_some() {
+        if self.show_underground {
             return vec![(x, y)];
         }
-
         let click_building = self.city.building_at(x, y);
+        if !self.engine_fidelity.uses_win95()
+            && click_building >= 0x0d
+            && budget::mac_export80_uses_generic_cell_cleanup(click_building)
+        {
+            return self
+                .mac_generic_bulldoze_footprint(x, y, click_building)
+                .unwrap_or_default();
+        }
         let selector2_lowclass_cleanup =
             pe_destroy_building_selector2_low_class_cleanup_order(&self.city, click_building, x, y);
         let tiles = if is_bridge_tile(click_building) {
@@ -651,18 +626,39 @@ impl ViewerState {
             .collect()
     }
 
+    fn mac_surface_bridge_uses_legacy_axis(&self, x: usize, y: usize) -> bool {
+        let bits = self.city.tile_bits_at(x, y).unwrap_or_default();
+        if bits.water_tile() || !is_water_terrain(self.city.terrain_at(x, y)) {
+            return false;
+        }
+        // Older CityGame bridge placement could omit both the water flag and
+        // axis bit. Keep its perpendicular-span fallback for those saves.
+        let (dx, dy) = if bits.rotate() { (1, 0) } else { (0, 1) };
+        bridge_span_along_axis(&self.city, x, y, dx, dy).len() == 1
+            && bridge_span_along_axis(&self.city, x, y, dy, dx).len() > 1
+    }
+
+    fn mac_generic_bulldoze_footprint(
+        &self,
+        x: usize,
+        y: usize,
+        building: u8,
+    ) -> Option<Vec<(usize, usize)>> {
+        let (anchor_x, anchor_y, size) =
+            budget::mac_export81_footprint(&self.city, x, y, building)?;
+        let origin_x = usize::try_from(anchor_x).ok()?;
+        let origin_y = (usize::try_from(anchor_y).ok()? + 1).checked_sub(size)?;
+        building_footprint_from_origin(origin_x, origin_y, size)
+    }
+
     pub(super) fn bulldoze_billable_tiles(&self, x: usize, y: usize) -> Vec<(usize, usize)> {
         if self.show_underground {
-            return if self.city.underground_at(x, y) != 0 {
+            return if !self.bulldozer_cell_refused(x, y) {
                 vec![(x, y)]
             } else {
                 Vec::new()
             };
         }
-        if self.city.dispatch_actor_at(x, y).is_some() {
-            return vec![(x, y)];
-        }
-
         let click_building = self.city.building_at(x, y);
         let selector2_lowclass_cleanup =
             pe_destroy_building_selector2_low_class_cleanup_order(&self.city, click_building, x, y);

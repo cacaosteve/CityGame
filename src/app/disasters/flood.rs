@@ -21,18 +21,16 @@ pub(in crate::app) fn pe_flood_can_paint(city: &City, x: usize, y: usize) -> boo
 /// Win95 type-2 start @ `0x45db00`: Chebyshev radius from trigger until XTER `0x20..0x30`.
 pub(in crate::app) fn pe_flood_source_tile(
     city: &City,
-    origin_x: usize,
-    origin_y: usize,
+    origin_x: isize,
+    origin_y: isize,
 ) -> Option<(usize, usize)> {
-    let ox = origin_x as isize;
-    let oy = origin_y as isize;
     for radius in 0..0x80_isize {
         let mut di = -radius;
         while di <= radius {
             let mut bp = -radius;
             while bp <= radius {
-                let x = ox + di;
-                let y = oy + bp;
+                let x = origin_x + di;
+                let y = origin_y + bp;
                 if (0..CITY_WIDTH as isize).contains(&x)
                     && (0..CITY_HEIGHT as isize).contains(&y)
                     && pe_flood_xter_ready(city.terrain_at(x as usize, y as usize))
@@ -49,13 +47,13 @@ pub(in crate::app) fn pe_flood_source_tile(
 
 pub(in crate::app) fn pe_flood_neighbor_overlays(
     city: &City,
-    origin_x: usize,
-    origin_y: usize,
+    origin_x: isize,
+    origin_y: isize,
     found_x: usize,
     found_y: usize,
 ) -> std::collections::HashMap<(usize, usize), u8> {
-    let di = found_x as isize - origin_x as isize;
-    let bp = found_y as isize - origin_y as isize;
+    let di = found_x as isize - origin_x;
+    let bp = found_y as isize - origin_y;
     let mut tiles = std::collections::HashMap::new();
     let mut paint = |dx: isize, dy: isize| {
         if let Some((x, y)) = offset_city_tile(found_x, found_y, dx, dy) {
@@ -82,8 +80,8 @@ pub(in crate::app) fn pe_flood_neighbor_overlays(
 /// Win95 type-2 neighbor paints @ `0x45dc03+`: write XTXT `0xfc` on the map live.
 pub(in crate::app) fn pe_flood_neighbor_paint_live(
     city: &mut City,
-    origin_x: usize,
-    origin_y: usize,
+    origin_x: isize,
+    origin_y: isize,
     found_x: usize,
     found_y: usize,
 ) -> std::collections::HashMap<(usize, usize), u8> {
@@ -115,8 +113,16 @@ pub(in crate::app) fn pe_flood_overlays_with_lfsr(
     origin_y: usize,
     lfsr: &mut Win95Lfsr,
 ) -> std::collections::HashMap<(usize, usize), u8> {
-    if let Some((found_x, found_y)) = pe_flood_source_tile(city, origin_x, origin_y) {
-        return pe_flood_neighbor_overlays(city, origin_x, origin_y, found_x, found_y);
+    if let Some((found_x, found_y)) =
+        pe_flood_source_tile(city, origin_x as isize, origin_y as isize)
+    {
+        return pe_flood_neighbor_overlays(
+            city,
+            origin_x as isize,
+            origin_y as isize,
+            found_x,
+            found_y,
+        );
     }
     let mut tiles = std::collections::HashMap::new();
     if let Some(tile) = pe_flood_fallback_tile(city, lfsr) {
@@ -125,22 +131,28 @@ pub(in crate::app) fn pe_flood_overlays_with_lfsr(
     tiles
 }
 
-/// Win95 type-2 @ `0x45db00`: paint neighbor/fallback `0xfc` onto the city live.
+/// Win95 type-2 @ `0x45db00`: return the chosen source and paint `0xfc` live.
+/// A valid shoreline is a successful source even if no neighbor is painted.
 pub(in crate::app) fn pe_flood_paint_with_lfsr(
     city: &mut City,
-    origin_x: usize,
-    origin_y: usize,
+    origin_x: isize,
+    origin_y: isize,
     lfsr: &mut Win95Lfsr,
-) -> std::collections::HashMap<(usize, usize), u8> {
-    if let Some((found_x, found_y)) = pe_flood_source_tile(city, origin_x, origin_y) {
-        return pe_flood_neighbor_paint_live(city, origin_x, origin_y, found_x, found_y);
+) -> (
+    Option<(usize, usize)>,
+    std::collections::HashMap<(usize, usize), u8>,
+) {
+    if let Some(source @ (sx, sy)) = pe_flood_source_tile(city, origin_x, origin_y) {
+        let tiles = pe_flood_neighbor_paint_live(city, origin_x, origin_y, sx, sy);
+        return (Some(source), tiles);
     }
+    let source = pe_flood_fallback_tile(city, lfsr);
     let mut tiles = std::collections::HashMap::new();
-    if let Some((x, y)) = pe_flood_fallback_tile(city, lfsr) {
+    if let Some((x, y)) = source {
         city.set_text_overlay(x, y, 0xfc);
         tiles.insert((x, y), 0xfc);
     }
-    tiles
+    (source, tiles)
 }
 
 pub(in crate::app) fn pe_flood_overlays(
@@ -159,7 +171,7 @@ pub(in crate::app) fn pe_flood_goto_tile_with_lfsr(
     origin_y: usize,
     lfsr: &mut Win95Lfsr,
 ) -> Option<(usize, usize)> {
-    if let Some(source) = pe_flood_source_tile(city, origin_x, origin_y) {
+    if let Some(source) = pe_flood_source_tile(city, origin_x as isize, origin_y as isize) {
         return Some(source);
     }
     pe_flood_fallback_tile(city, lfsr)
@@ -264,7 +276,7 @@ pub(in crate::app) fn pe_flood_tick_cell_with_rng(
     if duration < PE_FLOOD_TICK_DESTROY_AT && crt.random_u16() & 3 == 0 {
         if city.building_at(x, y) >= 0x70 {
             // PE @ `0x460208`: DestroyStructure(0,0) → CRT PlaceTile rubble; no explode.
-            if pe_flood_destroy_tile_with_crt(city, crt, x, y) {
+            if pe_flood_destroy_tile_mode_maybe_crt(city, Some(crt), x, y, false) {
                 stats.destroyed += 1;
             }
         }

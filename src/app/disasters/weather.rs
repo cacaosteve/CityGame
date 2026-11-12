@@ -22,50 +22,48 @@ pub(in crate::app) fn pe_fb_zone_degradable(building: u8) -> bool {
     (0x70..0xc6).contains(&building) && PE_FB_ZONE_PROTECT[usize::from(building - 0x70)] == 0
 }
 
-/// Win95 `0x45ff9a` pre-move: `0x402496` size, `size==3`→`4`, then `0x4024fa` arg2=0
-/// (`ChangeBuilding` → ChooseAndPlace mode 4 abandon; not invent rubble / `0x8c`/`0xae`).
+/// Win95 `0x460061`: ChangeBuilding with replacement disabled.
 pub(in crate::app) fn pe_fb_degrade_under_cloud(
     city: &mut City,
     x: usize,
     y: usize,
     crt: &mut Win95CrtRand,
-    _lfsr: &mut Win95Lfsr,
 ) -> bool {
     let building = city.building_at(x, y);
     if !pe_fb_zone_degradable(building) {
         return false;
     }
-    let mut size = pe_destroy_building_size(building);
-    if size == 3 {
-        size = 4;
-    }
-    let pop = u8::try_from(size).unwrap_or(1);
+    let pop = match pe_destroy_building_size(building) {
+        3 => 4,
+        size => size as u8,
+    };
     let Some(abandoned) = abandoned_building_for_pop_with_rng(pop, crt) else {
         return false;
     };
     let footprint = pe_destroy_building_footprint(city, x, y);
-    let (ox, oy) = footprint
-        .iter()
-        .copied()
-        .min_by_key(|&(tx, ty)| (ty, tx))
-        .unwrap_or((x, y));
-    // PE ChangeBuilding clear sibling: DestroyBuilding (`0x402211`) CRT PlaceTile rubble.
-    pe_flood_destroy_tile_with_crt(city, crt, x, y);
+    // The footprint is in row order. Native 0x402496 returns its low-X/high-Y corner.
+    let call_x = footprint[0].0;
+    let call_y = footprint[footprint.len() - 1].1;
+    // ChooseAndPlace draws before the raw call-coordinate bounds check.
+    if !choose_and_place_multitile_call_in_bounds(call_x, call_y, pop) {
+        return false;
+    }
+    let (ox, oy) = (call_x, call_y - choose_and_place_half_pop(pop));
     let abandon_size = usize::from(xbld_tile_size(abandoned).max(1));
     let Some(tiles) = building_footprint_from_origin(ox, oy, abandon_size) else {
         return false;
     };
-    let zone_id = city.zone_at(ox, oy).map_or(0, |zone| zone.zone_id());
     let corner_bits = pe_choose_and_place_corner_bits(city.rotation());
-    for &(tx, ty) in &tiles {
-        // PE ChangeBuilding → ChooseAndPlace → PlaceTile `0x441f00`.
+    for (tx, ty) in tiles {
+        // Mode 4 writes in place through PlaceTile. It preserves XTXT and the
+        // low XZON nibble and ORs XBIT with 0xe0.
         pe_place_tile_441f00(city, tx, ty, abandoned);
+        let zone_id = city.zone_at(tx, ty).map_or(0, |zone| zone.zone_id());
         city.set_zone(
             tx,
             ty,
             zone_id | building_zone_bits_for_tile(ox, oy, tx, ty, abandon_size, corner_bits),
         );
-        // PE ChooseAndPlace ORs XBIT `0xe0`; PlaceTile never writes XTRF.
         let current = city.tile_bits_at(tx, ty).unwrap_or_default();
         city.set_tile_bits(
             tx,
@@ -143,7 +141,7 @@ pub(in crate::app) fn pe_fb_tick_cell_with_rng(
         stats.receded += 1;
         return;
     }
-    if pe_fb_degrade_under_cloud(city, x, y, crt, lfsr) {
+    if pe_fb_degrade_under_cloud(city, x, y, crt) {
         stats.degraded += 1;
     }
     let dir = pe_fb_downhill_dir(city, x, y).unwrap_or_else(|| usize::from(crt.random_u16() & 3));
@@ -255,7 +253,7 @@ pub(in crate::app) fn pe_blizzard_flood_start(
         let Some((x, y)) = offset_city_tile(origin_x, origin_y, dx, dy) else {
             continue;
         };
-        let source = pe_flood_source_tile(city, x, y);
+        let source = pe_flood_source_tile(city, x as isize, y as isize);
         // Offline: each nested type-2 keeps its city-name LFSR seed.
         let part = pe_flood_overlays(city, x, y);
         if source.is_some() || !part.is_empty() {
@@ -280,11 +278,10 @@ pub(in crate::app) fn pe_blizzard_flood_start_with_rng(
         let Some((x, y)) = offset_city_tile(origin_x, origin_y, dx, dy) else {
             continue;
         };
-        let source = pe_flood_source_tile(city, x, y);
         // PE @ `0x45da5e`: `call 0x401b59` type-2 paints `0xfc` on the map live.
         // Nested type-2 fallbacks share process Game_Random LFSR.
-        let part = pe_flood_paint_with_lfsr(city, x, y, lfsr);
-        if source.is_some() || !part.is_empty() {
+        let (source, part) = pe_flood_paint_with_lfsr(city, x as isize, y as isize, lfsr);
+        if source.is_some() {
             any = true;
             tiles.extend(part);
         }
@@ -330,8 +327,8 @@ pub(in crate::app) fn pe_blizzard_flood_attempt_ok_with_rng(
 }
 
 pub(in crate::app) fn pe_hurricane_seed(city: &City) -> u32 {
-    // Offline LFSR helper seed for destroy/paint arms. Live Win95 type-0x10 @ `0x45d4e0`
-    // uses Game_Random (`0x401415`), not CRT `rand()` (`0x48cdd8`).
+    // Offline seed for the shared LFSR lane walk and CRT damage draws.
+    // The live worker receives both process streams.
     let mut seed = 0x45D4_E000u32 ^ u32::from(city.rotation());
     for byte in city.name.bytes() {
         seed = seed.wrapping_mul(33).wrapping_add(u32::from(byte));
@@ -356,11 +353,7 @@ pub(in crate::app) fn pe_hurricane_destroy_extra_explode(arm: u8) -> bool {
     matches!(arm, 0 | 3)
 }
 
-pub(in crate::app) fn pe_hurricane_destroy_step(lfsr: &mut Win95Lfsr) -> isize {
-    (lfsr.random_mod(0x14).max(1)) as isize
-}
-
-/// Win95 XBLD `>= 6` shoreline scan; map-edge rows/cols 0 or `0x7F` are not painted.
+/// Win95 XBLD `>= 6` shoreline scan, excluding the far edge of each lane.
 pub(in crate::app) fn pe_hurricane_edge_tile(
     city: &City,
     arm: u8,
@@ -435,82 +428,44 @@ pub(in crate::app) fn pe_hurricane_destroy_tile(
     lane: u8,
     lfsr: &mut Win95Lfsr,
 ) -> Option<(usize, usize)> {
+    let (scan_x, descending) = match arm {
+        0 => (false, true),
+        1 => (true, true),
+        2 => (false, false),
+        3 => (true, false),
+        _ => return None,
+    };
     let lane = usize::from(lane);
-    match arm {
-        0 => {
-            if lane >= CITY_WIDTH {
-                return None;
-            }
-            let mut y = 0x7f_isize;
-            for _ in 0..0x80 {
-                if y > 0 && city.building_at(lane, y as usize) >= PE_HURRICANE_DESTROY_MIN_BUILDING
-                {
-                    return Some((lane, y as usize));
-                }
-                y -= pe_hurricane_destroy_step(lfsr);
-                if y < 0 {
-                    return None;
-                }
-            }
-            None
-        }
-        1 => {
-            if lane >= CITY_HEIGHT {
-                return None;
-            }
-            let mut x = 0x7f_isize;
-            for _ in 0..0x80 {
-                if x > 0 && city.building_at(x as usize, lane) >= PE_HURRICANE_DESTROY_MIN_BUILDING
-                {
-                    return Some((x as usize, lane));
-                }
-                x -= pe_hurricane_destroy_step(lfsr);
-                if x < 0 {
-                    return None;
-                }
-            }
-            None
-        }
-        2 => {
-            if lane >= CITY_WIDTH {
-                return None;
-            }
-            let mut y = 0_isize;
-            for _ in 0..0x80 {
-                if y >= 0x7f {
-                    return None;
-                }
-                if city.building_at(lane, y as usize) >= PE_HURRICANE_DESTROY_MIN_BUILDING {
-                    return Some((lane, y as usize));
-                }
-                y += pe_hurricane_destroy_step(lfsr);
-                if y > 0x7f {
-                    return None;
-                }
-            }
-            None
-        }
-        3 => {
-            if lane >= CITY_HEIGHT {
-                return None;
-            }
-            let mut x = 0_isize;
-            for _ in 0..0x80 {
-                if x >= 0x7f {
-                    return None;
-                }
-                if city.building_at(x as usize, lane) >= PE_HURRICANE_DESTROY_MIN_BUILDING {
-                    return Some((x as usize, lane));
-                }
-                x += pe_hurricane_destroy_step(lfsr);
-                if x > 0x7f {
-                    return None;
-                }
-            }
-            None
-        }
-        _ => None,
+    let (lane_count, extent) = if scan_x {
+        (CITY_HEIGHT, CITY_WIDTH)
+    } else {
+        (CITY_WIDTH, CITY_HEIGHT)
+    };
+    if lane >= lane_count {
+        return None;
     }
+
+    let last = extent as isize - 1;
+    let (mut position, far_edge, direction) = if descending {
+        (last, 0, -1)
+    } else {
+        (0, last, 1)
+    };
+    while (0..=last).contains(&position) {
+        let step_axis = position as usize;
+        let (x, y) = if scan_x {
+            (step_axis, lane)
+        } else {
+            (lane, step_axis)
+        };
+        if position != far_edge && city.building_at(x, y) >= PE_HURRICANE_DESTROY_MIN_BUILDING {
+            return Some((x, y));
+        }
+        // The far edge still consumes a draw. A zero step revisits the
+        // coordinate, and Win95Lfsr guarantees a nonzero internal state.
+        position += direction * lfsr.random_mod(0x14) as isize;
+    }
+    None
 }
 
 pub(in crate::app) fn pe_hurricane_apply_destroy(
@@ -519,15 +474,24 @@ pub(in crate::app) fn pe_hurricane_apply_destroy(
     lfsr: &mut Win95Lfsr,
     arm: u8,
 ) -> usize {
+    // The same argument controls the destruction animation and its CRT draws.
+    let mode1 = pe_hurricane_destroy_extra_explode(arm);
     let mut hits = 0usize;
-    for _ in 0..PE_HURRICANE_DESTROY_ATTEMPTS {
+    let mut spent = 0;
+    while spent < PE_HURRICANE_DESTROY_ATTEMPTS {
+        spent += 1;
         let lane = lfsr.random_mask_7f() as u8;
         let Some((x, y)) = pe_hurricane_destroy_tile(city, arm, lane, lfsr) else {
             continue;
         };
+        // The ascending-Y arm charges a second count at 0x45d6a6,
+        // before DestroyStructure can reject the selected target.
+        if arm == 2 {
+            spent += 1;
+        }
         // PE @ `0x45d56e`/`0x45d60c`: DestroyStructure; elevated early-out skips
         // DestroyBuilding (and flag_a=1 explode on arms 0|3).
-        if pe_flood_destroy_tile_with_crt(city, crt, x, y) {
+        if pe_flood_destroy_tile_mode_maybe_crt(city, Some(crt), x, y, mode1) {
             hits += 1;
         }
     }

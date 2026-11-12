@@ -53,6 +53,10 @@ impl ViewerState {
         let next_compass = (self.city.rotation() as i32 + delta).rem_euclid(4) as u8;
         let next_camera = next_compass;
         self.city.set_view_rotation(next_compass);
+        if self.engine_fidelity.uses_win95() {
+            self.city.pe_w_city_rotation =
+                (i32::from(self.city.pe_w_city_rotation) + delta).rem_euclid(4) as u16;
+        }
         self.camera_rotation = next_camera;
         self.reset_traffic_redraw_phase();
         self.invalidate_sprite_cache();

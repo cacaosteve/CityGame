@@ -92,12 +92,37 @@ pub(in crate::app) fn rci_growth_roll_crt(x: usize, y: usize, table_key: u8) -> 
 
 #[cfg(test)]
 thread_local! {
+    static USE_LIVE_GROWTH_RNG: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
     static FAIL_CONSTRUCTION_COMPLETE_ROLL: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
     static FAIL_GROWTH_CHANGE_ROLL: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
     static FORCED_GROWTH_CHANGE_ROLL_USED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+}
+
+/// Use the production CRT stream when comparing a whole growth tick to the PE.
+#[cfg(test)]
+pub(in crate::app) struct LiveGrowthRng(bool);
+
+#[cfg(test)]
+impl LiveGrowthRng {
+    pub(in crate::app) fn enable() -> Self {
+        Self(USE_LIVE_GROWTH_RNG.with(|cell| cell.replace(true)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for LiveGrowthRng {
+    fn drop(&mut self) {
+        USE_LIVE_GROWTH_RNG.with(|cell| cell.set(self.0));
+    }
+}
+
+#[cfg(test)]
+pub(in crate::app) fn use_isolated_growth_rng() -> bool {
+    !USE_LIVE_GROWTH_RNG.with(std::cell::Cell::get)
 }
 
 /// Tests force growth commits (`roll = 0`). Arm this to exercise failed BUILD_THINK fall-through.
@@ -198,7 +223,8 @@ pub(in crate::app) fn pe_rci_growth_roll_succeeds_optional(
     table_key: u8,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> bool {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_growth_roll_succeeds(threshold, x, y, table_key);
     }
     match process_crt {
@@ -215,7 +241,8 @@ pub(in crate::app) fn pe_rci_abandoned_redevelop_roll_succeeds_optional(
     table_key: u8,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> bool {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_growth_roll_succeeds(threshold, x, y, table_key);
     }
     match process_crt {
@@ -232,7 +259,8 @@ pub(in crate::app) fn pe_rci_startbuilding_growth_roll_succeeds_optional(
     table_key: u8,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> bool {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_growth_roll_succeeds(threshold, x, y, table_key);
     }
     match process_crt {
@@ -259,7 +287,8 @@ pub(in crate::app) fn pe_rci_growth_change_roll_then_replace_optional(
     table_key: u8,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> Option<bool> {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         if !rci_growth_roll_succeeds(threshold, x, y, table_key) {
             return None;
         }
@@ -296,7 +325,8 @@ pub(in crate::app) fn rci_change_building_replace_tile_optional(
     y: usize,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> bool {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_change_building_replace_tile(x, y);
     }
     match process_crt {
@@ -318,7 +348,8 @@ fn rci_change_building_scatter_roll_optional(
     y: usize,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> u16 {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_choose_and_place_isolated_rng(x, y, CHANGEBUILDING_SCATTER_KEY, 4)
             .random_u16_mask(3);
     }
@@ -334,7 +365,8 @@ fn rci_change_building_scatter_origin_optional(
     y: usize,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> (usize, usize) {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_change_building_scatter_origin(x, y);
     }
     match process_crt {

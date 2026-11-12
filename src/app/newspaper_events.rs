@@ -4,7 +4,7 @@
 //! pending-flag consumption. Saved queues/papers, options, page composition,
 //! gift placement and calendar scheduling retain their existing owners.
 
-use super::city_options::{newspaper_extra_enabled_for_city, set_city_newspaper_choice_with_crt};
+use super::city_options::{newspaper_extra_enabled_for_city, set_city_newspaper_choice};
 use super::dialogs::{CityInfoDialog, NewspaperEdition};
 use super::{
     AIRPORT_RUNWAY_CROSS_BUILDING_ID, BIG_PARK_BUILDING_ID, BUDGET_SERVICE_CURRENT_FIELD,
@@ -34,6 +34,24 @@ pub(super) fn citygame_fa_non_network_neighbor_marker_count(city: &City) -> u32 
         }
     }
     count
+}
+
+/// Win95's monthly story selection, immediately after baseline story 1.
+pub(super) fn pe_rci_demand_updates_monthly_stories_468764(
+    city: &mut City,
+    crt: &mut Win95CrtRand,
+) {
+    let choice = crt.random_mod(6);
+    if choice != 0 {
+        city.queue_pe_newspaper_story(10 + choice, 0);
+        return;
+    }
+    if crt.random_u15() & 3 == 0 {
+        city.queue_pe_newspaper_story(6, 0);
+    }
+    if crt.random_u15() & 3 == 0 {
+        city.queue_pe_newspaper_story(7, city.pe_w_national_trend as u8);
+    }
 }
 
 /// PE `FUN_00468150` sports-newspaper arm @ `0x4687f3`: when `dwTileCount[0xd7] > 0`
@@ -232,7 +250,7 @@ impl ViewerState {
             return;
         }
         // Force paper 0 before open; Subscription open keeps that choice.
-        set_city_newspaper_choice_with_crt(&mut self.city, 0, Some(&mut self.pe_process_crt));
+        set_city_newspaper_choice(&mut self.city, 0);
         self.open_city_info_dialog(CityInfoDialog::Newspaper(NewspaperEdition::Subscription));
         self.set_sim_status_announcement("Newspaper: disaster summary");
     }

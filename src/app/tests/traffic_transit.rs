@@ -30,8 +30,8 @@ fn mac_kind9_water_activation_queues_roar1_once_through_actor_sweep() {
     city.set_tile_bits(x, y, TileBits::new(0x04));
     city.mac_object_slot_records_mut()[slot] = Win95OverlayRecord {
         kind: XTHG_SAILBOAT,
-        tile_x: y as u8,
-        tile_y: x as u8,
+        tile_x: x as u8,
+        tile_y: y as u8,
         sub_x: 4,
         sub_y: 4,
         ..Win95OverlayRecord::default()
@@ -40,7 +40,7 @@ fn mac_kind9_water_activation_queues_roar1_once_through_actor_sweep() {
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.mode = AppMode::CityView;
-    state.zoom = 5.0; // Native zoom band 2 admits the Mac kind-9 handler.
+    state.zoom = 5.0;
     state.traffic.set_speed(GameSpeed::Turtle);
     state.sound_effects_enabled = true;
     state
@@ -1688,9 +1688,69 @@ fn subway_connects_to_sub_to_rail_access_tile() {
 }
 
 #[test]
-fn highway_drag_geometry_dispatch_keeps_pe_and_legacy_mac_paths_separate() {
+fn mac_highway_drag_prices_the_whole_diagonal_before_any_stamp() {
+    let mut city = City::new_blank("/tmp/citygame-highway-diagonal.sc2", "Highway").unwrap();
+    city.set_city_funds(250);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Highway;
+
+    let start = (36, 26);
+    let end = (42, 30);
+    let route = [(36, 26), (38, 26), (38, 28), (40, 28), (40, 30), (42, 30)];
+    assert_eq!(state.highway_drag_path_for_city(start, end), route);
+    state.begin_highway_drag(start.0, start.1);
+    state.update_highway_drag_to(end);
+    assert_eq!(state.highway_drag_cost(), Some(600));
+    assert_eq!(state.release_left_mouse_drag(false).highway_segments, 0);
+    assert_eq!(state.city.city_funds(), 250);
+    assert!(
+        route
+            .iter()
+            .all(|&(x, y)| state.city.building_at(x, y) == 0)
+    );
+
+    state.city.set_city_funds(600);
+    state.begin_highway_drag(start.0, start.1);
+    state.update_highway_drag_to(end);
     assert_eq!(
-        highway_drag_path_for_fidelity(EngineFidelity::Win95, (10, 10), (16, 16)),
+        state.release_left_mouse_drag(false).highway_segments,
+        route.len()
+    );
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(38, 26), 0x67);
+    assert_eq!(state.city.building_at(38, 28), 0x65);
+}
+
+#[test]
+fn mac_highway_drag_includes_a_shaped_footprint_in_the_full_quote() {
+    let mut city = City::new_blank("/tmp/citygame-highway-shaped.sc2", "Highway").unwrap();
+    city.set_city_funds(250);
+    for x in 36..44 {
+        for y in 28..30 {
+            city.set_altitude(x, y, 8, 0);
+        }
+    }
+    for y in 28..30 {
+        city.set_terrain(40, y, 0x0d);
+        city.set_terrain(41, y, 1);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Highway;
+    state.begin_highway_drag(36, 28);
+    state.update_highway_drag_to((42, 28));
+
+    assert_eq!(state.highway_drag_cost(), Some(400));
+    assert_eq!(state.release_left_mouse_drag(false).highway_segments, 0);
+    assert_eq!(state.city.city_funds(), 250);
+    assert_eq!(state.city.building_at(36, 28), 0);
+}
+
+#[test]
+fn highway_geometry_ties_choose_the_y_axis() {
+    assert_eq!(
+        highway_drag_path((10, 10), (16, 16)),
         vec![
             (10, 10),
             (10, 12),
@@ -1700,10 +1760,6 @@ fn highway_drag_geometry_dispatch_keeps_pe_and_legacy_mac_paths_separate() {
             (14, 16),
             (16, 16),
         ]
-    );
-    assert_eq!(
-        highway_drag_path_for_fidelity(EngineFidelity::Mac68k, (10, 10), (16, 16)),
-        vec![(10, 10), (12, 10), (14, 10), (16, 10)]
     );
 }
 
@@ -1736,6 +1792,92 @@ fn highway_drag_alternates_reinforced_bridge_support_segments() {
 }
 
 #[test]
+fn win95_rail_link_credits_rail_counter_on_road_crossover() {
+    for path in ["rail-link-census.city", "rail-link-census.sc2"] {
+        let mut city = blank_city_layout_fixture(path, "Rail link census");
+        city.set_city_funds(2000);
+        city.set_building(0, 40, 0x43);
+        city.set_synthetic_trip_marker(0, 40);
+        city.prepare_pe_fidelity_from_saved_city();
+        let mut state = test_state(city);
+        state.tool = EditTool::Rail;
+        let (_, link) = state
+            .place_win95_rail_stroke_449f50((0, 40), (0, 40))
+            .unwrap();
+        let link = link.expect("no-progress rail link");
+        assert_eq!(state.city.city_funds(), 1975);
+        assert!(apply_rail_neighbor_link_confirmation(
+            &mut state, link, true
+        ));
+        assert!(!apply_rail_neighbor_link_confirmation(
+            &mut state, link, true
+        ));
+        assert_eq!(state.city.city_funds(), 475);
+        assert_eq!(state.city.building_at(0, 40), 0x43);
+        assert_eq!(state.city.text_overlay_at(0, 40), Some(0xfa));
+        assert_eq!(state.city.pe_nonnetwork_neighbor_links, 1);
+        assert_eq!(pe_fa_network_overlay_count_4cc4d8(&state.city), 0);
+
+        let save_path =
+            std::env::temp_dir().join(format!("citygame-rail-link-{}-{path}", std::process::id()));
+        state.city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(save_path).unwrap();
+        assert_eq!(reloaded.pe_nonnetwork_neighbor_links, 0);
+        assert_eq!(pe_fa_network_overlay_count_4cc4d8(&reloaded), 1);
+    }
+}
+
+#[test]
+fn win95_road_purchases_edge_link_without_requiring_road_art() {
+    for path in ["road-edge.city", "road-edge.sc2"] {
+        for (xbld, expected) in [(0x1d, 0x2a), (0x43, 0x43), (0x47, 0x47)] {
+            let mut city = blank_city_layout_fixture(path, "Road edge link");
+            city.set_city_funds(1500);
+            city.set_building(0, 40, xbld);
+            city.set_building(0, 39, 0x1d);
+            city.set_building(0, 41, 0x1d);
+            city.set_traffic_density(0, 40, 0x63);
+            let old_synthetic = xbld == 0x43;
+            if old_synthetic {
+                city.set_synthetic_trip_marker(0, 40);
+            }
+            city.prepare_pe_fidelity_from_saved_city();
+            let mut state = test_state(city);
+            state.tool = EditTool::Road;
+            let (placed, candidate) = state.place_win95_road_stroke_449bb0((0, 40), (0, 40));
+            assert_eq!(placed, 0);
+            assert_eq!(state.city.city_funds(), 1490);
+            assert_eq!(
+                state.city.text_overlay_at(0, 40),
+                Some(if old_synthetic { 0xfa } else { 0 }),
+            );
+            let candidate = candidate.expect("native no-progress edge prompt");
+            assert!(!apply_road_neighbor_link_confirmation(
+                &mut state, candidate, false
+            ));
+            assert_eq!(state.city.building_at(0, 40), xbld);
+            assert!(apply_road_neighbor_link_confirmation(
+                &mut state, candidate, true
+            ));
+            assert!(!apply_road_neighbor_link_confirmation(
+                &mut state, candidate, true
+            ));
+            state.city.set_synthetic_trip_marker(4, 40);
+            persist_pe_neighbor_connection_overlays(&mut state.city);
+            assert_eq!(state.city.city_funds(), 490);
+            assert_eq!(state.city.building_at(0, 40), expected);
+            assert_eq!(state.city.text_overlay_at(0, 40), Some(0xfa));
+            assert!(!state.city.is_synthetic_trip_marker(0, 40));
+            assert_eq!(state.city.text_overlay_at(4, 40), Some(0));
+            assert_eq!(pe_fa_network_overlay_count_4cc4d8(&state.city), 1);
+            assert_eq!(state.city.pe_nonnetwork_neighbor_links, 0);
+            assert_eq!(state.city.traffic_density_at(0, 40), Some(0x63));
+        }
+    }
+}
+
+#[test]
 fn win95_road_endpoint_confirmation_is_separate_from_trip_overlay() {
     let mut city = City::new_blank("/tmp/sc2000-road-neighbor-confirm.sc2", "RoadNeighbor")
         .expect("blank city");
@@ -1756,7 +1898,6 @@ fn win95_road_endpoint_confirmation_is_separate_from_trip_overlay() {
         .road_neighbor_link
         .expect("eastward terminal lookahead exits the map");
     assert_eq!(candidate.endpoint, (127, 30));
-    assert_eq!(candidate.initial_xtxt, 0);
     assert_eq!(state.city.text_overlay_at(127, 30), Some(0xfa));
     assert!(road_neighbor_link_is_available(&state, candidate));
 
@@ -2112,62 +2253,6 @@ fn normal_release_finishes_zone_drag_and_reports_outcome() {
             ZONE_INDUSTRIAL_LIGHT
         );
     }
-}
-
-#[test]
-fn edit_map_raise_dispatches_pe_raise_submode() {
-    // PE tool-0 submode word drives Raise; default 0 bills `0x4dc140[0]==1` then
-    // FUN_00443270 land++/`0x445b50`. Vacant dry refuses; stamp a small XBLD.
-    // Keep land above sea (`BLANK_MAP_BASE_HEIGHT`) so `0x447490` does not water-mark
-    // neighbors and poison a later submode-2 raise.
-    let mut city = City::new_blank("/tmp/sc2000-raise-sub.sc2", "RaiseSub").expect("blank");
-    for y in 18..23 {
-        for x in 18..23 {
-            city.set_altitude(x, y, 9, 0);
-        }
-    }
-    city.set_altitude(20, 19, 13, 0);
-    city.set_building(20, 20, 4);
-    city.set_city_funds(1);
-    let mut state = test_state(city);
-    state.mode = AppMode::EditNewMap;
-    state.tool = EditTool::RaiseTerrain;
-    assert_eq!(state.pe_raise_submode, PE_RAISE_SUBMODE_DEFAULT);
-    assert!(state.apply_tool_at_tile(20, 20));
-    assert_eq!(state.city.altitude_at(20, 20), 10);
-    assert_eq!(state.city.altitude_at(20, 19), 11); // 445b50 pulled neighbor 13→11
-    assert_eq!(state.city.city_funds(), 0);
-    state.pe_raise_submode = 2;
-    state.city.set_altitude(20, 20, 9, 0);
-    state.city.set_altitude(20, 19, 13, 0);
-    state.city.set_building(20, 20, 4);
-    state.city.set_city_funds(0x19);
-    state.pe_raise_ui_wait_4012c1_count = 0;
-    assert!(state.apply_tool_at_tile(20, 20));
-    assert_eq!(state.city.altitude_at(20, 20), 10);
-    assert_eq!(state.city.altitude_at(20, 19), 11); // 445b50 pulled neighbor 13→11
-    // PE `0x443c60` `0x445b50`/`0x447490` waits + Raise hold pair.
-    assert!(state.pe_raise_ui_wait_4012c1_count >= 1 + 18 + 2);
-    state.pe_raise_submode = 5;
-    assert!(state.apply_tool_at_tile(20, 20)); // apply still true; step no-ops
-    assert_eq!(state.city.altitude_at(20, 20), 10);
-}
-
-#[test]
-fn pe_raise_submode_jump_table_matches_tool0_dispatch() {
-    // PE Raise `0x442db0` @ `0x442ea3`: `cmp [0x4cc950],4` / `ja`; table `0x443104`.
-    assert_eq!(PE_RAISE_SUBMODE_MAX, 4);
-    assert_eq!(PE_RAISE_SUBMODE_DEFAULT, 0);
-    assert_eq!(PE_RAISE_SUBMODE_ADJUST_TOWARD, 1);
-    assert_eq!(
-        PE_RAISE_SUBMODE_ARM_VA,
-        [0x442eb3, 0x442ec3, 0x442ed8, 0x442ee8, 0x442efa]
-    );
-    assert_eq!(PE_RAISE_SUBMODE0_FUND_COST, 1);
-    assert_eq!(
-        pe_lower_444440_mode_cost(PE_RAISE_SUBMODE_DEFAULT),
-        PE_RAISE_SUBMODE0_FUND_COST
-    );
 }
 
 #[test]
@@ -2915,12 +3000,13 @@ fn pe_maxis_man_constructor_saves_xtxt_not_xtrf_to_plus_a() {
     // PE FUN_00452FA0 @ 0x4530d9: +A = spawn-tile XTXT (0x4CA600), not XTRF.
     let mut city = City::new_blank("/tmp/maxis-xtxt-a.sc2", "MaxisXtxtA").expect("blank city");
     city.set_traffic_overlays_for_test(crate::win95_overlay::empty_overlay_table());
+    let (event_x, event_y) = *pe_firestorm_spiral_tiles(&city, 20, 20).last().unwrap();
     let mut state = test_state(city);
     state.hover_tile = Some((20, 20));
     assert!(state.start_disaster(DisasterKind::Firestorm));
     arm_pe_maxis_man_spawn_gates(&mut state);
     let mut preview = state.pe_process_crt;
-    let (spawn_x, spawn_y) = pe_maxis_man_spawn_tile_jitter(20, 20, &mut preview);
+    let (spawn_x, spawn_y) = pe_maxis_man_spawn_tile_jitter(event_x, event_y, &mut preview);
     state.city.set_text_overlay(spawn_x, spawn_y, 0x42);
     state.city.set_traffic_density(spawn_x, spawn_y, 0x80);
     assert_eq!(state.tick_pe_maxis_man_spawn(), 1);
@@ -2953,18 +3039,24 @@ fn pe_maxis_man_spawn_tile_jitters_by_crt_rand_and_3() {
     // ±0x10 (clamp 0..=0x7f). Direction is `0x402dbf` toward the event tile.
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_traffic_overlays_for_test(crate::win95_overlay::empty_overlay_table());
+    let (event_x, event_y) = *pe_firestorm_spiral_tiles(&city, 12, 34).last().unwrap();
     let mut state = test_state(city);
     state.hover_tile = Some((12, 34));
     assert!(state.start_disaster(DisasterKind::Firestorm));
     arm_pe_maxis_man_spawn_gates(&mut state);
     let overlay_before = state.win95_overlay_sim.sim_rng_seed();
     let mut preview = state.pe_process_crt;
-    let (spawn_x, spawn_y) = pe_maxis_man_spawn_tile_jitter(12, 34, &mut preview);
-    let expected_dir = pe_xthg_direction_toward(spawn_x as i16, spawn_y as i16, 12, 34);
-    assert_ne!((spawn_x, spawn_y), (12, 34));
+    let (spawn_x, spawn_y) = pe_maxis_man_spawn_tile_jitter(event_x, event_y, &mut preview);
+    let expected_dir = pe_xthg_direction_toward(
+        spawn_x as i16,
+        spawn_y as i16,
+        event_x as i16,
+        event_y as i16,
+    );
+    assert_ne!((spawn_x, spawn_y), (event_x, event_y));
     assert!(
-        (spawn_x == 12 && spawn_y.abs_diff(34) == 0x10)
-            || (spawn_y == 34 && spawn_x.abs_diff(12) == 0x10)
+        (spawn_x == event_x && spawn_y.abs_diff(event_y) == 0x10)
+            || (spawn_y == event_y && spawn_x.abs_diff(event_x) == 0x10)
     );
 
     assert_eq!(state.tick_pe_maxis_man_spawn(), 1);
@@ -2990,7 +3082,7 @@ fn pe_maxis_man_spawn_tile_jitters_by_crt_rand_and_3() {
     );
     assert_eq!(
         (record.target_x as usize, record.target_y as usize),
-        (12, 34)
+        (event_x, event_y)
     );
     assert_eq!(record.lane, expected_dir);
     assert_eq!(
@@ -3101,6 +3193,29 @@ fn pe_maxis_man_spawn_requires_declined_and_random_and3_zero() {
             .iter()
             .any(|r| r.kind == crate::win95_overlay::XTHG_MAXIS_MAN)
     );
+}
+
+#[test]
+fn win95_developed_center_loads_and_updates_at_phase_two_on_both_layouts() {
+    for name in ["center-phase-two.sc2", "center-phase-two.mac"] {
+        let path = std::env::temp_dir().join(format!("citygame-{}-{name}", std::process::id()));
+        let mut city = blank_city_layout_fixture(&path, "Center");
+        assert_eq!(city.pe_city_center(), (64, 64));
+        city.set_pe_city_center(58, 40);
+        city.set_building(90, 70, 0x70);
+        city.save(&path).unwrap();
+
+        let mut state = test_state(City::load(&path).unwrap());
+        assert_eq!(state.city.pe_city_center(), (58, 40));
+        let (population, outcomes) = state.refresh_live_misc_current_values();
+        assert_eq!(state.city.pe_city_center(), (58, 40));
+        state.sim_calendar_day2_density(population, outcomes);
+        assert_eq!(state.city.pe_city_center(), (44, 34));
+
+        state.city.save(&path).unwrap();
+        assert_eq!(City::load(&path).unwrap().pe_city_center(), (44, 34));
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 #[test]
@@ -3625,7 +3740,7 @@ fn monthly_ambient_clock_seed_does_not_replace_live_process_rng() {
 }
 
 #[test]
-fn emergency_tools_place_preview_and_bulldoze_dispatch_actors() {
+fn emergency_tools_place_and_preview_dispatch_actors() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_city_funds(20_000);
     city.set_text_overlay(30, 40, 0xff);
@@ -3646,15 +3761,10 @@ fn emergency_tools_place_preview_and_bulldoze_dispatch_actors() {
             .dispatch_kind(),
         Some(DispatchKind::Police)
     );
-
-    state.tool = EditTool::Bulldoze;
-    assert!(state.apply_tool_at_tile(20, 21));
-    assert_eq!(state.city.building_at(20, 21), 0);
-    assert!(state.city.dispatch_actor_at(20, 21).is_none());
 }
 
 #[test]
-fn dispatch_actor_blocks_non_zone_surface_edit_tools_until_bulldozed() {
+fn dispatch_actor_blocks_non_zone_surface_edit_tools() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_city_funds(500_000);
     stamp_complete_building_for_test(&mut city, 100, 100, 210, 3);
@@ -3678,10 +3788,208 @@ fn dispatch_actor_blocks_non_zone_surface_edit_tools_until_bulldozed() {
     state.tool = EditTool::PowerPlantWind;
     assert_eq!(state.place_building_at(20, 21, 200), 0);
     assert!(state.city.dispatch_actor_at(20, 21).is_some());
+}
 
-    state.tool = EditTool::Bulldoze;
-    assert!(state.apply_tool_at_tile(20, 21));
-    assert!(state.city.dispatch_actor_at(20, 21).is_none());
+#[test]
+fn bulldozing_under_a_deployed_responder_matches_both_engines_and_save_layouts() {
+    for path in ["dispatch-bulldozer.city", "dispatch-bulldozer.sc2"] {
+        for fidelity in [EngineFidelity::Mac68k, EngineFidelity::Win95] {
+            for underground in [false, true] {
+                for building in [0, 4, 0x0d] {
+                    let mut city = blank_city_layout_fixture(path, "Responder demolition");
+                    if fidelity == EngineFidelity::Mac68k {
+                        city.prepare_mac_fidelity_from_saved_city();
+                    }
+                    city.set_city_funds(100);
+                    city.set_building(20, 20, building);
+                    city.set_terrain(20, 20, 1);
+                    city.set_zone(20, 20, if building == 0x0d { 0xf2 } else { 2 });
+                    city.set_text_overlay(20, 20, 0xca);
+                    if underground {
+                        city.set_underground(20, 20, 2);
+                        city.set_tile_bits(20, 20, TileBits::new(0x20));
+                    }
+                    let bytes = [7, 0, 0x99, 20, 20, 0, 0, 0, 0x51, 0x52, 0x33, 0x5a];
+                    let record = Win95OverlayRecord::from_bytes(&bytes);
+                    city.set_mac_object_slot_record(1, record);
+                    assert_eq!(city.dispatch_actor_at(20, 20), Some((1, record)));
+
+                    let mut state = test_state(city);
+                    state.engine_fidelity = fidelity;
+                    state.show_underground = underground;
+                    state.tool = EditTool::Bulldoze;
+                    state.mac_process_rng = MacToolboxRng::new(1);
+                    state.pe_process_crt = Win95CrtRand::new(1);
+                    let accepted = underground || building != 0;
+                    let removed_park = !underground && building == 0x0d;
+                    let placement = state.tool_placement_at(20, 20).unwrap();
+                    assert_eq!(!placement.valid_tiles.is_empty(), accepted);
+                    assert_eq!(state.apply_tool_at_tile(20, 20), accepted);
+                    assert_eq!(state.city.city_funds(), if accepted { 99 } else { 100 });
+                    assert_eq!(
+                        state.city.building_at(20, 20),
+                        if underground { building } else { 0 }
+                    );
+                    assert_eq!(state.city.underground_at(20, 20), 0);
+                    assert_eq!(state.city.text_overlay_at(20, 20), Some(0xca));
+                    let mut expected_record = bytes;
+                    if removed_park {
+                        expected_record[10] = 0;
+                    }
+                    assert_eq!(
+                        state.city.dispatch_actor_at(20, 20).unwrap().1.to_bytes(),
+                        expected_record,
+                    );
+                    let mac_seed = if removed_park && fidelity == EngineFidelity::Mac68k {
+                        282_475_249
+                    } else {
+                        1
+                    };
+                    let pe_seed = if removed_park && fidelity == EngineFidelity::Win95 {
+                        0xc823_f683
+                    } else {
+                        1
+                    };
+                    assert_eq!(state.mac_process_rng.seed(), mac_seed);
+                    assert_eq!(state.pe_process_crt.seed(), pe_seed);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn win95_underground_bulldozer_uses_all_native_admission_gates() {
+    for path in [
+        "dispatch-bulldozer-underground.city",
+        "dispatch-bulldozer-underground.sc2",
+    ] {
+        for (und, piped, level, zone, accepted) in [
+            (0, false, 0, 2, false),
+            (0, true, 0, 2, true),
+            (0, false, 1, 2, true),
+            (2, true, 0, 7, false),
+        ] {
+            let mut city = blank_city_layout_fixture(path, "Underground demolition");
+            city.set_city_funds(100);
+            city.set_building(20, 20, 4);
+            city.set_zone(20, 20, zone);
+            city.set_underground(20, 20, und);
+            city.set_tunnel_levels(20, 20, level);
+            city.set_tile_bits(20, 20, TileBits::new(if piped { 0x20 } else { 0 }));
+            city.set_text_overlay(20, 20, 0xca);
+            let record = Win95OverlayRecord::from_bytes(&[
+                7, 0, 0x99, 20, 20, 0, 0, 0, 0x51, 0x52, 0x33, 0x5a,
+            ]);
+            city.set_mac_object_slot_record(1, record);
+
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Win95;
+            state.show_underground = true;
+            state.tool = EditTool::Bulldoze;
+            state.pe_process_crt = Win95CrtRand::new(1);
+            let placement = state.tool_placement_at(20, 20).unwrap();
+            assert_eq!(!placement.valid_tiles.is_empty(), accepted);
+            assert_eq!(state.apply_tool_at_tile(20, 20), accepted);
+            assert_eq!(state.city.city_funds(), if accepted { 99 } else { 100 });
+            assert_eq!(state.city.building_at(20, 20), 4);
+            assert_eq!(
+                state.city.underground_at(20, 20),
+                if accepted { 0 } else { und }
+            );
+            assert_eq!(
+                state.city.tile_bits_at(20, 20).unwrap().piped(),
+                piped && !accepted
+            );
+            assert_eq!(state.city.dispatch_actor_at(20, 20), Some((1, record)));
+            assert_eq!(state.pe_process_crt.seed(), 1);
+        }
+    }
+}
+
+#[test]
+fn win95_bulldozer_retiles_both_layers_in_native_neighbor_bands() {
+    // Win95 MapTool replay with the police proxy and mixed cardinal networks.
+    let initial = [
+        (19, 20, 0x2b, 0x1e, 0x40),
+        (21, 20, 0x3a, 0x0f, 0x40),
+        (20, 19, 0x1c, 0x1f, 0x80),
+        (20, 21, 0x43, 0x15, 0x40),
+        (19, 19, 0x1d, 0x10, 0),
+        (21, 19, 0x0e, 0x01, 0x80),
+        (21, 21, 0x2c, 0x02, 0),
+        (18, 20, 0x1d, 0x10, 0),
+    ];
+    let flat = [(0x26, 0x19), (0x2c, 1), (0x0f, 0x1f), (0x43, 0x1e)];
+    let graded = [(0x20, 0x13), (0x30, 5), (0x13, 0x1f), (0x43, 0x13)];
+    let wet_grade = [(0x1e, 0x13), (0x2d, 5), (0x0f, 0x1f), (0x43, 0x13)];
+    let blocked = [(0x1d, 0x10), flat[1], flat[2], flat[3]];
+    for path in ["maptool-mixed.city", "maptool-mixed.sc2"] {
+        for (building, underground, funds, grade_band, blocked_axis, expected) in [
+            (4, false, 100, None, false, Some(flat)),
+            (0x0d, false, 100, None, false, Some(flat)),
+            (4, true, 100, None, false, Some(flat)),
+            (4, true, 0, None, false, None),
+            (4, true, 100, Some(0), false, Some(graded)),
+            (4, true, 100, Some(0x10), false, Some(wet_grade)),
+            (4, true, 100, None, true, Some(blocked)),
+        ] {
+            let mut city = blank_city_layout_fixture(path, "Mixed networks");
+            city.set_city_funds(funds);
+            city.set_building(20, 20, building);
+            city.set_zone(20, 20, 0xf2);
+            city.set_terrain(20, 20, 1);
+            city.set_text_overlay(20, 20, 0xca);
+            if underground {
+                city.set_underground(20, 20, 2);
+                city.set_tile_bits(20, 20, TileBits::new(0x20));
+            }
+            city.set_mac_object_slot_record(
+                1,
+                Win95OverlayRecord::from_bytes(&[
+                    7, 0, 0x99, 20, 20, 0, 0, 0, 0x51, 0x52, 0x33, 0x5a,
+                ]),
+            );
+            for (index, (x, y, xbld, xund, xbit)) in initial.into_iter().enumerate() {
+                city.set_building(x, y, xbld);
+                city.set_underground(x, y, xund);
+                city.set_tile_bits(x, y, TileBits::new(xbit));
+                city.set_traffic_density(x, y, 0x63);
+                if let Some(band) = grade_band
+                    && let Some(slope) = [2, 3, 4, 2].get(index)
+                {
+                    city.set_terrain(x, y, band + slope);
+                }
+            }
+            if blocked_axis {
+                city.set_terrain(18, 20, 2);
+            }
+
+            city.prepare_pe_fidelity_from_saved_city();
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Win95;
+            state.show_underground = underground;
+            state.tool = EditTool::Bulldoze;
+            state.pe_process_crt = Win95CrtRand::new(1);
+            assert_eq!(state.apply_tool_at_tile(20, 20), expected.is_some());
+            assert_eq!(state.city.city_funds(), if funds == 0 { 0 } else { 99 });
+            for (index, (x, y, xbld, xund, xbit)) in initial.into_iter().enumerate() {
+                let shapes = expected
+                    .and_then(|rows| rows.get(index).copied())
+                    .unwrap_or((xbld, xund));
+                assert_eq!(
+                    (
+                        state.city.building_at(x, y),
+                        state.city.underground_at(x, y)
+                    ),
+                    shapes,
+                    "{path} underground={underground} grade_band={grade_band:?} ({x}, {y})",
+                );
+                assert_eq!(state.city.tile_bits_at(x, y).unwrap().raw_bits(), xbit);
+                assert_eq!(state.city.traffic_density_at(x, y), Some(0x63));
+            }
+        }
+    }
 }
 
 #[test]
@@ -3943,11 +4251,15 @@ fn pe_maptool_underground_clear_subway_elevated_on_tunnel_level_one() {
     // PE @ `0x44341e`: DestroyBuilding mode 1 — elevated arm when tunnel_levels==1.
     let mut city = City::new_blank("/tmp/sc2000-map-und-elev.sc2", "MapUndEl").expect("blank");
     city.set_building(33, 33, 0x40);
+    city.set_building(33, 30, 0x42);
     city.set_zone(33, 33, ZONE_RESIDENTIAL_LIGHT | 0xf0);
     city.set_underground(33, 33, UNDER_TILE_PIPES_LR);
     city.set_tunnel_levels(33, 33, 1);
     let mut crt = Win95CrtRand::new(0x4433_fe01);
-    let seed_before = crt.seed();
+    let mut preview = crt;
+    for _ in 0..4 {
+        preview.random_u15();
+    }
     assert!(pe_maptool_underground_clear_subway_443427(
         &mut city,
         Some(&mut crt),
@@ -3962,7 +4274,8 @@ fn pe_maptool_underground_clear_subway_elevated_on_tunnel_level_one() {
     );
     assert_eq!(city.tunnel_levels_at(33, 33), 0);
     assert_eq!(city.underground_at(33, 33), 0);
-    assert_eq!(crt.seed(), seed_before, "elevated arm does not consume CRT");
+    assert_eq!(city.building_at(33, 30), 0);
+    assert_eq!(crt.seed(), preview.seed());
 }
 
 #[test]
@@ -4595,9 +4908,7 @@ fn pe_monthly_condition_story_queues_transit_shortage_0x2f() {
         .set_misc_u32_at(MISC_POWER_USED_PERCENT_OFFSET, 0x62);
     state.city.persist_pe_day22_population_leftover(10_000);
     // 0 stations + 0 roads current <= 100 → story fires.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x2f));
 }
 
@@ -4623,9 +4934,7 @@ fn pe_monthly_condition_story_skips_transit_when_stations_cover_pop() {
     stamp_complete_building_for_test(&mut state.city, 40, 30, FIRE_STATION_BUILDING_ID, 3);
     // Water-coverage arm: keep <= 0x62 so index 4 does not win on the default 100.
     state.city.set_pe_water_coverage_percent(0x62);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x2f));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x2e));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x30));
@@ -4649,9 +4958,7 @@ fn pe_monthly_condition_transit_uses_dw_tile_count_like_471c13() {
     for x in 0..20 {
         state.city.set_building(x, 10, SUBWAY_STATION_BUILDING_ID);
     }
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x2f));
 }
 
@@ -4664,9 +4971,7 @@ fn pe_monthly_condition_story_queues_seaport_coast_0x35() {
     state.city.set_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET, 1);
     let ind = budget_row_misc_offset(2, BUDGET_SERVICE_CURRENT_FIELD).expect("ind tax");
     state.city.set_misc_u32_at(ind, 20_000); // /10000 = 2; 0 cranes < 2
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
 }
 
@@ -4679,9 +4984,7 @@ fn pe_monthly_condition_story_queues_seaport_inland_0x3b() {
     state.city.set_misc_u32_at(EDIT_MAP_RIVER_MISC_OFFSET, 0);
     let ind = budget_row_misc_offset(2, BUDGET_SERVICE_CURRENT_FIELD).expect("ind tax");
     state.city.set_misc_u32_at(ind, 20_000);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x3b));
 }
 
@@ -4694,9 +4997,7 @@ fn pe_monthly_condition_story_queues_seaport_river_0x35() {
     state.city.set_misc_u32_at(EDIT_MAP_RIVER_MISC_OFFSET, 1);
     let ind = budget_row_misc_offset(2, BUDGET_SERVICE_CURRENT_FIELD).expect("ind tax");
     state.city.set_misc_u32_at(ind, 20_000);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
 }
 
@@ -4711,9 +5012,7 @@ fn pe_monthly_condition_story_skips_seaport_when_cranes_cover_tax() {
     // Three crane tiles → score 9 >= 2.
     stamp_complete_building_for_test(&mut state.city, 70, 30, SEAPORT_CRANE_BUILDING_ID, 3);
     // Commercial tax 0 → airport arm does not fire.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3b));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3c));
@@ -4732,9 +5031,7 @@ fn pe_monthly_condition_story_skips_seaport_when_fa_non_network_covers_tax() {
     state.city.set_text_overlay(20, 20, 0xfa);
     state.city.set_building(21, 20, SMALL_PARK_BUILDING_ID);
     state.city.set_text_overlay(21, 20, 0xfa);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3b));
 }
@@ -4753,8 +5050,7 @@ fn mac68k_monthly_condition_story_skips_seaport_when_fa_non_network_covers_tax()
     state.city.set_building(21, 20, SMALL_PARK_BUILDING_ID);
     state.city.set_text_overlay(21, 20, 0xfa);
     let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3b));
 }
@@ -4769,9 +5065,7 @@ fn pe_monthly_condition_story_desal_tiles_without_fa_do_not_cover_seaport() {
     let ind = budget_row_misc_offset(2, BUDGET_SERVICE_CURRENT_FIELD).expect("ind tax");
     state.city.set_misc_u32_at(ind, 20_000); // threshold 2
     stamp_complete_building_for_test(&mut state.city, 70, 30, 250, 3); // nine desal tiles, no FA
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
 }
 
@@ -4784,9 +5078,7 @@ fn pe_monthly_condition_story_queues_airport_shortage_0x3c() {
     // Cover seaport: keep industrial tax 0 so arm does not win.
     let com = budget_row_misc_offset(1, BUDGET_SERVICE_CURRENT_FIELD).expect("com tax");
     state.city.set_misc_u32_at(com, 4_000); // /2000 = 2; 0 runways < 2
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x3c));
 }
 
@@ -4804,9 +5096,7 @@ fn pe_monthly_condition_story_queues_airport_free_clinics_0x36() {
     }
     state.city.set_pe_w_neighbor_fame_rank(6, 0);
     let _ = state.city.pe_rebuild_tech_unlock_mask_46a0be(0);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x36));
 }
 
@@ -4821,9 +5111,7 @@ fn pe_monthly_condition_story_skips_airport_when_runways_cover_tax() {
     pe_place_tile_441f00(&mut state.city, 70, 30, RUNWAY_BUILDING_ID);
     pe_place_tile_441f00(&mut state.city, 71, 30, RUNWAY_BUILDING_ID);
     // Residential tax 0 → recreation arm does not fire.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3c));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x36));
     assert!(
@@ -4843,9 +5131,7 @@ fn pe_monthly_condition_seaport_uses_dw_tile_count_like_471d70() {
     state.city.set_misc_u32_at(ind, 20_000); // threshold 2
     stamp_complete_building_for_test(&mut state.city, 70, 30, SEAPORT_CRANE_BUILDING_ID, 3);
     state.city.pe_dw_tile_count[SEAPORT_CRANE_BUILDING_ID as usize] = 0;
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
 }
 
@@ -4860,9 +5146,7 @@ fn pe_monthly_condition_airport_uses_dw_tile_count_like_471dc4() {
     state.city.set_building(70, 30, RUNWAY_BUILDING_ID);
     state.city.set_building(71, 30, RUNWAY_BUILDING_ID);
     assert_eq!(state.city.pe_dw_tile_count[RUNWAY_BUILDING_ID as usize], 0);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x3c));
 }
 
@@ -4891,9 +5175,7 @@ fn pe_monthly_condition_story_skips_airport_when_fa_network_covers_tax() {
     state.city.set_text_overlay(20, 20, 0xfa);
     state.city.set_building(21, 20, 0x1e);
     state.city.set_text_overlay(21, 20, 0xfa);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3c));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x36));
 }
@@ -4911,8 +5193,7 @@ fn mac68k_monthly_condition_story_skips_airport_when_fa_network_covers_tax() {
     state.city.set_building(21, 20, 0x41);
     state.city.set_text_overlay(21, 20, 0xfa);
     let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3c));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x36));
 }
@@ -5665,6 +5946,74 @@ fn marina_sailboat_capacity_gates_on_budget_not_live_count() {
         "budget >= marina_units must refuse"
     );
     assert_eq!(state2.city.ambient_port_actor_at(29, 30), None);
+}
+
+#[test]
+fn win95_marina_scanner_matches_native_multi_face_spawn() {
+    let faces = [(30, 29), (31, 30), (30, 31), (29, 30)];
+    for (budget, free, blocked, spawned, lfsr, proxies) in [
+        (3, 2, false, 2, 11_428, [202, 203, 0, 0]),
+        (4, 2, false, 0, 2_857, [0, 0, 0, 0]),
+        (0, 0, false, 0, 2_857, [0, 0, 0, 0]),
+        (0, 1, true, 1, 5_714, [0, 202, 0, 0]),
+    ] {
+        let mut city = City::new_blank("/tmp/citygame-marina-faces.sc2", "Marina").unwrap();
+        city.set_building(30, 30, MARINA_BUILDING_ID);
+        city.pe_dw_tile_count[MARINA_BUILDING_ID as usize] = 45;
+        city.set_tile_bits(30, 30, TileBits::new(0x40));
+        city.pe_sailboat_budget = budget;
+        for (x, y) in faces {
+            city.set_tile_bits(x, y, TileBits::new(0x04));
+        }
+        if blocked {
+            city.set_building(30, 29, 1);
+        }
+        let overlays = city.traffic_overlays_mut().unwrap();
+        for (slot, record) in overlays.iter_mut().enumerate().skip(1) {
+            *record = Win95OverlayRecord::from_bytes(&[
+                if slot <= free { 0 } else { 3 },
+                255,
+                255,
+                0,
+                0,
+                5,
+                7,
+                8,
+                20 + slot as u8,
+                40 + slot as u8,
+                255,
+                0x17,
+            ]);
+        }
+        let mut state = test_state(city);
+        state.pe_process_lfsr = Win95Lfsr::new(2_857);
+        assert_eq!(
+            state.spawn_microsim_transit_actor_at_for_test(30, 30, true),
+            spawned
+        );
+        assert_eq!(state.pe_process_lfsr_state(), lfsr);
+        assert_eq!(state.city.pe_sailboat_budget, budget + spawned as u16);
+        assert_eq!(
+            faces.map(|(x, y)| state.city.text_overlay_at(x, y).unwrap()),
+            proxies
+        );
+        let overlays = state.city.traffic_overlays().unwrap();
+        if spawned == 2 {
+            assert_eq!(
+                overlays[1].to_bytes(),
+                [9, 2, 0, 30, 29, 0, 4, 4, 21, 41, 0, 0x17]
+            );
+            assert_eq!(
+                overlays[2].to_bytes(),
+                [9, 1, 0, 31, 30, 0, 4, 4, 22, 42, 0, 0x17]
+            );
+        } else if blocked {
+            assert_eq!(
+                overlays[1].to_bytes(),
+                [9, 2, 0, 31, 30, 0, 4, 4, 21, 41, 0, 0x17]
+            );
+        }
+    }
 }
 
 #[test]
@@ -7399,7 +7748,6 @@ fn synthetic_trip_markers_do_not_count_as_paid_neighbor_links() {
     state.engine_fidelity = EngineFidelity::Win95;
     let candidate = RoadNeighborLinkCandidate {
         endpoint: (127, 20),
-        initial_xtxt: 0,
     };
     assert!(apply_road_neighbor_link_confirmation(
         &mut state, candidate, true
@@ -7788,7 +8136,7 @@ fn refresh_live_trips_power_maps_use_process_crt_seed_not_city_name() {
     // Monthly trip refresh powered gates share FUN_004679B0 process CRT.
     let mut city = City::new_blank("/tmp/sc2000-trip-power.sc2", "TripPower").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x2828_8282);
     let process = state.pe_process_crt_seed();
@@ -7802,7 +8150,7 @@ fn january_traffic_count_heuristic_uses_process_crt_seed_not_city_name() {
     // Map-less January pe_traffic_count shares FUN_004679B0 process CRT with attitude maps.
     let mut city = City::new_blank("/tmp/sc2000-jan-traffic.sc2", "JanTraffic").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     // Roads so the map-less network_pressure path is non-trivial.
     for x in 12..=20 {
         city.set_building(x, 10, 29);
@@ -8184,7 +8532,7 @@ fn mac_edit_map_level_tool_change_and_done_finish_marker_before_transition() {
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.mode = AppMode::EditNewMap;
         state.tool = EditTool::LevelTerrain;
-        assert!(state.begin_edit_map_level_drag_at(64, 64, 100.0));
+        assert!(state.begin_edit_map_level_drag_at(64, 64));
         assert_eq!(state.city.text_overlay_at(64, 64), Some(0xc9));
         if done {
             state.finish_edit_map_state();
@@ -8297,18 +8645,22 @@ fn direct_subway_station_place_skips_maptool_preclear_crt() {
 }
 
 #[test]
-fn mac68k_place_subway_station_preserves_xtrf_like_pe_4408dd() {
-    // Shared subway-station arm leaves XTRF; Mac68k must not invent a clear.
+fn mac68k_place_subway_station_updates_underground_and_preserves_xtrf() {
+    // Mac CODE 5 0x3c6e writes the station marker and clears pipe membership.
     let mut city = City::new_blank("/tmp/sc2000-mac-subway-xtrf.sc2", "MacSubX").expect("blank");
     city.set_city_funds(20_000);
+    city.set_underground(20, 20, 0x10);
     city.set_tile_bits(20, 20, TileBits::new(0).with_piped(true).with_watered(true));
     city.set_traffic_density(20, 20, 0x44);
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     assert!(state.place_building_at(20, 20, SUBWAY_STATION_BUILDING_ID) > 0);
     let bits = state.city.tile_bits_at(20, 20).unwrap();
-    assert!(!bits.piped(), "PE clears piped on subway station");
-    assert!(bits.watered(), "invent water refresh must not wipe watered");
+    assert_eq!(state.city.underground_at(20, 20), UNDER_TILE_GREY_BOX_2);
+    assert_eq!(state.city.text_overlay_at(20, 20), Some(0x36));
+    assert_eq!(state.city.city_funds(), 19_750);
+    assert!(!bits.piped());
+    assert!(bits.watered());
     assert_eq!(state.city.traffic_density_at(20, 20), Some(0x44));
 }
 
@@ -8428,7 +8780,7 @@ fn tile_power_status_text_reports_powered_unpowered_and_non_consumers() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
 
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 4);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 4);
     city.set_zone(11, 10, 1);
     city.set_zone(12, 10, 1);
     city.set_zone(13, 10, 1);
@@ -8444,7 +8796,7 @@ fn tile_power_status_text_reports_power_lines_and_plants() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
 
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 4);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 4);
     city.set_building(
         11,
         10,
@@ -10428,7 +10780,9 @@ fn special_zone_growth_rechecks_seaport_capacity_between_plans() {
 fn special_zone_growth_roll_airport_polarity_matches_pe_436601() {
     // Airport @ `0x436601` `je` ladder @ `0x43670d` when `(al&3)==0` — same admit
     // shape as seaport/army/AF/navy pickers (silo monthly skips this gate).
-    let state = test_state(City::new_blank("/tmp/sc2000-roll-pol.sc2", "RollPol").expect("blank"));
+    let mut city = City::new_blank("/tmp/sc2000-roll-pol.sc2", "RollPol").expect("blank");
+    set_military_base_type_for_test(&mut city, MILITARY_BASE_ARMY);
+    let state = test_state(city);
     for seed in 0..64u32 {
         let mut rng = Win95CrtRand::new(seed);
         let mut peek = Win95CrtRand::new(seed);
@@ -10448,7 +10802,7 @@ fn special_zone_growth_roll_airport_polarity_matches_pe_436601() {
         assert_eq!(
             state.special_zone_growth_roll_allows(&mut rng, ZONE_MILITARY),
             draw == 0,
-            "military (no silo base) seed {seed}"
+            "army base seed {seed}"
         );
     }
 }
@@ -11168,6 +11522,7 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
         show_infrastructure: true,
         show_zones: true,
         show_underground: false,
+        modifiers: Mod::empty(),
         auto_goto_enabled: true,
         pending_disaster_auto_goto: None,
         pending_disaster_start_sound: None,
@@ -11196,36 +11551,24 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
             crate::mac_random::MacGameLcgRng::INITIAL_STATE,
         ),
         pe_process_game_rand,
-        pe_raise_submode: PE_RAISE_SUBMODE_DEFAULT,
-        pe_raise_adjust_land: 0,
+        edit_map_height_hold: None,
         pe_raise_xter_ui_byte: 0,
         pe_raise_ui_tool_id: 0,
         pe_raise_ui_tile_x: 0,
         pe_raise_ui_tile_y: 0,
-        pe_raise_press_y: 0,
         pe_raise_ui_press_y_byte: 0,
         pe_raise_ui_byte6: 0,
         pe_raise_ui_byte7: 0,
         pe_raise_ui_byte8: 0,
         pe_raise_ui_byte9: 0,
-        pe_raise_drag_dir: 0xffff,
-        pe_raise_this_f8: 0,
         pe_spread_tool4_ui_timer: 0,
         pe_spread_prev_tile_x: 0,
         pe_spread_prev_tile_y: 0,
-        pe_stretch_hold_si: 0,
         pe_stretch_hold_ui_refresh_count: 0,
         pe_stretch_hold_cursor_id: 0,
         pe_stretch_hold_cursor_arg: 0,
         pe_stretch_hold_ui_wait_4012c1_count: 0,
         pe_lower_hold_ui_refresh_count: 0,
-        pe_lower_hold_cursor_id: 0,
-        pe_lower_hold_cursor_arg: 0,
-        pe_level_hold_sound_after_altm: 0,
-        pe_level_hold_sound_after_smooth: 0,
-        pe_level_hold_ui_refresh_count: 0,
-        pe_level_hold_cursor_id: 0,
-        pe_level_hold_cursor_arg: 0,
         pe_level_hold_ui_wait_4012c1_count: 0,
         pe_spread_hold_ui_refresh_count: 0,
         pe_spread_hold_cursor_id: 0,
@@ -11233,21 +11576,6 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
         pe_spread_ui_cursor_4519e0_count: 0,
         pe_spread_ui_cursor_4519e0_last_arg: 0,
         pe_spread_ui_wait_4012c1_count: 0,
-        pe_raise_hold_ui_refresh_count: 0,
-        pe_raise_hold_cursor_id: 0,
-        pe_raise_hold_cursor_arg: 0,
-        pe_raise_ui_cursor_4519e0_count: 0,
-        pe_raise_ui_cursor_4519e0_last_arg: 0,
-        pe_raise_ui_wait_4012c1_count: 0,
-        pe_raise_midband_refuse_sound_401096_count: 0,
-        pe_raise_midband_refuse_dialog_402c4d_count: 0,
-        pe_raise_midband_refuse_dialog_402c4d_a: 0,
-        pe_raise_midband_refuse_dialog_402c4d_b: 0,
-        pe_raise_midband_refuse_dialog_402c4d_c: 0,
-        pe_raise_midband_refuse_ui_402900_count: 0,
-        pe_raise_midband_refuse_ui_402900_a: 0,
-        pe_raise_midband_refuse_ui_402900_b: 0,
-        pe_raise_hold_blit_count: 0,
         pe_lower_hold_blit_count: 0,
         pe_process_lfsr,
         engine_fidelity: EngineFidelity::Win95,
@@ -11277,7 +11605,6 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
         highway_drag: None,
         terrain_drag: None,
         edit_map_stretch_drag: None,
-        edit_map_lower_drag: None,
         edit_map_level_drag: None,
         nature_drag: None,
         power_plant_dialog: None,
@@ -11339,6 +11666,7 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
         show_infrastructure: true,
         show_zones: true,
         show_underground: false,
+        modifiers: Mod::empty(),
         auto_goto_enabled: true,
         pending_disaster_auto_goto: None,
         pending_disaster_start_sound: None,
@@ -11367,36 +11695,24 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
             crate::mac_random::MacGameLcgRng::INITIAL_STATE,
         ),
         pe_process_game_rand,
-        pe_raise_submode: PE_RAISE_SUBMODE_DEFAULT,
-        pe_raise_adjust_land: 0,
+        edit_map_height_hold: None,
         pe_raise_xter_ui_byte: 0,
         pe_raise_ui_tool_id: 0,
         pe_raise_ui_tile_x: 0,
         pe_raise_ui_tile_y: 0,
-        pe_raise_press_y: 0,
         pe_raise_ui_press_y_byte: 0,
         pe_raise_ui_byte6: 0,
         pe_raise_ui_byte7: 0,
         pe_raise_ui_byte8: 0,
         pe_raise_ui_byte9: 0,
-        pe_raise_drag_dir: 0xffff,
-        pe_raise_this_f8: 0,
         pe_spread_tool4_ui_timer: 0,
         pe_spread_prev_tile_x: 0,
         pe_spread_prev_tile_y: 0,
-        pe_stretch_hold_si: 0,
         pe_stretch_hold_ui_refresh_count: 0,
         pe_stretch_hold_cursor_id: 0,
         pe_stretch_hold_cursor_arg: 0,
         pe_stretch_hold_ui_wait_4012c1_count: 0,
         pe_lower_hold_ui_refresh_count: 0,
-        pe_lower_hold_cursor_id: 0,
-        pe_lower_hold_cursor_arg: 0,
-        pe_level_hold_sound_after_altm: 0,
-        pe_level_hold_sound_after_smooth: 0,
-        pe_level_hold_ui_refresh_count: 0,
-        pe_level_hold_cursor_id: 0,
-        pe_level_hold_cursor_arg: 0,
         pe_level_hold_ui_wait_4012c1_count: 0,
         pe_spread_hold_ui_refresh_count: 0,
         pe_spread_hold_cursor_id: 0,
@@ -11404,21 +11720,6 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
         pe_spread_ui_cursor_4519e0_count: 0,
         pe_spread_ui_cursor_4519e0_last_arg: 0,
         pe_spread_ui_wait_4012c1_count: 0,
-        pe_raise_hold_ui_refresh_count: 0,
-        pe_raise_hold_cursor_id: 0,
-        pe_raise_hold_cursor_arg: 0,
-        pe_raise_ui_cursor_4519e0_count: 0,
-        pe_raise_ui_cursor_4519e0_last_arg: 0,
-        pe_raise_ui_wait_4012c1_count: 0,
-        pe_raise_midband_refuse_sound_401096_count: 0,
-        pe_raise_midband_refuse_dialog_402c4d_count: 0,
-        pe_raise_midband_refuse_dialog_402c4d_a: 0,
-        pe_raise_midband_refuse_dialog_402c4d_b: 0,
-        pe_raise_midband_refuse_dialog_402c4d_c: 0,
-        pe_raise_midband_refuse_ui_402900_count: 0,
-        pe_raise_midband_refuse_ui_402900_a: 0,
-        pe_raise_midband_refuse_ui_402900_b: 0,
-        pe_raise_hold_blit_count: 0,
         pe_lower_hold_blit_count: 0,
         pe_process_lfsr,
         engine_fidelity: EngineFidelity::Win95,
@@ -11448,7 +11749,6 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
         highway_drag: None,
         terrain_drag: None,
         edit_map_stretch_drag: None,
-        edit_map_lower_drag: None,
         edit_map_level_drag: None,
         nature_drag: None,
         power_plant_dialog: None,
@@ -11529,4 +11829,127 @@ fn pe_idle_frame_dispatch_leaves_road_traffic_state_and_mac_cadence_separate() {
         1 // Native deadline admits one phase; elapsed frames do not create a backlog.
     );
     assert_eq!(mac.pe_idle_scheduler, pe_before);
+}
+
+#[test]
+fn pe_underground_release_matches_native_grades_and_census_on_both_save_layouts() {
+    for layout in ["pe-underground-grade.sc2", "pe-underground-grade.mac"] {
+        for (tool, kind, unit_price, base, written_bits) in [
+            (EditTool::Subway, UndergroundKind::Subway, 100, 1, 0x80),
+            (EditTool::Pipes, UndergroundKind::Pipes, 3, 0x10, 0xa0),
+        ] {
+            for (dx, dy, slope) in [(1, 0, 1), (0, 1, 2)] {
+                let cells = [(40, 40), (40 + dx, 40 + dy), (40 + 2 * dx, 40 + 2 * dy)];
+                for (start, end) in [(cells[0], cells[2]), (cells[2], cells[0])] {
+                    for grade in [0, slope, 9] {
+                        let mut city = blank_city_layout_fixture(layout, "Underground");
+                        city.prepare_pe_fidelity_from_saved_city();
+                        city.persist_pe_day22_population_leftover(50_000);
+                        city.set_city_funds(1000);
+                        for (x, y) in cells {
+                            city.set_tile_bits(x, y, TileBits::new(0x80));
+                            city.set_traffic_density(x, y, 0x63);
+                        }
+                        city.set_terrain(cells[1].0, cells[1].1, grade);
+                        let traffic = city.traffic_density_slice().unwrap().to_vec();
+                        let mut state = test_state(city);
+                        state.tool = tool;
+                        state.begin_underground_drag(start.0, start.1, kind);
+                        state.update_underground_drag_to(end);
+
+                        let price = 3 * unit_price + 25 * u32::from(grade == 9);
+                        assert_eq!(state.underground_drag_cost(), Some((kind, price)));
+                        assert_eq!(state.finish_underground_drag(), Some((kind, 3)));
+                        assert_eq!(state.city.city_funds(), 1000 - price as i32);
+                        let straight = base + dx as u8;
+                        for (index, (x, y)) in cells.into_iter().enumerate() {
+                            let graded = index == 1 && grade != 0;
+                            assert_eq!(state.city.terrain_at(x, y), if graded { slope } else { 0 });
+                            assert_eq!(
+                                state.city.underground_at(x, y),
+                                if graded { base + slope + 1 } else { straight },
+                                "{layout}: {kind:?} {start:?} to {end:?}, grade {grade}"
+                            );
+                            assert_eq!(
+                                state.city.tile_bits_at(x, y).unwrap().raw_bits(),
+                                written_bits
+                            );
+                        }
+                        assert_eq!(state.city.pe_xund_occupancy, 3 * u16::from(base == 1));
+                        assert_eq!(state.city.traffic_density_slice(), Some(traffic.as_slice()));
+                    }
+                }
+            }
+        }
+
+        for (grade, middle, neighbor, occupancy) in [
+            (0, 13, 1, 4),
+            (1, 2, 3, 4),
+            (9, 13, 2, 4),
+            (0x0a, 13, 2, 3),
+            (0x2a, 13, 2, 3),
+        ] {
+            let mut city = blank_city_layout_fixture(layout, "Subway neighbors");
+            city.prepare_pe_fidelity_from_saved_city();
+            city.set_city_funds(1000);
+            city.set_terrain(41, 41, grade);
+            pe_place_xund_442370(&mut city, 41, 41, 2);
+            let mut state = test_state(city);
+            state.tool = EditTool::Subway;
+            state.begin_underground_drag(40, 40, UndergroundKind::Subway);
+            state.update_underground_drag_to((42, 40));
+            assert_eq!(
+                state.finish_underground_drag(),
+                Some((UndergroundKind::Subway, 3))
+            );
+            assert_eq!(state.city.underground_at(41, 40), middle);
+            assert_eq!(state.city.underground_at(41, 41), neighbor);
+            assert_eq!(
+                state.city.pe_xund_occupancy, occupancy,
+                "{layout} grade {grade}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pe_underground_release_prices_native_prefix_and_existing_tiles() {
+    let kind = UndergroundKind::Subway;
+    for (seed, tunnel, funds, price, placed, middle) in [
+        (0x10, 0, 1000, 300, 3, 0x20),
+        (0x22, 0, 1000, 100, 1, 0x22),
+        (0, 1, 1000, 100, 1, 0),
+        (0, 2, 1000, 100, 1, 0),
+        (0, 0, 299, 300, 0, 0),
+    ] {
+        let mut city = blank_city_layout_fixture("pe-underground-prefix.sc2", "Subway prefix");
+        city.set_city_funds(funds);
+        city.set_tunnel_levels(41, 40, tunnel);
+        pe_place_xund_442370(&mut city, 41, 40, seed);
+        let mut state = test_state(city);
+        state.tool = EditTool::Subway;
+        state.begin_underground_drag(40, 40, kind);
+        state.update_underground_drag_to((42, 40));
+        assert_eq!(state.underground_drag_cost(), Some((kind, price)));
+        assert_eq!(state.finish_underground_drag(), Some((kind, placed)));
+        assert_eq!(state.city.underground_at(41, 40), middle);
+        assert_eq!(
+            state.city.city_funds(),
+            if placed == 0 {
+                funds
+            } else {
+                funds - price as i32
+            }
+        );
+    }
+
+    let mut city = blank_city_layout_fixture("pe-underground-single.sc2", "Existing subway");
+    city.set_city_funds(500);
+    pe_place_xund_442370(&mut city, 40, 40, 1);
+    let mut state = test_state(city);
+    state.tool = EditTool::Subway;
+    assert_eq!(state.place_underground_at(40, 40, kind), 0);
+    assert_eq!(state.city.city_funds(), 400);
+    assert_eq!(state.city.underground_at(40, 40), 1);
+    assert_eq!(state.city.pe_xund_occupancy, 1);
 }

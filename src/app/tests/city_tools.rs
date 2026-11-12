@@ -248,7 +248,7 @@ fn mac_zone_eight_runway_branch_creates_kind2_with_native_random_order() {
     assert_eq!(actor.kind, 2);
     assert_eq!(actor.lane, 2);
     assert_eq!(actor.state, 0);
-    assert_eq!((actor.tile_x, actor.tile_y), (y as u8, x as u8));
+    assert_eq!((actor.tile_x, actor.tile_y), (x as u8, y as u8));
     assert_eq!((actor.height, actor.sub_x, actor.sub_y), (0, 8, 8));
     assert_eq!(
         (actor.target_x, actor.target_y),
@@ -309,7 +309,7 @@ fn mac_zone_eight_runway_branch_creates_kind1_with_native_mode_and_edge_mapping(
                     expected_rng.random_u16(); // kind-2 versus kind-1 choice
                     let constructor_roll = expected_rng.random_u16();
                     let expected: (u8, u8, u8, u8, u8, u8, u8) = if constructor_roll % 10 >= 5 {
-                        (mode, 0, 0, y as u8, x as u8, 20, 20)
+                        (mode, 0, 0, x as u8, y as u8, 20, 20)
                     } else {
                         let edge = (expected_rng.random_u16() & 3) as u8;
                         let inset = (expected_rng.random_u16() % 100 + 10) as u8;
@@ -320,9 +320,9 @@ fn mac_zone_eight_runway_branch_creates_kind1_with_native_mode_and_edge_mapping(
                             _ => (inset, 127, 1),
                         };
                         let (target_row, target_column) = if mode == 0 {
-                            (y as u8, (x as u8).wrapping_add(16))
+                            (x as u8, (y as u8).wrapping_add(16))
                         } else {
-                            ((y as u8).wrapping_sub(16), x as u8)
+                            ((x as u8).wrapping_sub(16), y as u8)
                         };
                         (
                             heading,
@@ -335,6 +335,8 @@ fn mac_zone_eight_runway_branch_creates_kind1_with_native_mode_and_edge_mapping(
                         )
                     };
                     let expected_next = expected_rng.random_u16();
+                    let actor_tile = (expected.3 as usize, expected.4 as usize);
+                    city.set_text_overlay(actor_tile.0, actor_tile.1, 0x77);
 
                     let mut actual_rng = MacToolboxRng::new(seed);
                     let mut game_rng = MacGameLcgRng::new(MacGameLcgRng::INITIAL_STATE);
@@ -368,9 +370,15 @@ fn mac_zone_eight_runway_branch_creates_kind1_with_native_mode_and_edge_mapping(
                         "layout={kind:?} orientation={orientation} bit={candidate_bit} direct={direct}"
                     );
                     assert_eq!((actor.sub_x, actor.sub_y), (8, 8));
-                    assert_eq!(actor.saved_a, 0x35);
+                    assert_eq!(actor.saved_a, 0x77);
                     assert_eq!(actor.saved_b, 0x77); // export 114 leaves +0x0b untouched
-                    assert_eq!(city.text_overlay_at(x, y), Some(0xca));
+                    assert_eq!(
+                        city.text_overlay_at(actor_tile.0, actor_tile.1),
+                        Some(0xca)
+                    );
+                    if actor_tile != (x, y) {
+                        assert_eq!(city.text_overlay_at(x, y), Some(0x35));
+                    }
                     assert_eq!(city.mac_kind1_actor_counter, 1);
                     assert_eq!(sound_deadline, 0x1234_5678);
                 }
@@ -1256,12 +1264,12 @@ fn selected_sub_station_refuses_military_zone_before_xund_write() {
 
 #[test]
 fn bulldoze_sub_station_clears_xund_via_place_xund() {
-    // PE subway clear uses PlaceXUND(0) (e.g. `0x443427`); military still writes.
+    // PE surface substation demolition calls PlaceXUND(0) at `0x44344b`.
     let mut city = City::new_blank("/tmp/sc2000-bulldoze-sub-xund.sc2", "BulSubXu").expect("blank");
     city.set_city_funds(20_000);
     city.set_building(20, 20, 233);
     city.set_underground(20, 20, UNDER_TILE_GREY_BOX_2);
-    city.set_zone(20, 20, ZONE_MILITARY | ZONE_CORNER_ALL);
+    city.set_zone(20, 20, ZONE_RESIDENTIAL_LIGHT | ZONE_CORNER_ALL);
     city.set_tile_bits(20, 20, TileBits::new(0).with_watered(true));
     city.set_traffic_density(20, 20, 0x21);
     let mut state = test_state(city);
@@ -1284,6 +1292,25 @@ fn sub_to_rail_preserves_xtxt_like_pe_place_tile() {
     state.tool = EditTool::SubToRail;
     assert!(state.place_sub_to_rail_at(20, 20));
     assert_eq!(state.city.text_overlay_at(20, 20), Some(0x39));
+}
+
+#[test]
+fn mac68k_sub_to_rail_keeps_negative_funds_and_military_zone() {
+    let mut city = City::new_blank("/tmp/citygame-mac-subrail.sc2", "SubRail").unwrap();
+    city.set_city_funds(-1);
+    city.set_building(21, 20, 0x2c);
+    city.set_underground(20, 19, 1);
+    city.set_zone(20, 20, 0x07);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::SubToRail;
+
+    assert!(state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.city.city_funds(), -1);
+    assert_eq!(state.city.building_at(20, 20), 0x6c);
+    assert_eq!(state.city.underground_at(20, 20), 0x23);
+    assert_eq!(state.city.zone_at(20, 20).unwrap().raw_bits(), 0xf7);
+    assert_eq!(state.city.building_at(21, 20), 0x2d);
 }
 
 #[test]
@@ -3178,6 +3205,80 @@ fn road_and_rail_drag_costs_use_original_per_tile_prices() {
 }
 
 #[test]
+fn mac68k_road_drag_charges_the_whole_admitted_route_before_writing() {
+    let mut city = City::new_blank("/tmp/citygame-mac-road.sc2", "Road").unwrap();
+    city.set_building(10, 10, 0x1d);
+    city.set_building(13, 10, 0x74);
+    city.set_city_funds(25);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Road;
+
+    for (funds, written, remaining) in [(25, 0, 25), (30, 2, 0)] {
+        state.city.set_city_funds(funds);
+        state.begin_network_drag(10, 10, NetworkKind::Road);
+        state.update_network_drag_to((14, 10));
+        assert_eq!(state.network_drag_cost(), Some((NetworkKind::Road, 30)));
+        assert_eq!(
+            state.release_left_mouse_drag(false).network,
+            Some((NetworkKind::Road, written))
+        );
+        assert_eq!(state.city.city_funds(), remaining);
+        assert_eq!(state.city.building_at(13, 10), 0x74);
+        assert_eq!(state.city.building_at(14, 10), 0);
+        for x in [11, 12] {
+            assert_eq!(
+                NetworkKind::Road.contains(state.city.building_at(x, 10)),
+                written > 0
+            );
+        }
+    }
+}
+
+#[test]
+fn mac68k_road_link_offers_after_stroke_and_charges_only_once() {
+    let city = City::new_blank("/tmp/citygame-mac-road-link.sc2", "Link").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Road;
+    state.city.set_city_funds(1_029);
+
+    state.begin_network_drag(2, 86, NetworkKind::Road);
+    state.update_network_drag_to((0, 86));
+    let outcome = state.release_left_mouse_drag(false);
+    assert_eq!(outcome.network, Some((NetworkKind::Road, 3)));
+    assert_eq!(outcome.road_neighbor_link, None);
+    assert_eq!(state.city.city_funds(), 999);
+    assert_eq!(state.city.text_overlay_at(0, 86).unwrap_or(0), 0);
+
+    state.city.set_city_funds(1_010);
+    state.begin_network_drag(0, 86, NetworkKind::Road);
+    let outcome = state.release_left_mouse_drag(false);
+    assert_eq!(outcome.network, Some((NetworkKind::Road, 0)));
+    let candidate = outcome.road_neighbor_link.unwrap();
+    assert!(!apply_road_neighbor_link_confirmation(
+        &mut state, candidate, false
+    ));
+    assert_eq!(state.city.city_funds(), 1_000);
+    assert!(apply_road_neighbor_link_confirmation(
+        &mut state, candidate, true
+    ));
+    assert!(!apply_road_neighbor_link_confirmation(
+        &mut state, candidate, true
+    ));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.text_overlay_at(0, 86), Some(0xfa));
+    assert_eq!(state.city.mac_rci_overlay_cap_counts()[0], 1);
+
+    state.city.set_city_funds(1_010);
+    state.begin_network_drag(0, 86, NetworkKind::Road);
+    assert_eq!(
+        state.release_left_mouse_drag(false).road_neighbor_link,
+        None
+    );
+}
+
+#[test]
 fn city_tool_behavior_matrix_matches_runtime_routes() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     enable_all_conditional_palette_tools(&mut city);
@@ -3401,10 +3502,8 @@ fn zoning_and_nature_sounds_follow_recovered_tool_groups() {
 
 #[test]
 fn bulldoze_clears_whole_bridge_span_like_opensc2k() {
-    // Preserve the current non-Win95 OpenSC2K bridge approximation. This test
-    // does not claim original Mac bulldozer parity. Selector 0/state 0 is now
-    // known to reach a map-removal worker, but its complete bridge and tail
-    // behavior has not been compared with this fallback.
+    // The old path could stamp wet bridge XTER without the Mac water/axis flags.
+    // These spans still need the perpendicular-axis fallback.
     let mut city = City::new_blank("/tmp/sc2000-bridge-span.sc2", "BridgeSpan").expect("blank");
     for x in 11..=13 {
         city.set_terrain(x, 10, 0x10);
@@ -3786,15 +3885,18 @@ fn pe_destroy_building_mode1_selector2_scatter_uses_snapped_nw_highway_gate() {
     assert_eq!(pe_highway_classify_463c40(&ordinary, 40, 41), -1);
     assert_eq!(
         pe_destroy_building_mode1_scatter_draw_count_for_hit(&ordinary, 0x8c, 41, 41),
-        8
+        16
     );
     let mut expected = Win95CrtRand::new(0x45b1_c201);
-    for _ in 0..8 {
+    for _ in 0..16 {
         let _ = expected.random_u15();
     }
     let mut crt = Win95CrtRand::new(0x45b1_c201);
     pe_destroy_building_mode1_optional_crt(&mut ordinary, Some(&mut crt), 41, 41);
-    assert_eq!(crt, expected, "selector-2 generic route spends eight draws");
+    assert_eq!(
+        crt, expected,
+        "selector-2 generic route spends sixteen draws"
+    );
     for y in 40..42 {
         for x in 40..42 {
             assert_eq!(ordinary.building_at(x, y), 0);
@@ -3939,7 +4041,7 @@ fn pe_destroy_building_selector2_lowclass_clears_fixed_square_and_preserves_crt_
 
     let seed = 0x45a1_7a49;
     let mut expected_crt = Win95CrtRand::new(seed);
-    for _ in 0..8 {
+    for _ in 0..16 {
         let _ = expected_crt.random_u15();
     }
     let expected_rubble: Vec<_> = cleanup_order
@@ -3952,7 +4054,7 @@ fn pe_destroy_building_selector2_lowclass_clears_fixed_square_and_preserves_crt_
 
     assert_eq!(
         crt, expected_crt,
-        "eight scatter draws precede x-major rubble"
+        "sixteen scatter draws precede x-major rubble"
     );
     for &((x, y), expected_tile) in &expected_rubble {
         assert_eq!(
@@ -4382,25 +4484,15 @@ fn pe_fb_tick_degrades_1x1_zone_via_change_building_abandon() {
 }
 
 #[test]
-fn pe_fb_degrade_destroy_building_consumes_crt_after_abandon_pick() {
-    // PE ChangeBuilding: CRT abandon pick, selector-2 generic scatter, then
-    // DestroyBuilding CRT PlaceTile rubble.
+fn pe_fb_degrade_consumes_only_the_abandon_pick() {
+    // The mode-4 picker advances CRT once before the direct PlaceTile writes.
     let mut city = City::new_blank("/tmp/sc2000-fb-crt.sc2", "FbCrt").expect("blank");
     stamp_complete_building_for_test(&mut city, 40, 40, RESIDENTIAL_2X2_BUILDINGS[0], 2);
     or_rci_building_zone_corners_for_test(&mut city, (40, 40), 2);
     let mut preview = Win95CrtRand::new(0x45ff_9a02);
     let abandoned = abandoned_building_for_pop_with_rng(2, &mut preview).expect("abandon");
-    for _ in 0..8 {
-        let _ = preview.random_u15(); // selector-2 generic scatter at `0x459C40`
-    }
-    for _ in 0..4 {
-        let _ = preview.rubble_tile_id();
-    }
     let mut crt = Win95CrtRand::new(0x45ff_9a02);
-    let mut lfsr = Win95Lfsr::new(1);
-    assert!(pe_fb_degrade_under_cloud(
-        &mut city, 40, 40, &mut crt, &mut lfsr
-    ));
+    assert!(pe_fb_degrade_under_cloud(&mut city, 40, 40, &mut crt));
     assert_eq!(city.building_at(40, 40), abandoned);
     assert_eq!(crt.seed(), preview.seed());
 }
@@ -5775,9 +5867,10 @@ fn mac68k_place_zone_rect_dezone_place_tile_clears_rubble() {
     state.engine_fidelity = EngineFidelity::Mac68k;
     assert_eq!(state.place_zone_rect((40, 40), (40, 40), 0), 1);
     assert_eq!(state.city.building_at(40, 40), 0);
+    assert_eq!(state.city.city_funds(), 19_999);
     assert_eq!(
         state.city.zone_at(40, 40).map(|z| z.raw_bits()),
-        Some(ZONE_COMMERCIAL_DENSE | ZONE_CORNER_ALL)
+        Some(ZONE_CORNER_ALL)
     );
 }
 
@@ -6296,13 +6389,17 @@ fn pe_maptool_surface_destroy_building_on_xbld_ge_0x0d() {
 #[test]
 fn pe_maptool_surface_destroy_building_elevated_arm() {
     // PE @ `0x443461`: DestroyBuilding mode 1 — elevated `0x3f..=0x42` arm, not
-    // DestroyStructure early-out; no CRT rubble.
+    // DestroyStructure early-out. Both portals consume scatter draws.
     let mut city = City::new_blank("/tmp/sc2000-map-surf-elev.sc2", "MapSurfEl").expect("blank");
     city.set_building(33, 33, 0x3f);
+    city.set_building(30, 33, 0x41);
     city.set_zone(33, 33, ZONE_RESIDENTIAL_LIGHT | 0xf0);
     city.set_tunnel_levels(33, 33, 0x1f);
     let mut crt = Win95CrtRand::new(0x4434_6101);
-    let seed_before = crt.seed();
+    let mut preview = crt;
+    for _ in 0..4 {
+        preview.random_u15();
+    }
     assert!(pe_maptool_surface_destroy_building_443461(
         &mut city,
         Some(&mut crt),
@@ -6315,7 +6412,8 @@ fn pe_maptool_surface_destroy_building_elevated_arm() {
         0
     );
     assert_eq!(city.tunnel_levels_at(33, 33), 0);
-    assert_eq!(crt.seed(), seed_before, "elevated arm does not consume CRT");
+    assert_eq!(city.building_at(30, 33), 0);
+    assert_eq!(crt.seed(), preview.seed());
 }
 
 #[test]
@@ -7323,6 +7421,40 @@ fn mac68k_refresh_underground_tile_pipes_mask0_places_0x1e() {
 }
 
 #[test]
+fn mac_pipe_stroke_uses_minor_axis_when_only_dominant_candidate_matches() {
+    for extension in ["city", "sc2"] {
+        let mut city =
+            blank_city_layout_fixture(format!("/tmp/mac-pipe-minor-axis.{extension}"), "Mac Pipes");
+        city.set_city_funds(10_000);
+        city.set_altitude(10, 10, 1, 0);
+        city.set_altitude(11, 10, 0, 0);
+        for x in 10..=14 {
+            city.set_altitude(x, 11, 1, 0);
+        }
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.tool = EditTool::Pipes;
+
+        let path = [(10, 10), (10, 11), (11, 11), (12, 11), (13, 11), (14, 11)];
+        assert_eq!(
+            state.underground_drag_path_for_kind(path[0], path[5], UndergroundKind::Pipes, true),
+            path
+        );
+        state.begin_underground_drag(10, 10, UndergroundKind::Pipes);
+        state.update_underground_drag_to((14, 11));
+        assert_eq!(
+            state.finish_underground_drag(),
+            Some((UndergroundKind::Pipes, 6))
+        );
+        assert_eq!(state.city.underground_at(11, 10), 0);
+        assert!(
+            path.iter()
+                .all(|&(x, y)| state.city.underground_at(x, y) != 0)
+        );
+    }
+}
+
+#[test]
 fn stamp_building_underground_footprint_preserves_xtxt() {
     // Underground stamp is XUND only; leave XTXT.
     let mut city = City::new_blank("/tmp/sc2000-und-foot-xtxt.sc2", "UndFootT").expect("blank");
@@ -7640,6 +7772,73 @@ fn citytool_marina_writes_microsim_xtxt_like_place_tile_size() {
 }
 
 #[test]
+fn mac_marina_centers_preview_and_placement_on_mixed_shoreline() {
+    let mut city = City::new_blank("/tmp/citygame-mac-marina.sc2", "Marina").unwrap();
+    city.set_city_funds(1_000);
+    for x in 20..23 {
+        city.set_tile_bits(x, 20, TileBits::new(0).with_water_tile(true));
+    }
+    city.set_terrain(22, 22, 3);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Marina;
+
+    let preview = state.tool_placement_at(21, 21).unwrap();
+    assert!(preview.invalid_tiles.is_empty());
+    assert_eq!(
+        preview.valid_tiles,
+        building_footprint_from_origin(20, 20, 3).unwrap()
+    );
+    assert!(state.apply_tool_at_tile(21, 21));
+    assert_eq!(state.city.city_funds(), 0);
+    for (x, y) in preview.valid_tiles {
+        assert_eq!(state.city.building_at(x, y), MARINA_BUILDING_ID);
+        assert_eq!(state.city.text_overlay_at(x, y), Some(0x3c));
+    }
+    assert_eq!(state.city.terrain_at(22, 22), 3);
+    assert_eq!(state.city.building_at(23, 23), 0);
+}
+
+#[test]
+fn mac_desalination_accepts_dry_land_and_preserves_pipes() {
+    let mut city = City::new_blank("/tmp/citygame-mac-desalination.sc2", "Desalination").unwrap();
+    city.set_technology_discovery_year(Technology::Desalinization, 0);
+    city.set_city_funds(1_000);
+    city.set_underground(20, 20, 0x10);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Desalinization;
+
+    assert!(state.apply_tool_at_tile(21, 21));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(20, 20), 0xfa);
+    assert_eq!(state.city.building_at(22, 22), 0xfa);
+    assert_eq!(state.city.building_at(23, 23), 0);
+    assert_eq!(state.city.underground_at(20, 20), 0x10);
+    assert_eq!(state.city.underground_at(21, 21), 0);
+}
+
+#[test]
+fn mac_water_treatment_checks_residential_window_before_placement() {
+    let mut city = City::new_blank("/tmp/citygame-mac-treatment.sc2", "Treatment").unwrap();
+    city.set_technology_discovery_year(Technology::WaterTreatment, 0);
+    city.set_city_funds(500);
+    city.set_zone(12, 20, ZONE_RESIDENTIAL_DENSE | 0x80);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::WaterTreatment;
+
+    assert!(!state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.city.city_funds(), 500);
+    assert_eq!(state.city.building_at(20, 20), 0);
+    state.city.set_zone(12, 20, 0);
+    state.city.set_zone(11, 20, ZONE_RESIDENTIAL_LIGHT);
+    assert!(state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(20, 20), 0xf4);
+}
+
+#[test]
 fn citytool_stadium_and_zoo_use_place_tile_size_xbit_and_corners() {
     // PE CityToolPlaceSelectedBuilding @ `0x440731` → PlaceTile-size for 0xD7/0xDA:
     // XBIT `|=0xe0`; size>1 epilogue ORs `0x4dc4d0` rotation corners.
@@ -7839,6 +8038,60 @@ fn citytool_bus_depot_writes_microsim_xtxt_like_place_tile_size() {
             assert_eq!(state.city.text_overlay_at(40 + dx, 40 + dy), Some(xtxt));
         }
     }
+}
+
+#[test]
+fn mac_bus_depot_accepts_flat_tiles_at_different_heights() {
+    let mut city = City::new_blank("/tmp/citygame-mac-bus.sc2", "Depot").unwrap();
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_city_funds(250);
+    city.set_altitude(41, 41, 1, 0);
+    city.set_building(41, 41, 0x0e);
+    city.clear_tile_bits_for_test();
+    city.set_microsim_stat1(1, 9);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::BusDepot;
+
+    assert_eq!(
+        state.building_placement_at(40, 40, 0xec).valid_tiles.len(),
+        4
+    );
+    assert!(state.apply_tool_at_tile(40, 40));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.microsim_at(1).unwrap().stat1, 10);
+    for x in 40..42 {
+        for y in 40..42 {
+            assert_eq!(state.city.building_at(x, y), 0xec);
+            assert_eq!(state.city.text_overlay_at(x, y), Some(0x34));
+        }
+    }
+}
+
+#[test]
+fn mac_rail_depot_dispatches_train_on_adjacent_track() {
+    let mut city = City::new_blank("/tmp/citygame-mac-rail.sc2", "Depot").unwrap();
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_city_funds(500);
+    for x in 32..=40 {
+        city.set_building(x, 27, 0x2c);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::RailDepot;
+    state.mac_game_rng = MacGameLcgRng::new(1_103_527_590);
+
+    assert!(state.apply_tool_at_tile(36, 28));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.text_overlay_at(36, 28), Some(0x35));
+    assert_eq!(state.city.mac_rail_actor_counter, 1);
+    let actors = state.city.traffic_overlays().unwrap();
+    assert_eq!(
+        [actors[1].kind, actors[2].kind, actors[3].kind],
+        [10, 11, 11]
+    );
+    assert_eq!((actors[1].tile_x, actors[1].tile_y), (36, 27));
+    assert_eq!(state.mac_game_rng.state(), 2_524_885_223);
 }
 
 #[test]
@@ -8201,7 +8454,7 @@ fn mac68k_zone_drag_charges_only_tiles_whose_zone_type_changes() {
         ZONE_COMMERCIAL_DENSE | 0x40
     );
     assert_eq!(
-        state.city.zone_at(12, 10).unwrap().zone_id(),
+        state.city.zone_at(12, 10).unwrap().raw_bits(),
         ZONE_COMMERCIAL_DENSE
     );
 }
@@ -9254,6 +9507,8 @@ fn cornered_multitile_building_footprints_generate_plumbing() {
 #[test]
 fn simulation_day1_persists_power_used_percent() {
     let mut state = water_consumer_fixture_for_calendar_test();
+    // Use the fixed 40-unit source from the native service replay.
+    state.city.set_building(9, 10, 0xc6);
     state.refresh_live_misc_current_values();
     let water_used_before = state.city.misc_u32_at(MISC_WATER_USED_PERCENT_OFFSET);
     state.game_clock = GameClock::new_with_day(1900, 1, 0);
@@ -9264,7 +9519,7 @@ fn simulation_day1_persists_power_used_percent() {
     assert_eq!(state.game_clock.day(), 1);
     assert_eq!(
         state.city.misc_u32_at(MISC_POWER_USED_PERCENT_OFFSET),
-        Some(power_used_percent_for_city(&state.city))
+        Some(2), // One admitted Pump over 40 raw source units.
     );
     assert_eq!(
         state.city.misc_u32_at(MISC_WATER_USED_PERCENT_OFFSET),
@@ -9409,9 +9664,8 @@ fn simulation_day22_offers_military_base_at_fourth_progression() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
 
-    let day22 = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let day22 = state.sim_calendar_day22_scenario(population);
 
     assert!(day22.status_announced);
     assert_eq!(
@@ -10292,8 +10546,8 @@ fn mac68k_extent2_bridge_special_topology_adds_three_flip_draws_per_cell() {
             city.set_zone(x, y, 0xf0);
             city.set_tile_bits(x, y, TileBits::new(0x04));
         }
-        // The 0x0e connected-run class refreshes the other three cells through
-        // export 138 before PlaceTile; its XUND cleanup is a gameplay side effect.
+        // The 0x0e connected-run class redraws secondary cells through
+        // CODE 12 export 178. Their XUND survives the surface stamps.
         city.set_underground(19, 20, 1);
 
         let seed = 0x1020_3040;
@@ -10316,16 +10570,15 @@ fn mac68k_extent2_bridge_special_topology_adds_three_flip_draws_per_cell() {
         ] {
             assert_eq!(city.building_at(x, y), 0, "{kind:?}, cell ({x},{y})");
         }
-        assert_eq!(city.underground_at(19, 20), 0, "{kind:?}");
+        assert_eq!(city.underground_at(19, 20), 1, "{kind:?}");
         assert_eq!(rng.seed(), expected_rng.seed(), "{kind:?}");
     }
 }
 
 #[test]
 fn mac68k_extent2_bridge_topology_0f_10_skips_secondary_terrain_refresh() {
-    // The native per-stride worker calls export 138 on the other three cells
-    // only for topology classes 0x0d/0x0e. Classes 0x0f/0x10 proceed directly
-    // to the four PlaceTile stamps, leaving XUND on those secondary cells.
+    // The per-stride secondary redraw differs by topology class.
+    // Both classes preserve XUND during the four surface stamps.
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         for (topology_bit, expected_code) in [(0, 0x0f), (0x02, 0x10)] {
             let mut city = City::new_blank(
@@ -10430,14 +10683,9 @@ fn mac68k_extent2_bridge_49_4a_skip_initial_edge_terrain_refresh() {
 }
 
 #[test]
-fn mac68k_extent2_bridge_classifier_returns_0d_for_water_marked_49_neighbor() {
-    // In the native XZON-high-nibble F mode, an XBIT water bit on XBLD 0x49
-    // returns class 0x0d. The full removal walk for this synthetic overlap is
-    // intentionally not invoked here: its nested classifier/removal cycle
-    // overflows the Rust test thread. The recovered Mac picker option-5 writer
-    // uses high-nibble F with uniform 0x49/0x4a footprints; it does not
-    // establish this mixed 0x6a-root/0x49-secondary placement. Other writers
-    // and imported or edited states for 0x6a/0x6b remain untraced.
+fn mac68k_extent2_bridge_water_marked_49_neighbor_completes_removal() {
+    // A mixed footprint takes topology class 0x0d. Its secondary redraw
+    // used to be mistaken for a recursive terrain-classifier call.
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         let mut city = City::new_blank(
             "/tmp/sc2000-mac-bridge-topology-0d.sc2",
@@ -10450,6 +10698,12 @@ fn mac68k_extent2_bridge_classifier_returns_0d_for_water_marked_49_neighbor() {
         city.set_building(21, 20, 0x49);
         city.set_tile_bits(21, 20, TileBits::new(0x04));
         assert_eq!(mac_export180_bridge_connection_code(&city, 20, 20), 0x0d);
+        city.set_underground(21, 20, 1);
+        let mut rng = MacToolboxRng::new(1);
+        mac_budget_decay_extent2_bridge_at(&mut city, 21, 20, &mut rng, false);
+        assert_eq!(city.building_at(20, 20), 0);
+        assert_eq!(city.building_at(21, 20), 0);
+        assert_eq!(city.underground_at(21, 20), 1);
     }
 }
 
@@ -11674,7 +11928,7 @@ fn destroy_bridge_tile_leaves_neighbor_road_mask() {
 }
 
 #[test]
-fn simulation_day24_refreshes_toolbar_and_neighbor_connections() {
+fn simulation_day24_refreshes_neighbor_connections_without_granting_rewards() {
     let mut city = reward_unlock_test_city();
     city.set_building(
         0,
@@ -11693,23 +11947,14 @@ fn simulation_day24_refreshes_toolbar_and_neighbor_connections() {
 
     state.handle_simulation_month_advanced();
 
-    assert_eq!(state.city.rewards_available_mask() & 0b0_1111, 0b0_1111);
-    assert_eq!(state.query_line, "Rewards Available");
+    assert_eq!(state.city.rewards_available_mask() & 0b0_1111, 0);
+    assert_ne!(state.query_line, "Rewards Available");
     assert_eq!(
         state.city.misc_u32_at(NEIGHBOR_CONNECTION_MISC_OFFSET),
         Some(1),
         "day-24 SimNation refresh should persist live neighbor connections"
     );
     assert!(state.city.has_dirty_tiles());
-}
-
-#[test]
-fn pe_seed_power_plant_xval_preserves_existing_land_plane() {
-    let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-    pe_seed_power_plant_xval_for_test(&mut city, 9, 10, 30);
-    pe_seed_power_plant_xval_for_test(&mut city, 49, 50, 18);
-    assert_eq!(city.land_value_at(9, 10), Some(30));
-    assert_eq!(city.land_value_at(49, 50), Some(18));
 }
 
 #[test]
@@ -11742,9 +11987,7 @@ fn pe_power_xbld_mapping_covers_rust_plant_ids() {
 #[test]
 fn pe_power_c8_output_tiles_scales_pe_units_by_sixteen() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-    let mut land = vec![0_u8; CITY_TILES];
-    land[10 * CITY_HEIGHT + 10] = 20;
-    city.sync_land_value_from_slice(&land);
+    city.set_altitude(10, 10, 20, 0);
     assert_eq!(
         pe_power_c8_output_tiles(&city, 10, 10, 3),
         pe_power_c8_pe_units(&city, 10, 10, 3).saturating_mul(16)
@@ -11755,30 +11998,27 @@ fn pe_power_c8_output_tiles_scales_pe_units_by_sixteen() {
 fn pe_power_c8_crt_rand_remainder_matches_pe_disassembly() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_misc_u32_at(MISC_WIND_OFFSET, 0x0a);
-    let mut land = vec![0_u8; CITY_TILES];
-    land[5 * CITY_HEIGHT + 5] = 20;
-    city.sync_land_value_from_slice(&land);
+    city.set_altitude(5, 5, 20, 0);
     let mut rng = Win95CrtRand::new(0x0046_79B0);
     let remainder = pe_power_crt_rand_u16(&mut rng);
     let modulus = pe_power_c8_random_modulus(&city);
-    let xval = u32::from(city.land_value_at(5, 5).unwrap_or(0)) & 0x1f;
     assert_eq!(
         pe_power_c8_pe_units(&city, 5, 5, remainder),
-        (xval + remainder % modulus) / 2
+        (20 + remainder % modulus) / 2
     );
 }
 
 #[test]
-fn pe_power_c8_xval_pop_level_low_masks_to_zero_low_five_bits() {
-    // `XVAL_POPLEVEL_LOW` (32) satisfies residential pop1 gates but `XVAL & 0x1f == 0`,
-    // so wind plants contribute only the CRT remainder term — often zero capacity.
+fn pe_power_c8_uses_land_altitude_bits_instead_of_land_value() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-    city.set_misc_u32_at(MISC_WIND_OFFSET, 0); // modulus = 1 → remainder % 1 == 0
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, XVAL_POPLEVEL_LOW);
-    assert_eq!(u32::from(XVAL_POPLEVEL_LOW) & 0x1f, 0);
+    city.set_misc_u32_at(MISC_WIND_OFFSET, 0);
+    let mut land = vec![0_u8; CITY_TILES];
+    land[10 * CITY_HEIGHT + 10] = 30;
+    city.sync_land_value_from_slice(&land);
+    city.set_altm_word(10, 10, 0xffe0);
     assert_eq!(pe_power_c8_pe_units(&city, 10, 10, 0), 0);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 30);
-    assert_eq!(pe_power_c8_pe_units(&city, 10, 10, 0), 15);
+    city.set_altm_word(10, 10, 0xfff2);
+    assert_eq!(pe_power_c8_pe_units(&city, 10, 10, 0), 9);
 }
 
 #[test]
@@ -12064,7 +12304,7 @@ fn place_power_over_road_crossover_stamps_xbit_powerable() {
 fn pe_power_used_percent_ignores_bare_zone_consumers() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 30);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 30);
     stamp_power_plant_xbit_powerable(&mut city, &[(10, 10)]);
     city.set_zone(11, 10, 1);
     city.set_zone(12, 10, 1);
@@ -12079,7 +12319,7 @@ fn pe_power_used_percent_ignores_bare_zone_consumers() {
 fn power_used_percent_maps_powered_consumers_from_same_crt_entry() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     stamp_power_plant_xbit_powerable(&mut city, &[(10, 10)]);
     city.set_building(12, 10, 0x70);
     let entry = pe_power_recalc_seed(&city);
@@ -12137,64 +12377,6 @@ fn pe_power_recalc_seed_varies_with_saved_city_month() {
     });
     let february = pe_power_recalc_seed(&city);
     assert_ne!(january, february);
-}
-
-#[test]
-fn earned_reward_mask_power_maps_use_process_crt_seed_not_city_name() {
-    // Day-24 reward availability shares FUN_004679B0 process CRT with ServiceStatus.
-    let mut city = City::new_blank("/tmp/sc2000-reward-crt.sc2", "RewardCrt").expect("blank");
-    city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
-    let mut state = test_state(city);
-    state.pe_process_crt = Win95CrtRand::new(0xc3c3_3c3c);
-    let process = state.pe_process_crt_seed();
-    assert_ne!(process, pe_power_recalc_seed(&state.city));
-    let process_outcomes = live_city_service_outcomes_for_city_with_power(
-        &state.city,
-        &power_service_maps_with_entry_seed(&state.city, process),
-    );
-    let expected = earned_reward_mask_for_city_with_outcomes(&state.city, process_outcomes);
-    let city_name_outcomes = city_service_outcomes_for_city(&state.city);
-    let _ = earned_reward_mask_for_city_with_outcomes(&state.city, city_name_outcomes);
-    assert_eq!(
-        earned_reward_mask_for_city_with_outcomes(
-            &state.city,
-            state.live_city_service_outcomes_with_process_crt(),
-        ),
-        expected
-    );
-    let _ = state.refresh_reward_availability();
-}
-
-#[test]
-fn pe_reward_population_gate_uses_shared_scalar_on_mac_layout() {
-    let path = std::env::temp_dir().join(format!(
-        "sc2000-reward-population-mac-layout-{}.city",
-        std::process::id()
-    ));
-    let mut city = City::new_blank(&path, "RewardCrossLayout").expect("blank city");
-    city.kind = CityFileKind::MacCity;
-    city.set_mac_state_misc_u32_at(MISC_NORMAL_POPULATION_OFFSET, 12_000);
-    stamp_complete_building_for_test(&mut city, 20, 20, 0xae, 3);
-    let outcomes = CityServiceOutcomes {
-        service_score: 100,
-        city_value: 1_000_000,
-        ..CityServiceOutcomes::default()
-    };
-
-    let win95_mask = earned_reward_mask_for_city_with_outcomes_and_fidelity(
-        &city,
-        outcomes,
-        EngineFidelity::Win95,
-    );
-    let mac_mask = earned_reward_mask_for_city_with_outcomes_and_fidelity(
-        &city,
-        outcomes,
-        EngineFidelity::Mac68k,
-    );
-    const ARCOLOGIES_REWARD: u32 = 1 << 4;
-    assert_ne!(win95_mask & ARCOLOGIES_REWARD, 0);
-    assert_eq!(mac_mask & ARCOLOGIES_REWARD, 0);
 }
 
 #[test]
@@ -12538,7 +12720,7 @@ fn mac68k_stamp_xbit_piped_preserves_xtrf() {
 fn pe_process_crt_carries_weather_into_next_month_power() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.refresh_live_misc_current_values();
     let entry = state.pe_process_crt_seed();
@@ -12615,7 +12797,7 @@ fn power_supply_capacity_uses_deterministic_wind_and_solar_outputs() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
 
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     for y in 20..=23 {
         for x in 20..=23 {
             city.set_building(x, y, 204);
@@ -12635,10 +12817,10 @@ fn power_supply_capacity_uses_deterministic_wind_and_solar_outputs() {
 }
 
 #[test]
-fn pe_power_wind_output_uses_c8_xval_formula() {
+fn pe_power_wind_output_uses_c8_altitude_formula() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut rng = Win95CrtRand::new(pe_power_recalc_seed(&city));
     let output = power_plant_output_tiles_with_rng(&city, 10, 10, &mut rng);
     let remainder = pe_power_crt_rand_u16(&mut Win95CrtRand::new(pe_power_recalc_seed(&city)));
@@ -12821,15 +13003,153 @@ fn mac68k_place_building_at_preserves_xtxt_like_pe_place_tile() {
 }
 
 #[test]
+fn mac_stadium_waits_for_an_available_team() {
+    let mut city = City::new_blank("/tmp/citygame-mac-stadium.sc2", "Stadium").unwrap();
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_city_funds(5_000);
+    city.set_mac_state_misc_u32_at(0x1028, 0x02);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Llama);
+    state.tool = EditTool::Stadium;
+
+    assert!(state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(19, 19), STADIUM_BUILDING_ID);
+    assert_eq!(state.city.building_at(22, 22), STADIUM_BUILDING_ID);
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::StadiumTeam {
+            x: 20,
+            y: 20,
+            available: 0x1d
+        })
+    );
+    assert_eq!(
+        state.advance_frame_simulation(Duration::from_secs(1)).days,
+        0
+    );
+    let dialog = state.city_info_dialog.unwrap();
+    let window = (900, 700);
+    let rect = city_info_dialog_rect_for(dialog, window);
+    let unavailable = crate::app::dialog_layout::stadium_team_choice_rect(rect, 1);
+    let available = crate::app::dialog_layout::stadium_team_choice_rect(rect, 4);
+    assert_eq!(
+        city_info_dialog_hit_test(
+            Vec2::new(unavailable.x + 1.0, unavailable.y + 1.0),
+            window,
+            dialog
+        ),
+        None
+    );
+    assert_eq!(
+        city_info_dialog_hit_test(
+            Vec2::new(available.x + 1.0, available.y + 1.0),
+            window,
+            dialog
+        ),
+        Some(CityInfoDialogAction::SelectStadiumTeam(4))
+    );
+    assert!(!state.finish_mac_stadium_team(1));
+    assert_eq!(state.city.mac_state_misc_u32_at(0x1028), Some(0x02));
+    assert!(state.finish_mac_stadium_team(4));
+    assert!(state.city_info_dialog.is_none());
+    assert_eq!(state.city.mac_state_misc_u32_at(0x1028), Some(0x12));
+    let marker = state.city.text_overlay_at(20, 20).unwrap();
+    let record = state.city.microsim_at(usize::from(marker - 0x33)).unwrap();
+    assert_eq!((record.stat2, record.stat3), (4, 0xff));
+}
+
+#[test]
+fn mac_civic_placement_increments_only_its_saved_budget_row() {
+    let mut city = City::new_blank("/tmp/citygame-mac-civic.sc2", "Civic").unwrap();
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_city_funds(20_000);
+    for row in 5..=9 {
+        let offset = budget_row_misc_offset_for_city(&city, row, 0).unwrap();
+        city.set_budget_misc_u32_values(offset, &[41, 83, 124]);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    for (row, tool) in [
+        (5, EditTool::Police),
+        (6, EditTool::FireStation),
+        (7, EditTool::Hospital),
+        (8, EditTool::School),
+        (9, EditTool::College),
+    ] {
+        state.tool = tool;
+        assert!(state.apply_tool_at_tile(20 + 8 * (row - 5), 20));
+        for check in 5..=9 {
+            let offset = budget_row_misc_offset_for_city(&state.city, check, 0).unwrap();
+            assert_eq!(
+                state.city.budget_misc_u32_values(offset, 3),
+                [41 + u32::from(check <= row), 83, 124]
+            );
+        }
+    }
+}
+
+#[test]
+fn mac_small_park_clears_power_without_rebuilding_power_network() {
+    let mut city = City::new_blank("/tmp/citygame-mac-park.sc2", "Park").unwrap();
+    city.set_city_funds(20);
+    city.set_building(20, 20, 6);
+    city.set_tile_bits(20, 20, TileBits::new(0xd0));
+    city.set_tile_bits(21, 20, TileBits::new(0x40));
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::SmallPark;
+    let seed = state.mac_process_rng.seed();
+
+    assert!(state.apply_tool_at_tile(20, 20));
+    let bits = state.city.tile_bits_at(20, 20).unwrap();
+    assert!(bits.piped());
+    assert!(!bits.powerable());
+    assert!(!bits.powered());
+    assert!(state.city.tile_bits_at(21, 20).unwrap().powered());
+    assert_eq!(state.mac_process_rng.seed(), seed);
+}
+
+#[test]
+fn mac_coal_plant_uses_clicked_center_for_residential_refusal() {
+    let mut city = City::new_blank("/tmp/citygame-mac-coal.sc2", "Coal").unwrap();
+    city.set_city_funds(4_000);
+    city.set_zone(12, 20, ZONE_RESIDENTIAL_DENSE);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::PowerPlantCoal;
+
+    assert!(!state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.city.city_funds(), 4_000);
+    state.city.set_zone(12, 20, 0);
+    state.city.set_zone(11, 20, ZONE_RESIDENTIAL_DENSE);
+    assert!(state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(19, 19), 0xcf);
+    assert_eq!(state.city.building_at(22, 22), 0xcf);
+    assert_eq!(state.city.building_at(23, 23), 0);
+}
+
+#[test]
 fn mac68k_place_hydro_power_stamps_xzon_corner_all_like_pe() {
     let mut city =
         City::new_blank("/tmp/sc2000-hydro-xzon-mac.sc2", "HydroXzonMac").expect("blank");
     city.set_city_funds(50_000);
     city.set_terrain(20, 20, 0x3e);
+    city.set_altitude(19, 20, 1, 0);
+    city.set_altitude(21, 20, 1, 0);
     city.set_zone(20, 20, ZONE_RESIDENTIAL_LIGHT | 0x80);
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::PowerPlantHydro;
+    assert_eq!(
+        state.tool_placement_at(20, 20).unwrap().preview,
+        ToolPreview::Building(0xc7)
+    );
     assert_eq!(state.place_hydro_power_at(20, 20), 1);
+    assert_eq!(state.city.building_at(20, 20), 0xc7);
+    assert_eq!(state.city.text_overlay_at(20, 20), Some(0x38));
     assert_eq!(
         state.city.zone_at(20, 20).map(|z| z.raw_bits()),
         Some(ZONE_CORNER_ALL)
@@ -12944,6 +13264,25 @@ fn place_hydro_power_stamps_xzon_corner_all_like_pe() {
         state.city.zone_at(20, 20).map(|z| z.raw_bits()),
         Some(ZONE_CORNER_ALL)
     );
+}
+
+#[test]
+fn mac_onramp_uses_the_first_road_bit_even_without_an_onward_road() {
+    let mut city = City::new_blank("/tmp/citygame-mac-onramp.sc2", "Onramp").unwrap();
+    city.set_city_funds(25);
+    city.set_building(36, 27, 0x1d);
+    city.set_building(37, 28, 0x50);
+    city.set_building(36, 29, 0x1e);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Onramp;
+
+    assert!(state.apply_tool_at_tile(36, 28));
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(36, 28), 0x5f);
+    assert_eq!(state.city.building_at(36, 27), 0x2b);
+    assert_eq!(state.city.building_at(36, 29), 0x1e);
+    assert!(state.city.tile_bits_at(36, 28).unwrap().rotate());
 }
 
 #[test]
@@ -13444,7 +13783,8 @@ fn mac68k_place_tunnel_leaves_xzon_like_pe_maptool_tunnel() {
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.tool = EditTool::Tunnel;
-    assert_eq!(state.place_tunnel_at(20, 20), 4);
+    assert!(!state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.accept_mac_tunnel_quote(), 4);
     assert_eq!(
         state.city.zone_at(20, 20).map(|z| z.raw_bits()),
         Some(ZONE_RESIDENTIAL_LIGHT | 0x80)
@@ -13509,7 +13849,8 @@ fn mac68k_place_tunnel_preserves_xtrf_like_pe_place_tile() {
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.tool = EditTool::Tunnel;
-    assert_eq!(state.place_tunnel_at(20, 20), 4);
+    assert!(!state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.accept_mac_tunnel_quote(), 4);
     assert_eq!(state.city.traffic_density_at(20, 20), Some(61));
     assert_eq!(state.city.traffic_density_at(17, 20), Some(62));
 }
@@ -13523,7 +13864,8 @@ fn mac68k_place_tunnel_preserves_xtxt_like_pe_place_tile() {
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.tool = EditTool::Tunnel;
-    assert_eq!(state.place_tunnel_at(20, 20), 4);
+    assert!(!state.apply_tool_at_tile(20, 20));
+    assert_eq!(state.accept_mac_tunnel_quote(), 4);
     assert_eq!(state.city.text_overlay_at(20, 20), Some(0x36));
     assert_eq!(state.city.text_overlay_at(17, 20), Some(0x37));
 }
@@ -13853,7 +14195,7 @@ fn xgrp_history_power_percent_uses_published_bss_without_crt_draws() {
     let mut city = City::new_blank("/tmp/sc2000-xgrp-crt.sc2", "XgrpCrt").expect("blank city");
     city.set_chunk_u32_values(XGRP_CHUNK_NAME, 0, &vec![0u32; XGRP_VALUES]);
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     city.set_pe_power_used_percent(37);
     let mut state = test_state(city);
     let before = state.pe_process_crt.seed();
@@ -14022,7 +14364,7 @@ fn get_populated_tile_vacant_surface_matches_tile_road_lr() {
 #[test]
 fn abandoned_redevelop_power_gate_uses_fun_00436d00_cross() {
     let mut city = City::new_blank("/tmp/sc2000-abandon-pwr.sc2", "AbnPwr").expect("blank");
-    city.set_zone(20, 20, ZONE_RESIDENTIAL_LIGHT);
+    city.set_zone(20, 20, ZONE_RESIDENTIAL_LIGHT | ZONE_CORNER_ALL);
     city.set_building(20, 20, ABANDONED_POP1_BUILDINGS[0]);
     stamp_transport_access_for_test(&mut city, 19, 20);
     set_rci_demand_for_test(&mut city, 1_000, 0, 0);
@@ -14257,6 +14599,7 @@ fn abandoned_tiles_do_not_startbuilding_same_visit() {
     for (x, y) in building_footprint_from_origin(20, 20, 3).unwrap() {
         city.set_zone(x, y, ZONE_RESIDENTIAL_DENSE);
     }
+    city.set_zone(20, 20, ZONE_RESIDENTIAL_DENSE | ZONE_CORNER_ALL);
     city.set_building(20, 20, ABANDONED_POP1_BUILDINGS[0]);
     stamp_transport_access_for_test(&mut city, 19, 20);
     power_adjacent_building_for_test(&mut city, 20, 19);
@@ -15804,6 +16147,31 @@ fn pe_destroy_building_footprint_uses_highway_snap_like_pe_45b1c0() {
 }
 
 #[test]
+fn pe_destroy_building_footprint_uses_corners_between_adjacent_identical_plants() {
+    let mut city = City::new_blank("/tmp/citygame-adjacent-plants.sc2", "Plants").unwrap();
+    for rotation in 0..4 {
+        city.set_view_rotation(rotation);
+        let corners = pe_choose_and_place_corner_bits(rotation);
+        for origin_x in [20, 24] {
+            for (x, y) in building_footprint_from_origin(origin_x, 20, 4).unwrap() {
+                city.set_building(x, y, 0xcf);
+                city.set_zone(
+                    x,
+                    y,
+                    building_zone_bits_for_tile(origin_x, 20, x, y, 4, corners),
+                );
+            }
+        }
+        let expected = building_footprint_from_origin(24, 20, 4).unwrap();
+        assert_eq!(
+            pe_destroy_building_footprint(&city, 24, 21),
+            expected,
+            "rotation {rotation}"
+        );
+    }
+}
+
+#[test]
 fn pe_destroy_building_footprint_incomplete_highway_keeps_hit() {
     // Snap runs, but without a full same-XBLD 2×2 the fallback is the original hit.
     let mut city = City::new_blank("/tmp/sc2000-foot-incomp.sc2", "FootIncomp").expect("blank");
@@ -15813,9 +16181,7 @@ fn pe_destroy_building_footprint_incomplete_highway_keeps_hit() {
 }
 
 #[test]
-fn bulldoze_lowclass_selector2_postcleanup_runs_in_mac_fidelity_mode() {
-    // Shared Rust map-tool path only; EngineFidelity::Mac68k here is not
-    // evidence for the original Mac 68k demolition routine.
+fn mac_bulldoze_classifies_dry_highway_footprint() {
     let mut city =
         City::new_blank("/tmp/sc2000-bull-hwy-south-mac.sc2", "BullHwySouthMac").expect("blank");
     stamp_complete_building_for_test(&mut city, 20, 20, 0x4b, 2);
@@ -15830,28 +16196,27 @@ fn bulldoze_lowclass_selector2_postcleanup_runs_in_mac_fidelity_mode() {
         city.set_terrain(x, 21, 2);
         city.set_underground(x, 21, 0x11);
     }
-    assert!(pe_destroy_building_selector2_low_class_cleanup_order(&city, 0x4b, 21, 21).is_some());
-    let slope_20 = pe_fun_00447020_slope_xter(&city, 20, 21);
-    let slope_21 = pe_fun_00447020_slope_xter(&city, 21, 21);
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.bulldoze_at(21, 21);
-    assert_eq!(state.city.terrain_at(20, 21), slope_20);
-    assert_eq!(state.city.terrain_at(21, 21), slope_21);
-    assert_eq!(state.city.underground_at(20, 21), 0);
+    for (x, y, terrain) in [(20, 20, 12), (20, 21, 1), (21, 20, 11), (21, 21, 3)] {
+        assert_eq!(state.city.building_at(x, y), 0);
+        assert_eq!(state.city.terrain_at(x, y), terrain);
+        assert_eq!(state.city.underground_at(x, y), 0);
+    }
 }
 
 #[test]
-fn bulldoze_xbld_lt_6_skips_crt_rubble_restamp_like_pe_458d8a() {
-    // PE DestroyBuilding @ `0x458d8a`: XBLD < 6 early-out — no CRT PlaceTile restamp.
-    // Rust still clears rubble for free; CRT seed must not advance.
+fn win95_bulldozer_refuses_reserved_xbld5_before_crt() {
+    // PE MapTool @ `0x4432fd`: XBLD 5 refuses before any debit or CRT draw.
     let mut city = City::new_blank("/tmp/sc2000-bull-lt6.sc2", "BullLt6").expect("blank");
     city.set_building(20, 20, 5);
     assert_eq!(city.terrain_at(20, 20), 0);
     let mut state = test_state(city);
     let seed_before = state.pe_process_crt_seed();
     state.bulldoze_at(20, 20);
-    assert_eq!(state.city.building_at(20, 20), 0);
+    assert_eq!(state.city.building_at(20, 20), 5);
     assert_eq!(state.pe_process_crt_seed(), seed_before);
 }
 
@@ -15912,13 +16277,18 @@ fn bulldoze_elevated_skips_rubble_placetile_like_pe() {
     let mut city =
         City::new_blank("/tmp/sc2000-bull-elev-norubble.sc2", "BullElevNoRubble").expect("blank");
     city.set_building(20, 20, 0x41);
+    city.set_building(23, 20, 0x3f);
     city.set_underground(20, 20, 0x10); // PlaceTile(0) should not restamp rubble
     assert_eq!(city.terrain_at(20, 20), 0);
     let mut state = test_state(city);
-    let seed_before = state.pe_process_crt_seed();
+    let mut preview = state.pe_process_crt;
+    for _ in 0..4 {
+        preview.random_u15();
+    }
     state.bulldoze_at(20, 20);
     assert_eq!(state.city.building_at(20, 20), 0);
-    assert_eq!(state.pe_process_crt_seed(), seed_before);
+    assert_eq!(state.city.building_at(23, 20), 0);
+    assert_eq!(state.pe_process_crt_seed(), preview.seed());
 }
 
 #[test]
@@ -16179,26 +16549,98 @@ fn mac68k_bulldoze_park_with_xtxt_0xfa_drops_recomputed_non_network_fa_count() {
 }
 
 #[test]
-fn bulldoze_skips_xtxt_arm_for_0xff_like_pe() {
-    // PE @ `0x45a0e8`: XTXT 0xff (>0xfa) skips the whole XTXT/XLAB arm.
-    let mut city = City::new_blank("/tmp/sc2000-bull-xtxt-ff.sc2", "BullXtxtFf").expect("blank");
-    city.set_building(20, 20, 0x70);
-    city.set_text_overlay(20, 20, 0xff);
-    let mut state = test_state(city);
-    state.bulldoze_at(20, 20);
-    assert_eq!(state.city.text_overlay_at(20, 20), Some(0xff));
+fn win95_bulldoze_fire_marker_requires_alt_on_both_layouts() {
+    for path in ["bulldoze-alt.city", "bulldoze-alt.sc2"] {
+        for underground in [false, true] {
+            let mut city = blank_city_layout_fixture(path, "Bulldoze Alt");
+            city.set_city_funds(100);
+            city.set_building(20, 20, 4);
+            city.set_text_overlay(20, 20, 0xff);
+            if underground {
+                city.set_underground(20, 20, 2);
+            }
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Win95;
+            state.show_underground = underground;
+            state.tool = EditTool::Bulldoze;
+
+            // Command alone is the other edition's key.
+            state.modifiers = Mod::LGUIMOD;
+            assert_eq!(
+                state.bulldoze_placement_at(20, 20).invalid_tiles,
+                [(20, 20)]
+            );
+            assert!(!state.apply_tool_at_tile(20, 20));
+            assert_eq!(state.city.city_funds(), 100);
+            assert_eq!(state.city.building_at(20, 20), 4);
+            assert_eq!(
+                state.city.underground_at(20, 20),
+                if underground { 2 } else { 0 }
+            );
+
+            state.modifiers = Mod::LALTMOD;
+            assert_eq!(state.bulldoze_placement_at(20, 20).valid_tiles, [(20, 20)]);
+            assert!(state.apply_tool_at_tile(20, 20));
+            assert_eq!(state.city.city_funds(), 99);
+            assert_eq!(
+                state.city.building_at(20, 20),
+                if underground { 4 } else { 0 }
+            );
+            assert_eq!(state.city.underground_at(20, 20), 0);
+            assert_eq!(state.city.text_overlay_at(20, 20), Some(0xff));
+        }
+    }
 }
 
 #[test]
-fn mac68k_bulldoze_skips_xtxt_arm_for_0xff_like_pe() {
-    let mut city =
-        City::new_blank("/tmp/sc2000-bull-xtxt-ff-mac.sc2", "BullXtxtFfMac").expect("blank");
-    city.set_building(20, 20, 0x71);
-    city.set_text_overlay(20, 20, 0xff);
-    let mut state = test_state(city);
-    state.engine_fidelity = EngineFidelity::Mac68k;
-    state.bulldoze_at(20, 20);
-    assert_eq!(state.city.text_overlay_at(20, 20), Some(0xff));
+fn mac68k_bulldoze_fire_marker_requires_command_on_both_layouts() {
+    for path in ["bulldoze-command.city", "bulldoze-command.sc2"] {
+        for (underground, building, seed_after) in
+            [(false, 6, 16_807), (false, 0x0d, 282_475_249), (true, 6, 1)]
+        {
+            let mut city = blank_city_layout_fixture(path, "Bulldoze Command");
+            city.set_city_funds(100);
+            city.set_building(20, 20, building);
+            city.set_terrain(20, 20, 1);
+            city.set_zone(20, 20, if building == 0x0d { 0xf2 } else { 2 });
+            city.set_text_overlay(20, 20, 0xff);
+            if underground {
+                city.set_underground(20, 20, 2);
+                city.set_tile_bits(20, 20, TileBits::new(0x20));
+            }
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.show_underground = underground;
+            state.tool = EditTool::Bulldoze;
+            state.mac_process_rng = MacToolboxRng::new(1);
+
+            // Alt alone is the other edition's key.
+            state.modifiers = Mod::LALTMOD;
+            let preview = state.bulldoze_placement_at(20, 20);
+            assert_eq!(preview.invalid_tiles, [(20, 20)]);
+            assert!(!state.apply_tool_at_tile(20, 20));
+            assert_eq!(state.city.city_funds(), 100);
+            assert_eq!(state.city.building_at(20, 20), building);
+            assert_eq!(
+                state.city.underground_at(20, 20),
+                if underground { 2 } else { 0 }
+            );
+            assert_eq!(state.mac_process_rng.seed(), 1);
+
+            state.modifiers = Mod::LGUIMOD;
+            assert_eq!(state.bulldoze_placement_at(20, 20).valid_tiles, [(20, 20)]);
+            assert!(state.apply_tool_at_tile(20, 20));
+            assert_eq!(state.city.city_funds(), 99);
+            assert_eq!(
+                state.city.building_at(20, 20),
+                if underground { building } else { 0 }
+            );
+            assert_eq!(state.city.underground_at(20, 20), 0);
+            assert_eq!(state.city.tile_bits_at(20, 20).unwrap().raw_bits(), 0);
+            assert_eq!(state.city.text_overlay_at(20, 20), Some(0xff));
+            assert_eq!(state.mac_process_rng.seed(), seed_after);
+        }
+    }
 }
 
 #[test]
@@ -16288,11 +16730,12 @@ fn mac68k_bulldoze_keeps_xzon_type_clears_corners() {
 #[test]
 fn bulldoze_clears_multitile_building_footprint() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-    for y in 10..=11 {
-        for x in 10..=11 {
-            city.set_building(x, y, 141);
-            city.set_zone(x, y, ZONE_RESIDENTIAL_LIGHT | 0x80);
-        }
+    let building = RESIDENTIAL_2X2_BUILDINGS[4];
+    stamp_complete_building_for_test(&mut city, 10, 10, building, 2);
+    let corners = pe_choose_and_place_corner_bits(city.saved_rotation());
+    for (x, y) in building_footprint_from_origin(10, 10, 2).unwrap() {
+        let zone = building_zone_bits_for_tile(10, 10, x, y, 2, corners);
+        city.set_zone(x, y, ZONE_RESIDENTIAL_LIGHT | zone);
     }
     let mut state = test_state(city);
 
@@ -16317,6 +16760,10 @@ fn mac68k_bulldoze_charges_one_unit_for_multitile_removal() {
     city.set_city_funds(100);
     let building = RESIDENTIAL_2X2_BUILDINGS[4];
     stamp_complete_building_for_test(&mut city, 20, 20, building, 2);
+    let corners = pe_choose_and_place_corner_bits(city.saved_rotation());
+    for (x, y) in building_footprint_from_origin(20, 20, 2).unwrap() {
+        city.set_zone(x, y, building_zone_bits_for_tile(20, 20, x, y, 2, corners));
+    }
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.tool = EditTool::Bulldoze;
@@ -16426,9 +16873,9 @@ fn bulldoze_clears_highway_2x2_pe_destroy_footprint() {
 
 #[test]
 fn mac68k_bulldoze_clears_highway_2x2_preserves_xtrf() {
-    // Shared PE destroy footprint; Mac68k must not invent XTRF clear on highway demolish.
     let mut city = City::new_blank("/tmp/sc2000-mac-bull-hwy.sc2", "MacBullHwy").expect("blank");
     city.set_city_funds(50_000);
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
     for (x, y) in building_footprint_from_origin(20, 20, 2).unwrap() {
         city.set_building(x, y, 0x49);
         city.set_traffic_density(x, y, 0x19);
@@ -16437,7 +16884,7 @@ fn mac68k_bulldoze_clears_highway_2x2_preserves_xtrf() {
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.bulldoze_at(21, 21);
     for (x, y) in building_footprint_from_origin(20, 20, 2).unwrap() {
-        assert!(matches!(state.city.building_at(x, y), 1..=4));
+        assert_eq!(state.city.building_at(x, y), 0);
         assert_eq!(state.city.traffic_density_at(x, y), Some(0x19));
     }
 }
@@ -16614,17 +17061,16 @@ fn bulldoze_preview_and_apply_only_accept_clearable_tiles() {
 }
 
 #[test]
-fn bulldoze_clears_only_building_owned_underground_side_effects() {
-    let city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
+fn mac_surface_bulldoze_uses_edition_specific_underground_cleanup() {
+    let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
+    city.set_city_funds(20_000);
     let mut state = test_state(city);
-    // Preserve the non-Win95 compatibility route's building-owned XUND cleanup;
-    // original Mac Bulldozer behavior remains unverified.
     state.engine_fidelity = EngineFidelity::Mac68k;
 
     assert_eq!(state.place_building_at(10, 10, 220), 1);
-    assert_eq!(state.city.underground_at(10, 10), UNDER_TILE_PIPES_LR);
+    assert_eq!(state.city.underground_at(10, 10), 0x1e);
     state.bulldoze_at(10, 10);
-    assert_eq!(state.city.underground_at(10, 10), 0);
+    assert_eq!(state.city.underground_at(10, 10), 0x1e);
 
     // Foreign non-pipe XUND under a pump is left alone on clear.
     assert_eq!(state.place_building_at(20, 20, 220), 1);
@@ -16639,23 +17085,18 @@ fn bulldoze_clears_only_building_owned_underground_side_effects() {
 
     assert_eq!(state.place_building_at(30, 30, 249), 9);
     state.bulldoze_at(31, 31);
-    for y in 30..=32 {
-        for x in 30..=32 {
-            assert_eq!(state.city.underground_at(x, y), 0);
-        }
-    }
+    assert_eq!(state.city.underground_at(31, 31), UNDER_TILE_GREY_BOX_1);
 
-    state.city.set_terrain(39, 40, 0x30);
+    assert_eq!(state.place_building_at(40, 40, 250), 9);
+    // Older saves can carry the former compatibility path's pipe tee.
     state
         .city
-        .set_tile_bits(39, 40, crate::city::TileBits::new(0b0000_0001));
-    assert_eq!(state.place_building_at(40, 40, 250), 9);
+        .set_underground(41, 41, UNDER_TILE_BUILDING_PIPE_TEE);
     state.bulldoze_at(41, 41);
-    for y in 40..=42 {
-        for x in 40..=42 {
-            assert_eq!(state.city.underground_at(x, y), 0);
-        }
-    }
+    assert_eq!(
+        state.city.underground_at(41, 41),
+        UNDER_TILE_BUILDING_PIPE_TEE
+    );
 }
 
 #[test]
@@ -16810,7 +17251,7 @@ fn pe_rail_bridge_selector_transaction_builds_centered_span_and_preserves_xtrf()
 
     let mut state = test_state(city);
     state.tool = EditTool::Rail;
-    assert_eq!(state.begin_win95_rail_bridge((10, 10), 1), 0);
+    assert!(state.begin_win95_rail_bridge((10, 10), 1, true, None));
     assert!(matches!(
         state.city_info_dialog,
         Some(CityInfoDialog::RailBridge {
@@ -16833,19 +17274,28 @@ fn pe_rail_bridge_selector_transaction_builds_centered_span_and_preserves_xtrf()
         Some(CityInfoDialogAction::SelectRailBridge)
     );
 
-    assert_eq!(state.finish_win95_rail_bridge((10, 10), 1, 7), 7);
+    assert_eq!(state.finish_rail_bridge((10, 10), 1, 7), 7);
     assert_eq!(state.city.city_funds(), 9_475);
-    assert!(NetworkKind::Rail.contains(state.city.building_at(10, 10)));
-    assert!(NetworkKind::Rail.contains(state.city.building_at(16, 10)));
-    assert_eq!(state.city.terrain_at(10, 10), 3);
-    assert_eq!(state.city.terrain_at(16, 10), 1);
-    assert_eq!(state.city.altitude_at(10, 10) & 0x1f, 6);
-    assert_eq!(state.city.altitude_at(16, 10) & 0x1f, 6);
     assert_eq!(
-        (11..=14)
+        (10..=16)
             .map(|x| state.city.building_at(x, 10))
             .collect::<Vec<_>>(),
-        vec![0x5b, 0x5b, 0x5a, 0x5b]
+        vec![0x30, 0x5b, 0x5b, 0x5a, 0x5b, 0x5b, 0x2e],
+        "native PE bridge endpoints and centered interior XBLD"
+    );
+    assert_eq!(
+        (10..=16)
+            .map(|x| state.city.terrain_at(x, 10))
+            .collect::<Vec<_>>(),
+        vec![3, 0x20, 0x20, 0x20, 0x20, 0x20, 1],
+        "native PE endpoint XTER and interior bridge orientation"
+    );
+    assert_eq!(
+        (10..=16)
+            .map(|x| state.city.altitude_at(x, 10) & 0x1f)
+            .collect::<Vec<_>>(),
+        vec![6, 5, 5, 5, 5, 5, 6],
+        "native PE raises only the two bridge bank endpoints"
     );
     assert!(NetworkKind::Rail.contains(state.city.building_at(15, 10)));
     for x in 10..=16 {
@@ -16892,7 +17342,7 @@ fn pe_road_bridge_selector_transaction_builds_span_and_charges_native_rate() {
 
     let mut state = test_state(city);
     state.tool = EditTool::Road;
-    assert_eq!(state.begin_win95_road_bridge((10, 10), 1), 0);
+    assert_eq!(state.begin_win95_road_bridge((10, 10), 1, true), 0);
     assert!(matches!(
         state.city_info_dialog,
         Some(CityInfoDialog::RoadBridge {
@@ -16915,7 +17365,7 @@ fn pe_road_bridge_selector_transaction_builds_span_and_charges_native_rate() {
         Some(CityInfoDialogAction::SelectRoadBridge(4))
     );
 
-    assert_eq!(state.finish_win95_road_bridge((10, 10), 1, 7, 4), 7);
+    assert_eq!(state.finish_road_bridge((10, 10), 1, 7, 4), 7);
     assert_eq!(state.city.city_funds(), 9_475);
     assert!(NetworkKind::Road.contains(state.city.building_at(10, 10)));
     assert!(NetworkKind::Road.contains(state.city.building_at(16, 10)));
@@ -16970,7 +17420,7 @@ fn pe_road_one_tile_bridge_uses_terminal_as_far_endpoint() {
 
     let mut state = test_state(city);
     state.tool = EditTool::Road;
-    assert_eq!(state.begin_win95_road_bridge((10, 10), 1), 0);
+    assert_eq!(state.begin_win95_road_bridge((10, 10), 1, true), 0);
     assert!(matches!(
         state.city_info_dialog,
         Some(CityInfoDialog::RoadBridge {
@@ -16979,7 +17429,7 @@ fn pe_road_one_tile_bridge_uses_terminal_as_far_endpoint() {
             ..
         })
     ));
-    assert_eq!(state.finish_win95_road_bridge((10, 10), 1, 1, 2), 2);
+    assert_eq!(state.finish_road_bridge((10, 10), 1, 1, 2), 2);
     assert_eq!(state.city.city_funds(), 9_975);
     assert!(NetworkKind::Road.contains(state.city.building_at(10, 10)));
     assert!(NetworkKind::Road.contains(state.city.building_at(11, 10)));

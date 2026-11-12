@@ -116,6 +116,8 @@ fn maxis_man_search_uses_xtxt_not_xbld() {
         state: PeMaxisManState::Inactive as u8,
         tile_x: 20,
         tile_y: 20,
+        sub_x: 8,
+        sub_y: 8,
         target_x: 25,
         target_y: 20,
         saved_b: SAVED_B_SLOT_LINK,
@@ -154,6 +156,7 @@ fn maxis_man_search_uses_xtxt_not_xbld() {
         PeMaxisManState::HeavyActive as u8,
         "XTXT >= 0xf1 should follow the unlinked target"
     );
+    assert_eq!((record.tile_x, record.tile_y), (22, 20));
 }
 
 #[test]

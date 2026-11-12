@@ -14,13 +14,14 @@ impl ViewerState {
         // Silo monthly @ `0x4364f8`: no `rand()&3` gate — Place `0xf9` when XBLD != `0xf9`.
         match zone_id {
             ZONE_AIRPORT | ZONE_SEAPORT => (rng.random_u16() & 3) == 0,
-            ZONE_MILITARY => {
-                if military_base_type_for_city(&self.city) == MILITARY_BASE_MISSILE_SILOS {
-                    true
-                } else {
+            ZONE_MILITARY => match military_base_type_for_city(&self.city) {
+                MILITARY_BASE_ARMY | MILITARY_BASE_AIR_FORCE | MILITARY_BASE_NAVY => {
                     (rng.random_u16() & 3) == 0
                 }
-            }
+                MILITARY_BASE_MISSILE_SILOS => true,
+                // 0x4362f2 exits before the RNG when the selector is outside 2..=5.
+                _ => false,
+            },
             _ => true,
         }
     }
@@ -569,10 +570,16 @@ impl ViewerState {
             pe_place_tile_441f00(&mut self.city, tx, ty, stamped_building);
             // PE ChooseAndPlace only ORs XBIT `0xe0` (`0x436fad` / `0x4370cb`); do not clear watered.
             self.or_choose_and_place_xbit(tx, ty);
+            let zone_id = if self.engine_fidelity.uses_win95() && rci_zone_id(plan.zone_id) {
+                // PE ChooseAndPlace preserves the low XZON nibble of each cell.
+                self.city.zone_at(tx, ty).map_or(0, |zone| zone.zone_id())
+            } else {
+                plan.zone_id
+            };
             self.city.set_zone(
                 tx,
                 ty,
-                plan.zone_id
+                zone_id
                     | building_zone_bits_for_tile(
                         plan.origin.0,
                         plan.origin.1,

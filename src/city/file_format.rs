@@ -2,6 +2,7 @@
 //!
 //! Simulation-specific chunk schemas and updates remain in the parent module.
 
+use super::scenario_state::MacScenarioContinuation;
 use super::{City, CityChunk, CityFileKind, MISC_FIELD_LEN};
 use anyhow::{Result, anyhow, bail};
 use std::collections::{HashMap, HashSet};
@@ -14,6 +15,30 @@ pub(super) fn upsert_chunk(
     raw: &[u8],
 ) {
     let encoded = sc2_rle_encode(raw);
+    upsert_encoded_chunk(chunks, chunk_index, name, encoded);
+}
+
+pub(super) fn upsert_chunk_for_kind(
+    chunks: &mut Vec<CityChunk>,
+    chunk_index: &mut HashMap<String, usize>,
+    name: &str,
+    raw: &[u8],
+    kind: CityFileKind,
+) {
+    let encoded = if kind == CityFileKind::MacCity {
+        mac_rle_encode(raw)
+    } else {
+        sc2_rle_encode(raw)
+    };
+    upsert_encoded_chunk(chunks, chunk_index, name, encoded);
+}
+
+fn upsert_encoded_chunk(
+    chunks: &mut Vec<CityChunk>,
+    chunk_index: &mut HashMap<String, usize>,
+    name: &str,
+    encoded: Vec<u8>,
+) {
     let existing_index = chunk_index
         .get(name)
         .copied()
@@ -55,6 +80,13 @@ const CITYGAME_EXTENSION_VERSION_WITH_PE_INDUSTRY_MIX_STATE: u32 = 13;
 const CITYGAME_EXTENSION_VERSION_WITH_PE_TRAFFIC_STATE: u32 = 14;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_STATE: u32 = 15;
 const CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE: u32 = 16;
+const CITYGAME_EXTENSION_VERSION_WITH_MAC_RESIDENTIAL_TOTAL: u32 = 17;
+const CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION: u32 = 18;
+const CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS: u32 = 19;
+const MAC_SCENARIO_CONTINUATION_TAIL_LEN: usize = 4 * (1 + 16 + 5 + 1);
+const CGEX_MAC_RESIDENTIAL_PRESENT: u32 = 1 << 25;
+const CGEX_MAC_GOALS_PRESENT: u32 = 1 << 26;
+const CGEX_MAC_SCENARIO_PRESENT: u32 = 1 << 27;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MacCrossLayoutSavedState {
@@ -69,6 +101,9 @@ pub(super) struct MacCrossLayoutSavedState {
     pub treatment_gate: Option<i16>,
     pub developed_cells: Option<u16>,
     pub mac_scenario_active: Option<bool>,
+    pub residential_total: Option<u32>,
+    pub scenario: Option<MacScenarioContinuation>,
+    pub road_neighbor_links: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,8 +193,18 @@ pub(super) fn encode_citygame_extension(
     // offsets collide with Mac's demand and pollution-blur state. v14 adds
     // PE traffic count; v15 adds the Mac scenario-active flag while retaining
     // the v14 payload shape. v16 preserves PE's monster XTHG index when the
-    // Mac layout owns its native MISC slot.
-    let version = if pe_monster_xthg_index.is_some() {
+    // Mac layout owns its native MISC slot. v17 appends Mac's residential
+    // total when Win95 owns the native MISC slot. v18 appends Mac scenario
+    // goals, action state and any queued scenario point. v19 appends Mac's
+    // road-link tally and allows the scenario continuation to be absent.
+    let mac_residential_total = mac_saved_state.and_then(|state| state.residential_total);
+    let mac_scenario = mac_saved_state.and_then(|state| state.scenario);
+    let mac_road_links = mac_saved_state.and_then(|state| state.road_neighbor_links);
+    let version = if pe_monster_xthg_index.is_some()
+        || mac_residential_total.is_some()
+        || mac_scenario.is_some()
+        || mac_road_links.is_some()
+    {
         CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE
     } else if mac_saved_state.is_some_and(|state| state.mac_scenario_active.is_some()) {
         CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_STATE
@@ -207,7 +252,16 @@ pub(super) fn encode_citygame_extension(
         CITYGAME_EXTENSION_VERSION_WITH_PE_STATE => 594,
         _ => 590,
     });
-    raw.extend_from_slice(&version.to_be_bytes());
+    let header_version = if mac_road_links.is_some() {
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS
+    } else if mac_scenario.is_some() {
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION
+    } else if mac_residential_total.is_some() {
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_RESIDENTIAL_TOTAL
+    } else {
+        version
+    };
+    raw.extend_from_slice(&header_version.to_be_bytes());
     raw.extend_from_slice(&mac_pending_action.to_be_bytes());
     let flags = mac_saved_state.map_or(0, |state| {
         u32::from(state.developed_hotspot.is_some())
@@ -236,6 +290,26 @@ pub(super) fn encode_citygame_extension(
         | (u32::from(pe_industrial_mix_pollution_bonus.is_some()) << 20)
         | (u32::from(pe_traffic_count.is_some()) << 21)
         | (u32::from(pe_monster_xthg_index.is_some()) << 24);
+    let flags = if mac_scenario.is_some() || mac_road_links.is_some() {
+        flags
+            | if mac_residential_total.is_some() {
+                CGEX_MAC_RESIDENTIAL_PRESENT
+            } else {
+                0
+            }
+            | if mac_scenario.is_some_and(|scenario| scenario.goals.is_some()) {
+                CGEX_MAC_GOALS_PRESENT
+            } else {
+                0
+            }
+    } else {
+        flags
+    };
+    let flags = if mac_road_links.is_some() && mac_scenario.is_some() {
+        flags | CGEX_MAC_SCENARIO_PRESENT
+    } else {
+        flags
+    };
     raw.extend_from_slice(&flags.to_be_bytes());
     let state = mac_saved_state;
     for value in state.map_or([0; 8], |state| state.rci_counters) {
@@ -451,18 +525,97 @@ pub(super) fn encode_citygame_extension(
     if version == CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE {
         raw.extend_from_slice(&u32::from(pe_monster_xthg_index.unwrap_or_default()).to_be_bytes());
     }
+    if mac_scenario.is_some() || mac_road_links.is_some() {
+        let scenario = mac_scenario.unwrap_or_default();
+        raw.extend_from_slice(&mac_residential_total.unwrap_or(0).to_be_bytes());
+        for value in scenario
+            .goals
+            .unwrap_or_default()
+            .into_iter()
+            .chain(scenario.action)
+        {
+            raw.extend_from_slice(&value.to_be_bytes());
+        }
+        let point = scenario
+            .pending_point
+            .map_or(u32::MAX, |(x, y)| u32::from(u16::from_be_bytes([x, y])));
+        raw.extend_from_slice(&point.to_be_bytes());
+    } else if let Some(total) = mac_residential_total {
+        raw.extend_from_slice(&total.to_be_bytes());
+    }
 
+    if let Some(count) = mac_road_links {
+        raw.extend_from_slice(&count.to_be_bytes());
+    }
     raw
 }
 
 pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGameExtension> {
-    let payload = chunks
+    let mut payload = chunks
         .iter()
         .find(|chunk| chunk.name == CITYGAME_EXTENSION_CHUNK)
         .map(|chunk| sc2_rle_decode(&chunk.data).unwrap_or_else(|_| chunk.data.clone()))?;
-    let version = u32::from_be_bytes(payload.get(0..4)?.try_into().ok()?);
+    let header_version = u32::from_be_bytes(payload.get(0..4)?.try_into().ok()?);
+    let mac_road_links = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS {
+        let (base, count) = payload.split_last_chunk::<2>()?;
+        let count = u16::from_be_bytes(*count);
+        payload.truncate(base.len());
+        Some(count)
+    } else {
+        None
+    };
+    let (version, base_len, mac_residential_total, mac_scenario) = match header_version {
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION
+        | CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS => {
+            let base_len = payload
+                .len()
+                .checked_sub(MAC_SCENARIO_CONTINUATION_TAIL_LEN)?;
+            let flags = u32::from_be_bytes(payload.get(8..12)?.try_into().ok()?);
+            if flags & (1 << 4) == 0 {
+                return None;
+            }
+            let mut cursor = base_len;
+            let residential_total = read_u32_be(&payload, &mut cursor)?;
+            let mut goals = [0; 16];
+            let mut action = [0; 5];
+            for value in goals.iter_mut().chain(&mut action) {
+                *value = read_u32_be(&payload, &mut cursor)?;
+            }
+            let point = read_u32_be(&payload, &mut cursor)?;
+            let pending_point = if point == u32::MAX {
+                None
+            } else {
+                let [x, y] = u16::try_from(point).ok()?.to_be_bytes();
+                Some((x, y))
+            };
+            (
+                CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE,
+                base_len,
+                (flags & CGEX_MAC_RESIDENTIAL_PRESENT != 0).then_some(residential_total),
+                (mac_road_links.is_none() || flags & CGEX_MAC_SCENARIO_PRESENT != 0).then_some(
+                    MacScenarioContinuation {
+                        goals: (flags & CGEX_MAC_GOALS_PRESENT != 0).then_some(goals),
+                        action,
+                        pending_point,
+                    },
+                ),
+            )
+        }
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_RESIDENTIAL_TOTAL => {
+            // v17 extends the complete v16 payload with the Mac-only total.
+            let base_len = payload.len().checked_sub(4)?;
+            let total = u32::from_be_bytes(payload.get(base_len..)?.try_into().ok()?);
+            (
+                CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE,
+                base_len,
+                Some(total),
+                None,
+            )
+        }
+        _ => (header_version, payload.len(), None, None),
+    };
     let mac_pending_action = u32::from_be_bytes(payload.get(4..8)?.try_into().ok()?);
-    match (version, payload.len()) {
+    match (version, base_len) {
         (CITYGAME_EXTENSION_VERSION, 8) => Some(CityGameExtension {
             version,
             mac_pending_action,
@@ -814,7 +967,7 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
             let has_mac_state =
                 version == CITYGAME_EXTENSION_VERSION_WITH_MAC_STATE || flags & (1 << 4) != 0;
             Some(CityGameExtension {
-                version,
+                version: header_version,
                 mac_pending_action,
                 mac_saved_state: has_mac_state.then(|| MacCrossLayoutSavedState {
                     rci_counters,
@@ -828,6 +981,9 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
                     treatment_gate: (flags & 4 != 0).then_some(treatment_gate),
                     developed_cells: (flags & 8 != 0).then_some(developed_cells),
                     mac_scenario_active: (flags & (1 << 22) != 0).then_some(flags & (1 << 23) != 0),
+                    residential_total: mac_residential_total,
+                    scenario: mac_scenario,
+                    road_neighbor_links: mac_road_links,
                 }),
                 pe_residential_population,
                 pe_trigger_disaster,
@@ -860,7 +1016,7 @@ fn read_u16_be(payload: &[u8], cursor: &mut usize) -> Option<u16> {
 }
 
 fn read_i16_be(payload: &[u8], cursor: &mut usize) -> Option<i16> {
-    read_u16_be(payload, cursor).map(|value| value as i16)
+    read_u16_be(&payload, cursor).map(|value| value as i16)
 }
 
 fn read_u32_be(payload: &[u8], cursor: &mut usize) -> Option<u32> {
@@ -871,7 +1027,10 @@ fn read_u32_be(payload: &[u8], cursor: &mut usize) -> Option<u32> {
 
 pub fn detect_city_kind(path: &Path, bytes: &[u8]) -> Result<CityFileKind> {
     if bytes.len() < 12 || &bytes[0..4] != b"FORM" || &bytes[8..12] != b"SCDH" {
-        bail!("{} is not a SimCity 2000™ FORM/SCDH city file", path.display());
+        bail!(
+            "{} is not a SimCity 2000™ FORM/SCDH city file",
+            path.display()
+        );
     }
 
     let ext = path
@@ -958,6 +1117,94 @@ pub fn sc2_rle_decode(input: &[u8]) -> Result<Vec<u8>> {
     }
 
     Ok(output)
+}
+
+/// Decode the Mac 68k chunk codec. Its literal controls store count minus one,
+/// unlike the Win95 decoder's direct literal count. Repeat controls match the
+/// Win95 repeat length.
+pub fn mac_rle_decode(input: &[u8]) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut index = 0;
+
+    while index < input.len() {
+        let control = input[index];
+        index += 1;
+        if control & 0x80 == 0 {
+            let count = usize::from(control) + 1;
+            let end = index
+                .checked_add(count)
+                .filter(|end| *end <= input.len())
+                .ok_or_else(|| anyhow!("Mac literal RLE run exceeds input"))?;
+            output.extend_from_slice(&input[index..end]);
+            index = end;
+        } else {
+            let count = usize::from(control & 0x7f) + 1;
+            let value = *input
+                .get(index)
+                .ok_or_else(|| anyhow!("Mac repeat RLE run missing byte"))?;
+            index += 1;
+            output.extend(std::iter::repeat_n(value, count));
+        }
+    }
+
+    Ok(output)
+}
+
+/// Encode the Mac 68k count-minus-one RLE format. Repeated runs are emitted
+/// only when they save space; all other bytes use literal packets of 1..=128.
+pub fn mac_rle_encode(input: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        let mut repeat_len = 1;
+        while input[index] < 0x80
+            && index + repeat_len < input.len()
+            && input[index + repeat_len] == input[index]
+            && repeat_len < 128
+        {
+            repeat_len += 1;
+        }
+        if repeat_len >= 2 {
+            encoded.push(0x80 | ((repeat_len - 1) as u8));
+            encoded.push(input[index]);
+            index += repeat_len;
+            continue;
+        }
+
+        let literal_start = index;
+        index += repeat_len;
+        while index < input.len() && index - literal_start < 128 {
+            let mut next_repeat = 1;
+            while input[index] < 0x80
+                && index + next_repeat < input.len()
+                && input[index + next_repeat] == input[index]
+                && next_repeat < 128
+            {
+                next_repeat += 1;
+            }
+            if next_repeat >= 2 {
+                break;
+            }
+            let remaining = 128 - (index - literal_start);
+            let take = next_repeat.min(remaining);
+            index += take;
+            if take < next_repeat {
+                break;
+            }
+        }
+        let literal_len = index - literal_start;
+        encoded.push((literal_len - 1) as u8);
+        encoded.extend_from_slice(&input[literal_start..index]);
+    }
+    encoded
+}
+
+pub(super) fn city_rle_decode(input: &[u8], kind: CityFileKind) -> Result<Vec<u8>> {
+    if kind == CityFileKind::MacCity {
+        mac_rle_decode(input)
+    } else {
+        sc2_rle_decode(input)
+    }
 }
 
 fn clean_chunk_name(raw: &[u8]) -> String {

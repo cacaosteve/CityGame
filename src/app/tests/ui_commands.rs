@@ -249,11 +249,11 @@ fn native_file_menu_commands_cover_city_and_tile_set_actions() {
         (16, AppCommand::ToggleEditMap),
         (17, AppCommand::OpenTileSetDialog),
         (18, AppCommand::OpenScenarioDialog),
+        (19, AppCommand::ReturnToTitle),
     ];
     for (command, app_command) in cases {
         assert_eq!(app_command_for_menu_command(command), Some(app_command));
     }
-    assert_eq!(app_command_for_menu_command(19), None);
 }
 
 #[test]
@@ -810,6 +810,42 @@ fn newspaper_subscription_and_extra_read_and_toggle_saved_misc_flags() {
 }
 
 #[test]
+fn mac_newspaper_extra_uses_the_saved_low_byte_on_both_layouts() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let city = City::new_blank("/tmp/mac-newspaper-extra.sc2", "Extra").unwrap();
+        let mut state = test_state(city);
+        state.city.kind = kind;
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_NEWSPAPER_EXTRA_OFFSET, 0x100);
+        state.sync_edit_map_menu();
+        assert!(!state.menu_checks.newspaper_extra);
+        let pe_seed = state.pe_process_crt.seed();
+        let mac_seed = state.mac_process_rng.seed();
+
+        state.apply_state_app_command(&AppCommand::ToggleNewspaperExtra);
+        assert!(state.menu_checks.newspaper_extra);
+        assert_eq!(
+            state
+                .city
+                .mac_state_misc_u32_at(MISC_NEWSPAPER_EXTRA_OFFSET),
+            Some(1)
+        );
+        state.apply_state_app_command(&AppCommand::ToggleNewspaperExtra);
+        assert!(!state.menu_checks.newspaper_extra);
+        assert_eq!(
+            state
+                .city
+                .mac_state_misc_u32_at(MISC_NEWSPAPER_EXTRA_OFFSET),
+            Some(0)
+        );
+        assert_eq!(state.pe_process_crt.seed(), pe_seed);
+        assert_eq!(state.mac_process_rng.seed(), mac_seed);
+    }
+}
+
+#[test]
 fn city_state_toggles_newspaper_subscription_and_extra_saved_flags() {
     let city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     let mut state = test_state(city);
@@ -1111,40 +1147,104 @@ fn ensure_default_city_options_seeds_pe_newspaper_lists() {
 }
 
 #[test]
-fn new_city_newspaper_shuffle_consumes_process_crt() {
-    let city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-    let mut state = test_state(city);
-    let mut preview = state.pe_process_crt;
-    let expected = pe_newspaper_paper_list_misc_values_with_rng(&mut preview);
-    // new_city also reseeds fame ranks @ `0x42e585` after newspaper options.
-    let mut preview_city =
-        City::new_blank("/tmp/sc2000-preview-fame.sc2", "preview").expect("blank");
+fn pe_newspaper_startup_matches_native_shuffle_and_new_city_preserves_it() {
+    let mut crt = Win95CrtRand::new(1);
+    let tables = super::super::newspaper_state::initialize_pe_newspaper_tables(&mut crt);
+    let expected = [
+        4, 1, 0, 4, 2, 1, 0, 1, 3, 1, 2, 0, 0, 5, 3, 5, 2, 2, 2, 0, 3, 1, 1, 0, 4, 0, 2, 2, 1, 5,
+    ];
+    assert_eq!(crt.seed(), 3_018_468_955);
+    assert_eq!(tables.papers, expected);
+
+    let path = std::env::temp_dir().join(format!(
+        "citygame-paper-bootstrap-{}.sc2",
+        std::process::id()
+    ));
+    let mut placeholder = City::new_blank(&path, "Placeholder").unwrap();
+    placeholder.set_building(40, 40, 0xcc);
+    placeholder.set_tile_bits(40, 40, TileBits::new(0x88));
+    placeholder.set_misc_u32_at(MISC_NEWSPAPER_LIST_OFFSET, 99);
+    placeholder.save(&path).unwrap();
+    let startup = ViewerState::load_default_from_path_with_process_rng(
+        path.clone(),
+        Some(crt),
+        None,
+        None,
+        Some(tables),
+    );
+    std::fs::remove_file(path).unwrap();
+    let mut state = startup.unwrap();
+    if !state.engine_fidelity.uses_win95() {
+        return;
+    }
+    assert_eq!(state.city.pe_newspaper_tables().unwrap().papers, expected);
+    assert_eq!(state.pe_process_crt_seed(), crt.seed());
+    let mut preview = crt;
+    // The existing direct New City command advances the fame-rank stream.
+    let mut preview_city = state.city.clone();
     preview_city.pe_reseed_neighbor_fame_ranks_42e585(&mut preview);
-    state.new_city().expect("new city");
-    let papers = state
-        .city
-        .misc_u32_values(MISC_NEWSPAPER_LIST_OFFSET, NEWSPAPER_LIST_MISC_DWORDS);
-    assert_eq!(papers, expected);
-    assert_eq!(state.pe_process_crt_seed(), preview.seed());
+
+    for _ in 0..2 {
+        state.new_city().expect("new city");
+        let tables = state.city.pe_newspaper_tables().unwrap();
+        assert_eq!(tables.papers, expected);
+        assert_eq!(tables.stories, pe_newspaper_story_list_misc_values());
+        assert_eq!(state.pe_process_crt_seed(), preview.seed());
+        preview_city.pe_reseed_neighbor_fame_ranks_42e585(&mut preview);
+    }
 }
 
 #[test]
-fn newspaper_option_writes_seed_pe_newspaper_lists_before_high_misc() {
-    let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-    // New blank cities start with Extra enabled; turning it off still exercises
-    // the option writer's newspaper-table initialization path.
+fn pe_newspaper_open_copies_zero_tables_and_keeps_mac_misc_separate() {
+    let mut state = test_state(City::new_blank("/tmp/citygame-paper-test.sc2", "test").unwrap());
+    let mut crt = Win95CrtRand::new(1);
+    state.city.install_pe_newspaper_tables(
+        super::super::newspaper_state::initialize_pe_newspaper_tables(&mut crt),
+    );
+
+    for extension in ["sc2", "city"] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-paper-tables-{}.{extension}",
+            std::process::id()
+        ));
+        let mut saved = blank_city_layout_fixture(&path, "Tables");
+        if extension == "city" {
+            saved.set_mac_state_misc_u32_at(MISC_NEWSPAPER_STORY_LIST_OFFSET, 0x1234_5678);
+        }
+        saved.save(&path).unwrap();
+        state.pe_process_crt = Win95CrtRand::new(1);
+        let opened = state.load_city(&path, (1280, 800), 1.0);
+        std::fs::remove_file(&path).unwrap();
+        opened.unwrap();
+        let tables = state.city.pe_newspaper_tables().unwrap();
+        assert_eq!(tables.papers, [0; NEWSPAPER_LIST_MISC_DWORDS]);
+        assert_eq!(tables.stories, [0; NEWSPAPER_STORY_LIST_MISC_DWORDS]);
+        assert_eq!(state.pe_process_crt_seed(), 2_503_793_637);
+    }
+
+    state.city.queue_pe_newspaper_story(2, 7);
+    assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(2));
+    assert_eq!(state.city.pe_newspaper_story_id_at(7), Some(0));
+    assert_eq!(
+        state
+            .city
+            .mac_state_misc_u32_at(MISC_NEWSPAPER_STORY_LIST_OFFSET),
+        Some(0x1234_5678)
+    );
+    state.new_city().expect("new city");
+    let tables = state.city.pe_newspaper_tables().unwrap();
+    assert_eq!(tables.papers, [0; NEWSPAPER_LIST_MISC_DWORDS]);
+    assert_eq!(tables.stories[0], 2);
+    assert_eq!(tables.stories[2], 7);
+}
+
+#[test]
+fn newspaper_option_writes_preserve_the_paper_and_story_tables() {
+    let mut city = City::new_blank("/tmp/citygame-paper-test.sc2", "test").unwrap();
     assert!(set_city_newspaper_extra_enabled(&mut city, false));
-    assert_eq!(
-        city.misc_u32_values(MISC_NEWSPAPER_LIST_OFFSET, NEWSPAPER_LIST_MISC_DWORDS),
-        pe_newspaper_paper_list_misc_values(&city)
-    );
-    assert_eq!(
-        city.misc_u32_values(
-            MISC_NEWSPAPER_STORY_LIST_OFFSET,
-            NEWSPAPER_STORY_LIST_MISC_DWORDS
-        ),
-        pe_newspaper_story_list_misc_values()
-    );
+    let tables = city.pe_newspaper_tables().unwrap();
+    assert_eq!(tables.papers, [0; NEWSPAPER_LIST_MISC_DWORDS]);
+    assert_eq!(tables.stories, [0; NEWSPAPER_STORY_LIST_MISC_DWORDS]);
 }
 
 #[test]
@@ -2054,7 +2154,7 @@ fn query_shows_stadium_team_name_only_after_team_selection() {
         .city
         .refresh_structure_microsim_yearly(55_860, 100, 100, 100, 100, 100);
     let january = query_tile_status_line(&state.city, 20, 20, false);
-    assert!(january.contains("Attendance 3,716"), "{january}");
+    assert!(january.contains("Attendance 3,532"), "{january}");
     assert!(
         january.contains("Team Football"),
         "yearly attendance must not select a team: {january}"
@@ -2822,10 +2922,10 @@ fn pe_destroy_building_selector2_highclass_walk_runs_low_endpoint_helpers_in_ord
 
     let seed = 0x4590_c061;
     let mut expected = Win95CrtRand::new(seed);
-    // Low-class pre-helper destruction: eight scatter draws and four rubble
+    // Low-class pre-helper destruction: sixteen scatter draws and four rubble
     // draws. Then five high-walk draws, followed by the same low-class exit
     // helper sequence.
-    for _ in 0..29 {
+    for _ in 0..45 {
         let _ = expected.random_u15();
     }
     let mut crt = Win95CrtRand::new(seed);
@@ -2886,40 +2986,49 @@ fn edit_map_stretch_cancel_restores_cursor_401ce9() {
 }
 
 #[test]
-fn edit_map_level_cancel_restores_cursor_401ce9() {
-    let mut city = City::new_blank("/tmp/sc2000-level-cancel.sc2", "LevelCancel").expect("blank");
-    for y in 18..23 {
-        for x in 18..23 {
-            city.set_altitude(x, y, 8, 0);
-        }
-    }
+fn win95_edit_map_level_clears_transient_marker_on_cancel() {
+    let city = City::new_blank("/tmp/citygame-win95-level-cancel.sc2", "LevelCancel").unwrap();
     let mut state = test_state(city);
     state.mode = AppMode::EditNewMap;
     state.tool = EditTool::LevelTerrain;
-    assert!(state.begin_edit_map_level_drag_at(20, 20, 100.0));
-    assert_eq!(state.pe_level_hold_cursor_id, 0x1fc);
-    state.cancel_edit_map_level_drag();
-    assert_eq!(state.pe_level_hold_cursor_id, 0);
-    assert_eq!(state.pe_level_hold_cursor_arg, 0);
+    for ((x, y), marker) in [((0, 0), 0x41), ((20, 22), 0x42), ((28, 28), 0x43)] {
+        state.city.set_text_overlay(x, y, marker);
+    }
+
+    assert!(state.begin_edit_map_level_drag_at(0, 0));
+    assert_eq!(state.city.text_overlay_at(0, 0), Some(0x41));
+    state.hover_tile = Some((20, 22));
+    assert!(state.update_edit_map_level_drag());
+    assert_eq!(state.city.text_overlay_at(0, 0), Some(0));
+    assert_eq!(state.city.text_overlay_at(20, 22), Some(0xc9));
+    assert!(!state.update_edit_map_level_drag());
+    state.hover_tile = None;
+    assert!(!state.update_edit_map_level_drag());
+    assert_eq!(state.city.text_overlay_at(20, 22), Some(0xc9));
+    state.hover_tile = Some((28, 28));
+    assert!(state.update_edit_map_level_drag());
+    assert_eq!(state.city.text_overlay_at(20, 22), Some(0));
+    assert_eq!(state.city.text_overlay_at(28, 28), Some(0xc9));
+
+    assert!(state.cancel_active_drag());
+    assert_eq!(state.city.text_overlay_at(28, 28), Some(0));
+    assert!(!state.edit_map_level_drag_active());
 }
 
 #[test]
-fn edit_map_lower_cancel_restores_cursor_401ce9() {
-    let mut city = City::new_blank("/tmp/sc2000-lower-cancel.sc2", "LowerCancel").expect("blank");
-    for y in 18..23 {
-        for x in 18..23 {
-            city.set_altitude(x, y, 10, 0);
-        }
-    }
+fn win95_edit_map_lower_stops_sampling_after_cancel() {
+    let city = City::new_blank("/tmp/citygame-win95-lower-cancel.sc2", "LowerCancel").unwrap();
     let mut state = test_state(city);
     state.mode = AppMode::EditNewMap;
     state.tool = EditTool::LowerTerrain;
+    state.hover_tile = Some((20, 20));
     state.pe_process_crt = Win95CrtRand::new(17);
-    assert!(state.begin_edit_map_lower_drag_at(20, 20, 100.0));
-    assert_eq!(state.pe_lower_hold_cursor_id, 0x1fc);
-    state.cancel_edit_map_lower_drag();
-    assert_eq!(state.pe_lower_hold_cursor_id, 0);
-    assert_eq!(state.pe_lower_hold_cursor_arg, 0);
+
+    assert!(state.begin_edit_map_height_hold());
+    let seed = state.pe_process_crt.seed();
+    assert!(state.cancel_active_drag());
+    assert!(!state.tick_edit_map_height_hold(true));
+    assert_eq!(state.pe_process_crt.seed(), seed);
 }
 
 #[test]
@@ -2939,63 +3048,6 @@ fn pe_terrain_tool_ids_match_edit_menu_writes() {
     city.set_altitude(20, 19, 4, 0);
     pe_terrain_nesw_land_copy_442a30(&mut city, 20, 20);
     assert_eq!(city.altitude_at(20, 19), 9);
-}
-
-#[test]
-fn edit_map_raise_midband_refuse_restores_cursor_401ce9() {
-    // PE midband refuse @ `0x44348a`: `0x401ce9(0x1fc)` clears hold cursor.
-    let mut city =
-        City::new_blank("/tmp/sc2000-raise-mid-cursor.sc2", "RaiseMidCur").expect("blank");
-    for y in 18..23 {
-        for x in 18..23 {
-            city.set_altitude(x, y, 9, 0);
-        }
-    }
-    city.set_building(20, 20, PE_RAISE_SUBMODE0_MIDBAND_XBLD_MIN);
-    city.set_city_funds(1);
-    let mut state = test_state(city);
-    state.mode = AppMode::EditNewMap;
-    state.tool = EditTool::RaiseTerrain;
-    state.pe_process_crt = Win95CrtRand::new(19);
-    assert!(state.apply_tool_at_tile(20, 20));
-    assert_eq!(state.city.city_funds(), 0);
-    assert_eq!(state.city.altitude_at(20, 20), 9);
-    assert_eq!(state.pe_raise_hold_cursor_id, 0);
-    assert_eq!(state.pe_raise_hold_cursor_arg, 0);
-    // PE Raise tool-0 still runs hold UI @ `0x442f15` after midband refuse returns.
-    assert_eq!(state.pe_raise_hold_ui_refresh_count, 1);
-    assert_eq!(state.pe_raise_hold_blit_count, 1);
-    // PE @ `0x4433bf` post-debit wait + hold pair `0x44303e`/`0x443048`.
-    assert_eq!(
-        state.pe_raise_ui_wait_4012c1_count,
-        PE_RAISE_SUBMODE0_POST_DEBIT_UI_WAIT_4012C1 + 2
-    );
-    // PE @ `0x4434a3`: `0x401096(0x200)` == SOUND_RIOT.
-    assert_eq!(crate::audio::SOUND_RIOT, 0x200);
-    assert_eq!(state.pe_raise_midband_refuse_sound_401096_count, 1);
-    // PE @ `0x4434b4` / `0x4434c0`: dialog + UI thunks with fixed args.
-    assert_eq!(state.pe_raise_midband_refuse_dialog_402c4d_count, 1);
-    assert_eq!(
-        state.pe_raise_midband_refuse_dialog_402c4d_a,
-        PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_A
-    );
-    assert_eq!(
-        state.pe_raise_midband_refuse_dialog_402c4d_b,
-        PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_B
-    );
-    assert_eq!(
-        state.pe_raise_midband_refuse_dialog_402c4d_c,
-        PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_C
-    );
-    assert_eq!(state.pe_raise_midband_refuse_ui_402900_count, 1);
-    assert_eq!(
-        state.pe_raise_midband_refuse_ui_402900_a,
-        PE_RAISE_MIDBAND_REFUSE_UI_402900_A
-    );
-    assert_eq!(
-        state.pe_raise_midband_refuse_ui_402900_b,
-        PE_RAISE_MIDBAND_REFUSE_UI_402900_B
-    );
 }
 
 #[test]
@@ -3155,26 +3207,17 @@ fn reward_mask_enables_only_granted_menu_choices() {
 }
 
 #[test]
-fn simulation_month_unlocks_earned_reward_menu_choices() {
+fn simulation_month_does_not_recompute_reward_menu_choices() {
     let mut state = test_state(reward_unlock_test_city());
 
     assert_eq!(state.city.rewards_available_mask(), 0);
     state.handle_simulation_month_advanced();
 
-    assert_eq!(state.city.rewards_available_mask() & 0b0_1111, 0b0_1111);
-    assert_eq!(state.city.rewards_available_mask() & 0b1_0000, 0);
-    assert_eq!(state.query_line, "Rewards Available");
-    assert!(state.ui_action_enabled(UiAction::OpenMenu(ui::ToolMenu::Rewards)));
-    assert!(state.ui_action_enabled(UiAction::SelectTool(EditTool::MayorHouse)));
-    assert!(state.ui_action_enabled(UiAction::SelectTool(EditTool::BraunLlamaDome)));
-
-    state.tool = EditTool::MayorHouse;
-    assert!(state.apply_tool_at_tile(5, 5));
-    assert_eq!(state.city.rewards_available_mask() & 0b0_0001, 0);
-
-    state.handle_simulation_month_advanced();
-
-    assert_eq!(state.city.rewards_available_mask() & 0b0_0001, 0);
+    assert_eq!(state.city.rewards_available_mask(), 0);
+    assert_ne!(state.query_line, "Rewards Available");
+    assert!(!state.ui_action_enabled(UiAction::OpenMenu(ui::ToolMenu::Rewards)));
+    assert!(!state.ui_action_enabled(UiAction::SelectTool(EditTool::MayorHouse)));
+    assert!(!state.ui_action_enabled(UiAction::SelectTool(EditTool::BraunLlamaDome)));
 }
 
 #[test]
@@ -3185,7 +3228,7 @@ fn reward_unlock_status_does_not_replace_inspect_query() {
 
     state.handle_simulation_month_advanced();
 
-    assert_eq!(state.city.rewards_available_mask() & 0b0_1111, 0b0_1111);
+    assert_eq!(state.city.rewards_available_mask() & 0b0_1111, 0);
     assert_eq!(state.query_line, "Tile 12,34");
 }
 
@@ -4068,10 +4111,14 @@ fn pe_newspaper_gift_place_tree_483e68_elevated_destroy_building_then_5() {
     // PE @ `0x483e7f`: DestroyBuilding mode 0 — elevated arm then PlaceTile `5`.
     let mut city = City::new_blank("/tmp/sc2000-gift-tree-elev.sc2", "GiftTE").expect("blank");
     city.set_building(14, 14, 0x3f);
+    city.set_building(11, 14, 0x41);
     city.set_zone(14, 14, ZONE_RESIDENTIAL_LIGHT | 0xf0);
     city.set_tunnel_levels(14, 14, 0x1f);
     let mut crt = Win95CrtRand::new(1);
-    let seed_before = crt.seed();
+    let mut preview = crt;
+    for _ in 0..4 {
+        preview.random_u15();
+    }
     pe_newspaper_gift_place_tree_483e68(&mut city, &mut crt, 14, 14);
     assert_eq!(city.building_at(14, 14), 5);
     assert_eq!(
@@ -4079,7 +4126,8 @@ fn pe_newspaper_gift_place_tree_483e68_elevated_destroy_building_then_5() {
         0
     );
     assert_eq!(city.tunnel_levels_at(14, 14), 0);
-    assert_eq!(crt.seed(), seed_before, "elevated arm does not consume CRT");
+    assert_eq!(city.building_at(11, 14), 0);
+    assert_eq!(crt.seed(), preview.seed());
 }
 
 #[test]
@@ -4807,23 +4855,101 @@ fn simulation_day0_january_skips_extra_when_newspaper_extra_is_off() {
 }
 
 #[test]
-fn january_opinion_poll_queues_high_approval_newspaper_when_crossing_80() {
-    // OpenSC2K MayorApprovalPhase: previous < 80 and new > 79 → story 0x201.
-    let mut city = City::new_blank("/tmp/sc2000-hi-appr.sc2", "HiAppr").expect("blank");
-    city.set_pe_mayor_approval(85);
-    crate::city::pe_queue_high_mayor_approval_story_if_crossed(&mut city, 50);
-    assert_eq!(
-        city.pe_newspaper_story_id_at(0),
-        Some(0x201),
-        "crossing into ≥80 should queue high-approval newspaper story"
-    );
-    city.set_misc_u32_at(0x0EC8, 0);
-    crate::city::pe_queue_high_mayor_approval_story_if_crossed(&mut city, 85);
-    assert_eq!(
-        city.pe_newspaper_story_id_at(0).unwrap_or(0),
-        0,
-        "already-high approval must not re-queue the story"
-    );
+fn pe_opinion_poll_callers_match_native_approval_and_crt() {
+    let mut city = City::new_blank("/tmp/pe-poll.sc2", "Poll").unwrap();
+    city.set_saved_date(CityDate {
+        year: 1955,
+        month: 6,
+    });
+    let mayor = city.provision_microsim_for_building(243).unwrap();
+    let index = usize::from(mayor - MIN_SIM_TEXT_ENTRIES);
+    city.set_microsim_stat0(index, 255);
+    city.set_microsim_stat3(index, 1);
+    city.set_text_overlay(10, 20, crate::city::QUERY_SPECIFIC_MAYOR_STATS_OVERLAY);
+    city.set_pe_mayor_approval(63);
+    city.set_pe_traffic_count(10);
+    city.set_pe_unemployment_percent(12);
+    city.set_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 25);
+    city.set_misc_u32_at(MISC_CITY_LIFE_EXPECTANCY_OFFSET, 10);
+    set_city_newspaper_choice(&mut city, 0);
+
+    let newspaper = CityInfoDialog::Newspaper(NewspaperEdition::Courier);
+    for (population, tax_rate, land_value, approval, final_seed) in [
+        (1_000, 7, 40, 23, 689_332_111),
+        (1_000, 0x0001_0018, 40, 18, 689_332_111),
+        (100, 7, 40, 23, 689_332_111),
+        (99, 7, 40, 63, 123),
+        (1_000, 7, 65_258, 63, 123),
+    ] {
+        let mut fixture = city.clone();
+        fixture.set_pe_dw_city_population(population);
+        fixture.set_pe_attitude_demand_inputs(0, 20, land_value, 30);
+        fixture.recompute_pe_attitude_scores(0, 0, 0);
+        let tax_offset = tax_rate_misc_offset_for_city(&fixture, 0).unwrap();
+        fixture.set_budget_misc_u32_values(tax_offset, &[tax_rate]);
+        for kind in [CityFileKind::WinSc2, CityFileKind::MacCity] {
+            let mut query_city = fixture.clone();
+            query_city.kind = kind;
+            let tax_offset = tax_rate_misc_offset_for_city(&query_city, 0).unwrap();
+            query_city.set_budget_misc_u32_values(tax_offset, &[tax_rate]);
+            let mut query = test_state(query_city);
+            query.pe_process_crt = Win95CrtRand::new(123);
+            query.begin_tile_inspect(10, 20);
+            let row = query.city.microsim_at(index).unwrap();
+            assert_eq!(
+                (row.stat0, row.stat1, row.stat2, row.stat3),
+                (0, 1955, approval, 0)
+            );
+            assert_eq!(query.city.pe_mayor_approval(), approval);
+            assert_eq!(query.pe_process_crt_seed(), final_seed);
+        }
+
+        let mut paper = test_state(fixture);
+        paper.menu_checks.citygame_newspaper = true;
+        paper.pe_process_crt = Win95CrtRand::new(123);
+        paper.open_city_info_dialog(newspaper);
+        assert_eq!(paper.city_info_dialog, Some(newspaper));
+        assert_eq!(paper.city.pe_mayor_approval(), approval);
+        assert_eq!(paper.pe_process_crt_seed(), final_seed);
+        let row = paper.city.microsim_at(index).unwrap();
+        assert_eq!(
+            (row.stat0, row.stat1, row.stat2, row.stat3),
+            (255, 1955, 21, 1)
+        );
+        paper.open_city_info_dialog(newspaper);
+        assert_eq!(paper.city_info_dialog, None);
+        assert_eq!(paper.pe_process_crt_seed(), final_seed);
+    }
+
+    let mut mac = test_state(city);
+    mac.engine_fidelity = EngineFidelity::Mac68k;
+    mac.pe_process_crt = Win95CrtRand::new(123);
+    mac.begin_tile_inspect(10, 20);
+    assert_eq!(mac.city.microsim_at(index).unwrap().stat0, 255);
+    assert_eq!(mac.pe_process_crt_seed(), 123);
+}
+
+#[test]
+fn pe_opinion_poll_high_approval_requests_cheers_without_a_story() {
+    let mut city = City::new_blank("/tmp/pe-high-approval.sc2", "Approval").unwrap();
+    city.set_pe_dw_city_population(1_000);
+    city.set_pe_attitude_demand_inputs(0, 0, 120, 0);
+    city.recompute_pe_attitude_scores(0, 0, 0);
+    city.set_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 100);
+    city.set_misc_u32_at(MISC_CITY_LIFE_EXPECTANCY_OFFSET, 70);
+    city.set_text_overlay(10, 20, crate::city::QUERY_SPECIFIC_MAYOR_STATS_OVERLAY);
+    city.queue_pe_newspaper_story(0x15, 0);
+    let mut state = test_state(city);
+    for prior in [63, 80] {
+        state.city.set_pe_mayor_approval(prior);
+        state.pe_process_crt = Win95CrtRand::new(123);
+        state.begin_tile_inspect(10, 20);
+        assert_eq!(state.city.pe_mayor_approval(), 86);
+        assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x15));
+        let sounds = state.take_pending_disaster_extra_sounds();
+        assert_eq!(sounds.len(), usize::from(prior < 80));
+        assert!(sounds.iter().all(|sound| *sound == PlacementSound::Cheers));
+    }
 }
 
 #[test]
@@ -4923,7 +5049,7 @@ fn desalinization_palette_tool_places_through_apply_path() {
 fn title_new_city_selections_set_difficulty_funds_year_and_national_population() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     apply_new_city_title_selections(&mut city, Some(10_000), Some(2050), Some(3));
-    ensure_default_city_options_with_crt(&mut city, None);
+    ensure_default_city_options(&mut city);
     initialize_original_new_city_national_misc(&mut city);
 
     assert_eq!(city.city_funds(), 10_000);
@@ -4967,7 +5093,7 @@ fn title_new_city_start_year_filters_inventions_before_founding_year() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     apply_new_city_title_selections(&mut city, Some(10_000), Some(2000), Some(2));
     city.apply_default_new_city_technology_schedule();
-    ensure_default_city_options_with_crt(&mut city, None);
+    ensure_default_city_options(&mut city);
     initialize_original_new_city_national_misc(&mut city);
 
     let mut crt = Win95CrtRand::new(1);
@@ -5004,25 +5130,14 @@ fn title_new_city_start_year_filters_inventions_before_founding_year() {
 }
 
 #[test]
-fn mac_title_new_city_uses_quickdraw_for_technology_dates() {
+fn mac_title_new_city_runs_reset_then_terrain_then_technology() {
     let city = City::new_blank("/tmp/sc2000-mac-title-tech.sc2", "Before").unwrap();
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
-    state.mac_process_rng = MacToolboxRng::new(MacToolboxRng::QUICKDRAW_INIT_GRAF_SEED);
-    state.mac_game_rng = crate::mac_random::MacGameLcgRng::after_startup_playlist_choice();
-    let mut expected_game_rng = state.mac_game_rng;
-    let mut expected_rng = state.mac_process_rng;
-    let mut expected = [0u16; crate::city::TECHNOLOGY_BASE_DISCOVERY_YEARS.len()];
-    for (index, base_year) in crate::city::TECHNOLOGY_BASE_DISCOVERY_YEARS
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        let year = base_year + expected_rng.random_u16() % 20;
-        expected[index] = if year < 1950 { 0 } else { year };
-    }
-    // New City hands the same process QuickDraw stream into Make Map after
-    // the 17 invention-date draws. Reproduce that consumption independently.
+    let game_rng = crate::mac_random::MacGameLcgRng::after_startup_playlist_choice();
+    let mut expected_game_rng = game_rng;
+    // Native CODE 3/CODE 7 reset replay at seed 123.
+    let mut expected_rng = MacToolboxRng::new(1_106_567_514);
     let _ = terrain_generation::generate_with_rng(
         &mut expected_rng,
         true,
@@ -5030,45 +5145,114 @@ fn mac_title_new_city_uses_quickdraw_for_technology_dates() {
         ui::EditMapSliderValues::default(),
         &mut expected_game_rng,
     );
+    let terrain_seed = expected_rng.seed();
+    assert_eq!(terrain_seed, 308_520_939);
+    // Native CODE 11 replay from the controlled post-terrain seed.
+    let dates = [
+        1959, 1958, 1990, 1981, 2022, 2051, 0, 0, 0, 0, 0, 1985, 1998, 2050, 2108, 2158, 2193,
+    ];
+    let setup_seed = 396_817_267;
+    let neighbor_rows = [
+        [6, 3331, 1665, 0],
+        [27, 873, 436, 0],
+        [20, 718, 718, 0],
+        [19, 2495, 2495, 0],
+    ];
+    let read_neighbors = |city: &City| {
+        std::array::from_fn::<_, 4, _>(|i| {
+            std::array::from_fn::<_, 4, _>(|j| {
+                city.mac_state_misc_u32_at(0x06d8 + i * 16 + j * 4)
+                    .unwrap_or(0)
+            })
+        })
+    };
 
-    state
-        .new_city_from_title(
-            "Mac Engine City".into(),
-            20_000,
-            1950,
-            1,
-            12345,
-            title_screen::NewCityStartFlow::GenerateAndEdit,
-        )
-        .unwrap();
+    for (flow, coast) in [
+        (title_screen::NewCityStartFlow::GenerateAndPlay, true),
+        (title_screen::NewCityStartFlow::GenerateAndEdit, true),
+        (title_screen::NewCityStartFlow::GenerateAndEdit, false),
+    ] {
+        state.mac_process_rng = MacToolboxRng::new(123);
+        state.mac_game_rng = game_rng;
+        state.game_clock = GameClock::new(2078, 4);
+        state
+            .new_city_from_title("Mac Engine City".into(), 20_000, 1950, 1, 12345, flow)
+            .unwrap();
+        assert_eq!(state.city.kind, CityFileKind::WinSc2);
+        assert_eq!(state.game_clock, GameClock::new(1950, 1));
+        if flow == title_screen::NewCityStartFlow::GenerateAndEdit {
+            assert_eq!(state.mac_process_rng.seed(), terrain_seed);
+            assert_eq!(read_neighbors(&state.city), neighbor_rows);
+            if !coast {
+                state.toggle_edit_map_option(EDIT_MAP_COAST_MISC_OFFSET);
+            }
+            state.finish_edit_map_state();
+        }
+        let mut expected_neighbors = neighbor_rows;
+        if coast {
+            expected_neighbors[0] = [0; 4];
+        }
+        assert_eq!(read_neighbors(&state.city), expected_neighbors);
+        assert_eq!(state.mac_process_rng.seed(), setup_seed);
+        assert_eq!(state.mac_game_rng.state(), expected_game_rng.state());
+        state.finish_edit_map_state();
+        assert_eq!(state.mac_process_rng.seed(), setup_seed, "setup runs once");
 
-    // Title-created cities currently use a Win-layout `.SC2` container even
-    // when the selected simulation engine is Mac. The shared low-WORD
-    // difficulty role must survive that cross-open pairing and persistence.
-    assert_eq!(state.engine_fidelity, EngineFidelity::Mac68k);
-    assert_eq!(state.city.kind, CityFileKind::WinSc2);
-    assert_eq!(
-        state.city.mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET),
-        Some(1)
-    );
-    let cross_open_path = "/tmp/mac-engine-title-tech-cross-open.sc2";
-    state.city.save(cross_open_path).unwrap();
-    let mut cross_open = City::load(cross_open_path).unwrap();
-    cross_open.prepare_mac_fidelity_from_saved_city();
-    assert_eq!(cross_open.kind, CityFileKind::WinSc2);
-    assert_eq!(
-        cross_open.mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET),
-        Some(1)
-    );
-
-    assert_eq!(state.mac_process_rng.seed(), expected_rng.seed());
-    assert_eq!(state.mac_game_rng.state(), expected_game_rng.state());
-    for index in 0..expected.len() {
+        let file = std::env::temp_dir().join(format!(
+            "citygame-mac-engine-title-tech-cross-open-{}.sc2",
+            std::process::id()
+        ));
+        state.city.save(&file).unwrap();
+        let mut cross_open = City::load(&file).unwrap();
+        std::fs::remove_file(file).unwrap();
+        cross_open.prepare_mac_fidelity_from_saved_city();
         assert_eq!(
-            state.city.mac_state_misc_u32_at(0x0738 + index * 4),
-            Some(u32::from(expected[index])),
-            "Mac engine start-year technology date {index}"
+            cross_open.mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET),
+            Some(1)
         );
+        assert_eq!(read_neighbors(&cross_open), expected_neighbors);
+        for (i, date) in dates.into_iter().enumerate() {
+            assert_eq!(cross_open.mac_state_misc_u32_at(0x0738 + i * 4), Some(date));
+        }
+    }
+}
+
+#[test]
+fn mac_new_city_draft_reopens_in_editor_and_defers_technology() {
+    for (extension, coast, expected_name) in [("city", 1, 0), ("sc2", 0x100, 6)] {
+        let file = std::env::temp_dir().join(format!(
+            "citygame-mac-editor-draft-{}.{}",
+            std::process::id(),
+            extension
+        ));
+        let mut draft = blank_city_layout_fixture(&file, "Draft");
+        draft.set_saved_date(CityDate {
+            year: 1950,
+            month: 1,
+        });
+        draft.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_EDIT_MAP);
+        draft.set_mac_state_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET, coast);
+        draft.set_mac_state_misc_u32_at(0x06d8, 6);
+        draft.save(&file).unwrap();
+
+        let mut state = test_state(draft);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = MacToolboxRng::new(123);
+        state.load_city(&file, (1280, 800), 1.0).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(state.mode, AppMode::EditNewMap);
+        assert_eq!(state.mac_process_rng.seed(), 1_106_567_514);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x06d8), Some(6));
+        assert_eq!(state.city.mac_state_misc_u32_at(0x073c), Some(0));
+
+        state.finish_edit_map_state();
+        assert_eq!(state.mode, AppMode::CityView);
+        assert_eq!(state.mac_process_rng.seed(), 989_958_143);
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(0x06d8),
+            Some(expected_name)
+        );
+        assert_eq!(state.city.mac_state_misc_u32_at(0x073c), Some(1955));
     }
 }
 
@@ -5077,7 +5261,7 @@ fn query_tile_power_status_uses_process_crt_seed_not_city_name() {
     // Live Query/inspect Power/Water yes-no shares FUN_004679B0 process CRT.
     let mut city = City::new_blank("/tmp/sc2000-query-crt.sc2", "QueryCrt").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0xa1a1_1a1a);
     let process = state.pe_process_crt_seed();
@@ -5556,8 +5740,8 @@ fn edit_map_palette_tools_apply_through_selected_tool_path() {
         let mut state = test_state(city);
         state.mode = AppMode::EditNewMap;
         state.tool = tool;
-        if tool == EditTool::StretchTerrain || tool == EditTool::LowerTerrain {
-            // PE Stretch/Lower CRT jitter: seed 17 → dx=0,dy=0 so click tile is edited.
+        if tool == EditTool::LowerTerrain {
+            // PE Lower CRT jitter: seed 17 samples the clicked tile.
             state.pe_process_crt = Win95CrtRand::new(17);
         }
 
@@ -5565,7 +5749,20 @@ fn edit_map_palette_tools_apply_through_selected_tool_path() {
         assert_eq!(placement.preview, ToolPreview::Terrain, "{tool:?}");
         assert_eq!(placement.valid_tiles, vec![(20, 20)], "{tool:?}");
         assert!(placement.invalid_tiles.is_empty(), "{tool:?}");
-        assert!(state.apply_tool_at_tile(20, 20), "{tool:?}");
+        match tool {
+            EditTool::StretchTerrain => {
+                assert!(!state.apply_tool_at_tile(20, 20));
+                assert!(state.begin_edit_map_stretch_drag_at(20, 20, 100.0));
+                let two_levels = 24.0 * render_zoom(state.zoom, state.viewport_pixel_scale);
+                assert!(state.update_edit_map_stretch_drag_at(100.0 - two_levels));
+                assert_eq!(state.finish_edit_map_stretch_drag(), 1);
+            }
+            EditTool::LevelTerrain => {
+                assert!(state.begin_edit_map_level_drag_at(20, 20));
+                assert_eq!(state.finish_edit_map_level_drag(), 1);
+            }
+            _ => assert!(state.apply_tool_at_tile(20, 20), "{tool:?}"),
+        }
 
         match tool {
             EditTool::RaiseTerrain => {
@@ -5578,15 +5775,12 @@ fn edit_map_palette_tools_apply_through_selected_tool_path() {
                 // this clicked cell's 7-level cardinal neighbors; it settles at 6.
                 assert_eq!(state.city.altitude_at(20, 20), 6)
             }
-            EditTool::StretchTerrain => assert_eq!(state.city.altitude_at(20, 20), 7),
-            EditTool::LevelTerrain => {
-                // PE Level: `0x445b50` pulls NESW 7→6; `0x447490` slope 0x32 may land++ further.
-                assert!(state.city.altitude_at(20, 20) >= 6);
-                assert!(state.city.altitude_at(19, 20) >= 6);
-                assert!(state.city.altitude_at(21, 20) >= 6);
-                assert!(state.city.altitude_at(20, 19) >= 6);
-                assert!(state.city.altitude_at(20, 21) >= 6);
-                assert_ne!(state.city.terrain_at(21, 20), 0, "447490 remapped neighbor");
+            EditTool::StretchTerrain | EditTool::LevelTerrain => {
+                // Native editor contour repair restores the flat background here.
+                for (x, y) in [(20, 20), (19, 20), (21, 20), (20, 19), (20, 21)] {
+                    assert_eq!(state.city.altitude_at(x, y), BLANK_MAP_BASE_HEIGHT);
+                }
+                assert_eq!(state.city.city_funds(), 20_000);
             }
             EditTool::Water | EditTool::Stream => {
                 assert_eq!(state.city.terrain_at(20, 20), 0x30);
@@ -5945,32 +6139,56 @@ fn simulation_day0_january_skips_budget_window_when_auto_budget_is_on() {
 
 #[test]
 fn mac_native_auto_budget_controls_january_budget_window() {
-    for auto_budget in [false, true] {
-        let mut city =
-            City::new_blank("/tmp/sc2000-mac-january-budget.sc2", "MacBudget").expect("blank city");
-        city.kind = CityFileKind::MacCity;
-        city.set_saved_date(CityDate {
-            year: 1900,
-            month: 12,
-        });
-        city.set_mac_state_misc_u32_at(AUTO_BUDGET_MISC_OFFSET, u32::from(auto_budget));
-        let mut state = test_state(city);
-        state.engine_fidelity = EngineFidelity::Mac68k;
-        state.traffic.set_speed(GameSpeed::Llama);
-        state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        for auto_budget in [false, true] {
+            let mut city =
+                City::new_blank("/tmp/citygame-january-budget.sc2", "MacBudget").unwrap();
+            city.kind = kind;
+            city.set_saved_date_and_day(
+                CityDate {
+                    year: 1900,
+                    month: 12,
+                },
+                24,
+            );
+            city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+            city.set_city_funds(200);
+            let accrual = budget_row_misc_offset_for_city(&city, 5, 2).unwrap();
+            city.set_budget_misc_u32_values(accrual, &[120]);
+            set_auto_budget_enabled_for_engine(&mut city, EngineFidelity::Mac68k, auto_budget);
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.traffic.set_speed(GameSpeed::Llama);
+            state.game_clock = GameClock::new_with_day(1900, 12, 24);
 
-        assert_eq!(
-            state.city_info_dialog,
-            (!auto_budget).then_some(CityInfoDialog::Budget)
-        );
-        assert_eq!(
-            state.traffic.speed(),
-            if auto_budget {
-                GameSpeed::Llama
-            } else {
-                GameSpeed::Paused
+            let advance = state.advance_frame_simulation(Duration::from_millis(20));
+            assert_eq!(state.game_clock, GameClock::new(1901, 1));
+            assert_eq!(
+                state.city_info_dialog,
+                (!auto_budget).then_some(CityInfoDialog::Budget)
+            );
+            assert_eq!(advance.days, u32::from(auto_budget));
+            if !auto_budget {
+                assert_eq!(state.city.city_funds(), 200);
+                assert_eq!(state.city.saved_date().unwrap().month, 12);
+                let held_rng = state.mac_process_rng.seed();
+                assert_eq!(
+                    state.advance_frame_simulation(Duration::from_secs(2)),
+                    GameClockAdvance::default()
+                );
+                assert_eq!(state.mac_process_rng.seed(), held_rng);
+                assert_eq!(state.city.budget_misc_u32_at(accrual), Some(120));
+                state.close_city_info_dialog();
+                assert_eq!(
+                    state.advance_frame_simulation(Duration::ZERO),
+                    GameClockAdvance { days: 1, months: 1 }
+                );
+                assert_eq!(state.game_clock, GameClock::new(1901, 1));
             }
-        );
+            assert_eq!(state.city.city_funds(), 190);
+            assert_eq!(state.city.saved_date().unwrap().month, 1);
+            assert_eq!(state.traffic.speed(), GameSpeed::Llama);
+        }
     }
 }
 
@@ -6589,6 +6807,29 @@ fn pe_rci_demand_updates_neighbor_fame_newspaper_4689c8_queues_story_5_high_inde
 }
 
 #[test]
+fn pe_rci_demand_updates_neighbor_fame_uses_sign_extended_32bit_threshold_sum() {
+    // PE MOVSXes both WORDs to 32-bit registers before ADD/CMP at 0x4689d3..e8.
+    // A 16-bit intermediate would wrap 30,000 + 25,000 negative and miss rank 1,000.
+    let mut city = City::new_blank("/tmp/citygame-neighbor-fame-width.sc2", "NFameWidth")
+        .expect("blank");
+    city.pe_w_year_founded = 25_000;
+    city.set_pe_w_local_fame_base(30_000);
+    city.set_pe_w_neighbor_fame_rank(0, 1_000);
+    let mut seed = 1u32;
+    let mut crt = Win95CrtRand::new(seed);
+    while crt.random_u15() & 7 != 0 {
+        seed = seed.wrapping_add(1);
+        crt = Win95CrtRand::new(seed);
+    }
+    let mut crt = Win95CrtRand::new(seed);
+
+    pe_rci_demand_updates_neighbor_fame_newspaper_4689c8(&mut city, &mut crt);
+
+    assert_eq!(city.pe_newspaper_story_id_at(0), Some(4));
+    assert_eq!(city.pe_w_neighbor_fame_rank(0), Some(0));
+}
+
+#[test]
 fn pe_rci_demand_updates_neighbor_fame_newspaper_4689c8_skips_when_gate_fails() {
     let mut city =
         City::new_blank("/tmp/sc2000-neighbor-fame-skip.sc2", "NFameSkip").expect("blank");
@@ -6627,6 +6868,40 @@ fn sim_calendar_day21_opens_extra_after_rci_newspaper_pending() {
         Some(CityInfoDialog::Newspaper(NewspaperEdition::Extra)),
     );
     assert!(!state.city.take_pe_newspaper_extra_popup_pending());
+}
+
+#[test]
+fn pe_day21_monthly_stories_match_native_choice_and_conditional_draws() {
+    use crate::app::newspaper_events::pe_rci_demand_updates_monthly_stories_468764;
+
+    let cases: [(u32, u32, &[(u32, u32)]); 9] = [
+        (7, 4_029_102, &[(11, 0)]),
+        (9, 4_457_128, &[(12, 0)]),
+        (2, 2_959_037, &[(13, 0)]),
+        (6, 3_815_089, &[(14, 0)]),
+        (1, 2_745_024, &[(15, 0)]),
+        (5, 803_157_710, &[]),
+        (3, 2_756_632_324, &[(6, 0)]),
+        (14, 2_749_940_187, &[(7, 2)]),
+        (82, 756_312_751, &[(6, 0), (7, 2)]),
+    ];
+    for (seed, end_seed, expected) in cases {
+        let mut city = City::new_blank("/tmp/front-page.sc2", "Front page").unwrap();
+        let mut tables = city.pe_newspaper_tables().unwrap();
+        tables.stories.fill(0);
+        city.install_pe_newspaper_tables(tables);
+        city.set_misc_u32_at(MISC_NATIONAL_TREND_OFFSET, 2);
+        let mut crt = Win95CrtRand::new(seed);
+        pe_rci_demand_updates_monthly_stories_468764(&mut city, &mut crt);
+        let stories: Vec<_> = (0..9)
+            .filter_map(|slot| {
+                let id = city.pe_newspaper_story_id_at(slot)?;
+                (id != 0).then(|| (id, city.pe_newspaper_story_param_at(slot).unwrap()))
+            })
+            .collect();
+        assert_eq!(stories, expected, "seed {seed}");
+        assert_eq!(crt.seed(), end_seed, "seed {seed}");
+    }
 }
 
 #[test]
@@ -7138,9 +7413,9 @@ fn pe_modal_mac_fidelity_does_not_inherit_native_pe_pause() {
     assert_eq!(state.traffic.speed(), GameSpeed::Llama);
     state.close_city_info_dialog();
     state.open_january_budget_review();
-    assert_eq!(state.traffic.speed(), GameSpeed::Paused);
+    assert_eq!(state.traffic.speed(), GameSpeed::Llama);
     state.close_city_info_dialog();
-    assert_eq!(state.traffic.speed(), GameSpeed::Paused);
+    assert_eq!(state.traffic.speed(), GameSpeed::Llama);
 }
 
 #[test]

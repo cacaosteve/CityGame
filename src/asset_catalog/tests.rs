@@ -73,7 +73,12 @@ fn catalog_unifies_editions_without_losing_source_offsets_or_zoom_families() {
     assert_eq!(asset.variants.len(), 3);
     assert_eq!(asset.footprint, Some([3, 3]));
     assert_eq!(asset.zoom.as_deref(), Some("Large"));
-    assert!(catalog.assets.iter().all(|a| a.family == "citygame.shape.211"));
+    assert!(
+        catalog
+            .assets
+            .iter()
+            .all(|a| a.family == "citygame.shape.211")
+    );
     assert!(asset.variants.iter().all(|v| v.source_offset == Some(1234)));
 }
 
@@ -114,8 +119,9 @@ fn catalog_replacements_preserve_originals_and_resolve_regardless_of_input_order
 fn catalog_rejects_unmapped_replacements_and_reviewed_images_without_contract() {
     let fixture = Fixture::new();
     let mac = fixture.atlas("mac", "sprites/shapes", &[1211]);
-    let ours = fixture
-        .replacement(json!([{"key":"citygame.sprite.09999","file":"station.png","status":"draft"}]));
+    let ours = fixture.replacement(
+        json!([{"key":"citygame.sprite.09999","file":"station.png","status":"draft"}]),
+    );
     assert!(
         Catalog::load(&[mac.clone(), ours])
             .unwrap_err()
@@ -146,8 +152,9 @@ fn catalog_retains_duplicate_source_records_and_rejects_outside_files() {
             .any(|note| note.contains("Multiple source records"))
     );
     let mac = fixture.atlas("mac", "sprites/shapes", &[1211]);
-    let ours = fixture
-        .replacement(json!([{"key":"citygame.sprite.01211","file":"../outside.png","status":"draft"}]));
+    let ours = fixture.replacement(
+        json!([{"key":"citygame.sprite.01211","file":"../outside.png","status":"draft"}]),
+    );
     assert!(
         Catalog::load(&[mac, ours])
             .unwrap_err()

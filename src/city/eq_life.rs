@@ -16,12 +16,10 @@ impl City {
     /// Day-21 wrapper: national, neighbors, industry mix, then EQ_LE tables.
     pub fn advance_pe_eq_le_calendar_month(
         &mut self,
-        normal_population: u32,
         school_funding: u32,
         health_funding: u32,
         college_funding: u32,
         industrial_zone_pop: u32,
-        rci_zone_people: u32,
         rng: &mut Win95CrtRand,
         lfsr: &mut Win95Lfsr,
     ) {
@@ -33,19 +31,12 @@ impl City {
         self.advance_pe_neighbor_economy_month(rng);
         // Both editions persist the industry rows, ordinance mask, and the
         // cohort-derived education measure at the same saved positions.
-        self.advance_pe_industry_mix_month(
-            industrial_zone_pop,
-            rci_zone_people,
-            normal_population,
-            rng,
-            lfsr,
-        );
+        self.advance_pe_industry_mix_month(industrial_zone_pop, rng, lfsr);
         let school_count = pe_occupancy_div9_count(self, 214).max(0) as u32;
         let hospital_count = pe_occupancy_div9_count(self, 209).max(0) as u32;
         let college_count = pe_occupancy_div16_count(self, 217).max(0) as u32;
-        // PE `0x469537` tests `0x4caa74`, the day-22 zone-pop snapshot, not the
-        // live census. A new city keeps that word at 0 until the first day 22,
-        // so month 1 wipes/skips EQ_LE instead of averaging empty tables to 0.
+        // PE `0x469537` tests `0x4caa74`, the population published by the
+        // phase-21 RCI fold. Zero takes the cohort-clear branch.
         // School/hospital `/9` and college `sar 4` come from `dwTileCount`
         // (`0x46957b` / `0x4695f0` / `0x4695b2`), not XMIC rows.
         self.advance_pe_eq_le_month(
@@ -66,10 +57,9 @@ impl City {
     /// `0x4cb014` / `0x4ca938` / `0x4ca1bc`), then neighbors and industry mix,
     /// then the age tables. `0x4caa74` is `dwCityPopulation`: if it is 0, PE
     /// zeros the three 20-dword tables and returns (`0x469537`). The calendar
-    /// feeds that RAM word (the previous day-22 zone snapshot), not the live
-    /// census. Otherwise one PE month even when the tables are empty: leftover
-    /// rebalance from day 22, life-table deaths, age-forward `/60`, births
-    /// `/300`, then fertile averages (`0x469be8`).
+    /// feeds the RCI fold's published population. With nonzero population,
+    /// the worker runs life-table deaths, age-forward transfers, births,
+    /// population balancing, and fertile averages (`0x469be8`).
     pub fn advance_pe_eq_le_month(
         &mut self,
         pop_load: u32,
@@ -296,11 +286,7 @@ impl City {
         params: &PeEqLeMonthParams,
         rng: &mut Win95CrtRand,
     ) {
-        let life_penalty = pe_eq_education_life_penalty(
-            params.education_demand,
-            params.city_population,
-            params.growth_slot7,
-        );
+        let life_penalty = params.life_penalty();
         // PE `0x469790`: from oldest bucket down, move ~prev/60 into the next age.
         // It calls CRT rand once for every nonempty source bucket, even when
         // `prev` is an exact multiple of 60 and the remainder comparison cannot
@@ -364,14 +350,14 @@ impl City {
             .iter()
             .copied()
             .fold(0_u32, u32::wrapping_add);
-        // PE uses CDQ; IDIV 300, then calls rand and takes rand()%300 before
-        // checking whether the quotient was zero. Keep the signed remainder
-        // comparison and draw even for empty/exactly-divisible fertile totals.
+        // PE obtains the base with signed IDIV 300. At 0x4698d4 it reloads
+        // the age-forward life penalty, so the rounding threshold uses
+        // fertile - 300 * penalty instead of the division remainder.
         let fertile_signed = fertile as i32;
         let mut births = (fertile_signed / 300) as u32;
-        let rem = fertile_signed % 300;
+        let rounding_threshold = fertile_signed.wrapping_sub((params.life_penalty() as i32) * 300);
         let rounding_roll = u32::from(rng.random_u16()) % 300;
-        if (rounding_roll as i32) < rem {
+        if (rounding_roll as i32) < rounding_threshold {
             births = births.wrapping_add(1);
         }
         if births == 0 {
@@ -462,6 +448,9 @@ impl City {
     ) {
         let mut leftover = surplus;
         while leftover > 0 {
+            // The PE snapshots the numerator at the start of each pass
+            // (0x469a77 / 0x469bdc) while the denominator tracks live surplus.
+            let pass_surplus = leftover;
             let mut has_cohort = false;
             for index in 0..20 {
                 if leftover == 0 {
@@ -473,7 +462,7 @@ impl City {
                 }
                 has_cohort = true;
                 let denominator = leftover.wrapping_add(city_population);
-                let mut take = pe_ftol_x87_divide_then_mul(leftover, denominator, pop) as u32;
+                let mut take = pe_ftol_x87_divide_then_mul(pass_surplus, denominator, pop) as u32;
                 if take == 0 && (u32::from(rng.random_u16()) & 3) == 0 {
                     take = 1;
                 }
@@ -559,6 +548,16 @@ pub(super) struct PeEqLeMonthParams {
     /// Win95 growth-aggregate slot 7 (`[0x4CA428]+0x1C`) for `10 * slot7` in the denom.
     pub(super) growth_slot7: i32,
     pub(super) pro_reading: bool,
+}
+
+impl PeEqLeMonthParams {
+    fn life_penalty(&self) -> u32 {
+        pe_eq_education_life_penalty(
+            self.education_demand,
+            self.city_population,
+            self.growth_slot7,
+        )
+    }
 }
 
 /// Win95 hospital birth cap `esp+0x48`: wrapped signed dword

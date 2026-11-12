@@ -17,6 +17,29 @@ pub(in crate::app) fn mac_destroy_building_export80(
     rng: &mut MacToolboxRng,
     render: bool,
 ) -> u32 {
+    mac_destroy_building_export80_impl(city, x, y, rng, render, false)
+}
+
+/// CODE 6 kind-5 status-one call to export 80. Native replays show that its
+/// connected-component branch (`0xdd..=0xe0`) performs no QuickDraw draws,
+/// even though export 80 is rendered and still waits for the redraw deadline.
+pub(in crate::app) fn mac_destroy_building_export80_for_kind5_actor(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    rng: &mut MacToolboxRng,
+) -> u32 {
+    mac_destroy_building_export80_impl(city, x, y, rng, true, true)
+}
+
+fn mac_destroy_building_export80_impl(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    rng: &mut MacToolboxRng,
+    render: bool,
+    kind5_actor: bool,
+) -> u32 {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return 0;
     }
@@ -24,7 +47,7 @@ pub(in crate::app) fn mac_destroy_building_export80(
     if building < 6 {
         return 0;
     }
-    if mac_cardinal_portal_vector(building).is_some() {
+    if tunnel_portal_direction(building).is_some() {
         // Portal endpoint stamps draw regardless of the render flag.
         let removed = mac_budget_remove_cardinal_portal_run(city, x, y, rng);
         u32::from(render && removed)
@@ -33,15 +56,20 @@ pub(in crate::app) fn mac_destroy_building_export80(
     } else if matches!(building, 0x49..=0x50 | 0x61..=0x6b) {
         mac_budget_decay_extent2_bridge_at(city, x, y, rng, render)
     } else if matches!(building, 0xdd..=0xe0) {
-        mac_export80_remove_connected_component(city, x, y, rng, building < 0xdf, render);
+        mac_export80_remove_connected_component(
+            city,
+            x,
+            y,
+            rng,
+            building < 0xdf,
+            render,
+            !kind5_actor,
+        );
         u32::from(render)
-    } else if let Some(extent) = mac_export80_generic_extent(building) {
-        let anchor = if extent >= 3 {
-            mac_export81_align_large_generic_anchor(city, x, y, extent)
-        } else {
-            Some((x, y))
-        };
-        let Some((anchor_x, anchor_y)) = anchor else {
+    } else if let Some((anchor_x, anchor_y, extent)) = mac_export81_footprint(city, x, y, building)
+    {
+        let (Ok(anchor_x), Ok(anchor_y)) = (usize::try_from(anchor_x), usize::try_from(anchor_y))
+        else {
             return 0;
         };
         if render {
@@ -81,6 +109,7 @@ fn mac_export80_remove_connected_component(
     rng: &mut MacToolboxRng,
     runway: bool,
     render: bool,
+    draw_component_quickdraw: bool,
 ) {
     const PENDING_LIMIT: usize = 511;
     let mut pending = VecDeque::with_capacity(PENDING_LIMIT);
@@ -88,7 +117,11 @@ fn mac_export80_remove_connected_component(
 
     while let Some((x, y)) = pending.pop_back() {
         if runway {
-            let rubble = (rng.random_u16() as u8 & 3) + 1;
+            let rubble = if draw_component_quickdraw {
+                (rng.random_u16() as u8 & 3) + 1
+            } else {
+                0
+            };
             super::pe_place_tile_441f00(city, x, y, rubble); // CODE 5 export 105 / PlaceTile.
         } else {
             super::pe_place_tile_441f00(city, x, y, 0); // CODE 5 export 105 / PlaceTile(0).
@@ -99,7 +132,7 @@ fn mac_export80_remove_connected_component(
         let bits = city.tile_bits_at(x, y).unwrap_or_default();
         city.set_tile_bits(x, y, TileBits::new(bits.raw_bits() & 0x3d));
 
-        if render {
+        if render && draw_component_quickdraw {
             rng.random_u16();
             rng.random_u16();
         }
@@ -190,11 +223,48 @@ pub(in crate::app) fn mac_export80_generic_extent(building: u8) -> Option<usize>
     }
 }
 
+/// CODE 5 export 81 reports the rectangle separately from export 80's
+/// removal dispatch. CODE 10 captures this before removal can change XZON.
+pub(in crate::app) fn mac_export81_footprint(
+    city: &City,
+    x: usize,
+    y: usize,
+    building: u8,
+) -> Option<(i16, i16, usize)> {
+    if matches!(building, 0x49..=0x50 | 0x61..=0x6b) {
+        return Some(((x & !1) as i16, (y | 1) as i16, 2));
+    }
+    let extent = if building < 0x70 {
+        1
+    } else {
+        mac_export80_generic_extent(building)?
+    };
+    if extent >= 3 {
+        let (x, y) = mac_export81_align_large_generic_anchor(city, x, y, extent)?;
+        return Some((x as i16, y as i16, extent));
+    }
+    let (mut x, mut y) = (x as i16, y as i16);
+    if extent == 2 {
+        let rotation = u32::from(city.saved_rotation() & 3);
+        let marker = city.zone_at(x as usize, y as usize)?.raw_bits() & 0xf0;
+        let northwest = 0x10 << rotation;
+        let northeast = 0x10 << ((rotation + 1) & 3);
+        let southeast = 0x10 << ((rotation + 2) & 3);
+        if marker == northwest || marker == northeast {
+            y += 1;
+        }
+        if marker == northeast || marker == southeast {
+            x -= 1;
+        }
+    }
+    Some((x, y, extent))
+}
+
 /// Whether CODE 5 export 80 dispatches this root through its generic per-cell
 /// loop, whose XTXT-0xfa arm decrements the saved Mac overlay counter. Keep the
 /// dedicated portal, bridge, topology, and connected-component branches out.
 pub(in crate::app) fn mac_export80_uses_generic_cell_cleanup(building: u8) -> bool {
-    mac_cardinal_portal_vector(building).is_none()
+    tunnel_portal_direction(building).is_none()
         && !is_mac_bridge_tile(building)
         && !matches!(building, 0x49..=0x50 | 0x61..=0x6b | 0xdd..=0xe0)
         && mac_export80_generic_extent(building).is_some()
@@ -203,7 +273,7 @@ pub(in crate::app) fn mac_export80_uses_generic_cell_cleanup(building: u8) -> bo
 /// Export 80 updates CODE 4's persisted `ffffdc74` civic/tool latch when it
 /// clears one of the four special civic selector buildings. The associated
 /// Toolbox menu refresh is a UI side effect; the saved latch bit is modeled.
-fn mac_export80_update_special_civic_latch(city: &mut City, building: u8) {
+pub(in crate::app) fn mac_export80_update_special_civic_latch(city: &mut City, building: u8) {
     let Some(index) = (match building {
         0xf3 => Some(0),
         0xd0 => Some(1),
@@ -213,8 +283,7 @@ fn mac_export80_update_special_civic_latch(city: &mut City, building: u8) {
     }) else {
         return;
     };
-    let latch = city.mac_state_misc_u32_at(0x78).unwrap_or(0);
-    city.set_mac_state_misc_u32_at(0x78, latch | (1 << index));
+    city.set_mac_civic_latch(city.mac_civic_latch() | (1 << index));
 }
 
 /// CODE 5 export 81 aligns the origin for table-backed extents 3 and 4 by

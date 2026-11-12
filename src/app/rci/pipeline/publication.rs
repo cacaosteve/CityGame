@@ -54,6 +54,13 @@ impl ViewerState {
                     .and_then(|offset| self.city.budget_misc_u32_at(offset))
                     .unwrap_or(0)
             });
+            // +0x4c0/+0x530/+0x5a0 are document rows 10..12 (roads,
+            // highways, bridges). The R/C/I rows above feed the EQ/LE cache.
+            let transport_currents = [10, 11, 12].map(|row| {
+                budget_row_misc_offset_for_city(&self.city, row, BUDGET_SERVICE_CURRENT_FIELD)
+                    .and_then(|offset| self.city.budget_misc_u32_at(offset))
+                    .unwrap_or(0)
+            });
             let developed = self.city.pe_w_city_developed_tiles;
             let pollution = self.city.pe_dw_city_pollution;
             let land = self.city.pe_dw_city_land_value;
@@ -61,7 +68,7 @@ impl ViewerState {
             self.city.set_pe_attitude_tax_bases(tax_bases);
             self.city
                 .set_pe_attitude_demand_inputs(developed, pollution, land, crime);
-            self.city.recompute_pe_attitude_scores(0, 0, 0);
+            self.city.publish_pe_attitude_scores(transport_currents);
         }
         let mut latest_values = xgrp_history_latest_values(&self.city, population, outcomes);
         if self.engine_fidelity.uses_win95() {
@@ -105,23 +112,12 @@ impl ViewerState {
     }
 
     pub(in crate::app) fn refresh_reward_availability(&mut self) -> u32 {
-        // Day-24 reward gates share FUN_004679B0 process-CRT plant maps with ServiceStatus.
-        let outcomes = self.live_city_service_outcomes_with_process_crt();
-        let earned = earned_reward_mask_for_city_with_outcomes_and_fidelity(
-            &self.city,
-            outcomes,
-            self.engine_fidelity,
-        );
-        if earned == 0 {
-            return 0;
-        }
-        let available = self.city.rewards_available_mask();
-        let updated = available | earned;
-        let newly_available = earned & !available;
-        if updated != available {
-            self.city.set_rewards_available_mask(updated);
-        }
-        newly_available
+        // Reward bits are mutated by the rooted engine transitions: progression
+        // milestones, successful civic placement, demolition restoration, and
+        // the PE technology gate. Generic edits and periodic service refreshes
+        // do not grant them. Keep this adapter until its callers are removed or
+        // gain a native-proven refresh effect.
+        0
     }
 
     pub(in crate::app) fn refresh_live_trips(&mut self) {

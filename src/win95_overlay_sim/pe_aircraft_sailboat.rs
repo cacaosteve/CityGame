@@ -162,11 +162,6 @@ pub(super) fn pe_plane_morph_on_building_with_lfsr(
     false
 }
 
-/// PE `wCityCenter` (`0x4cb458`/`0x4cb45c`), produced by the land-value scan.
-fn pe_w_city_center(city: &City) -> (usize, usize) {
-    crate::app::pe_city_center_for_overlay(city)
-}
-
 /// PE `FUN_004540C0` state 2 @ `0x4541f1` after move: if manhattan to `+8/+9` `< 2`,
 /// re-roll targets near city center (`0x4cb458/0x4cb45c` ± `rand&0x3f-0x20`, clamp);
 /// with `rand&1` and empty XBLD+XTER at the heli tile, enter state 3.
@@ -185,9 +180,9 @@ pub(super) fn pe_heli_state2_after_move<R: Win95OverlayRng>(
         return;
     }
     // PE reads `wCityCenter` at `0x4cb458/0x4cb45c` (land-value building centroid).
-    let (cx, cy) = pe_w_city_center(city);
-    let mut tx = (rng.random_u16() & 0x3f) as i16 + cx as i16 - 0x20;
-    let mut ty = (rng.random_u16() & 0x3f) as i16 + cy as i16 - 0x20;
+    let (cx, cy) = city.pe_city_center();
+    let mut tx = cx.wrapping_add((rng.random_u16() & 0x3f) as i16 - 0x20);
+    let mut ty = cy.wrapping_add((rng.random_u16() & 0x3f) as i16 - 0x20);
     // PE clamps against map size `0x80`: out-of-range → `rand&0x3f+0x20`.
     if tx < 0 || tx >= 0x80 {
         tx = (rng.random_u16() & 0x3f) as i16 + 0x20;

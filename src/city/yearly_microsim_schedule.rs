@@ -64,12 +64,14 @@ pub(super) fn yearly_microsim_rng_schedule(
     let mut shadow_buildings = vec![0; CITY_WIDTH * CITY_HEIGHT];
     let mut shadow_text = vec![0; CITY_WIDTH * CITY_HEIGHT];
     let mut shadow_terrain = vec![0; CITY_WIDTH * CITY_HEIGHT];
+    let mut shadow_corners = vec![0; CITY_WIDTH * CITY_HEIGHT];
     for x in 0..CITY_WIDTH {
         for y in 0..CITY_HEIGHT {
             let offset = city_index(x, y);
             shadow_buildings[offset] = city.building_at(x, y);
             shadow_text[offset] = city.text_overlay_at(x, y).unwrap_or(0);
             shadow_terrain[offset] = city.terrain_at(x, y);
+            shadow_corners[offset] = city.zone_at(x, y).map_or(0, |zone| zone.raw_bits() & 0xf0);
         }
     }
     let mut live_rows = [false; MICROSIM_COUNT];
@@ -95,7 +97,7 @@ pub(super) fn yearly_microsim_rng_schedule(
                 consumed_crt = true;
                 let age = record.stat0.wrapping_add(1);
                 let marker = MIN_SIM_TEXT_ENTRIES.wrapping_add(index as u8);
-                let anchor = pe_first_text_match(&shadow_text, marker);
+                let anchor = pe_first_text_match(&shadow_text, marker).filter(|&hit| hit != (0, 0));
                 demolition_anchors[index] = anchor;
                 if age > 50 {
                     if let Some(anchor) = anchor
@@ -105,9 +107,19 @@ pub(super) fn yearly_microsim_rng_schedule(
                         if inputs.no_disasters && cost > 0 && simulated_funds >= cost {
                             simulated_funds -= cost;
                         } else {
+                            // The XTXT scan supplies the hit. DestroyBuilding
+                            // resolves the low-X/high-Y corner before walking.
+                            let origin = pe_destroy_building_corner_origin(
+                                city.pe_w_city_rotation as u8,
+                                anchor.0,
+                                anchor.1,
+                                4,
+                                |(x, y)| shadow_corners[city_index(x, y)],
+                            )
+                            .map_or(anchor, |(x, y)| (x, y + 3));
                             let site =
-                                pe_power_plant_demolition_site_from_planes(anchor, &shadow_terrain);
-                            // Plant selector 4 enters the generic size×size
+                                pe_power_plant_demolition_site_from_planes(origin, &shadow_terrain);
+                            // Plant selector 4 enters the generic three-level
                             // render-scatter loop directly; the earlier two
                             // draws belong to a separate branch it bypasses.
                             for _ in 0..pe_destroy_building_mode1_render_scatter_draw_count(
@@ -117,10 +129,12 @@ pub(super) fn yearly_microsim_rng_schedule(
                             }
                             for &(x, y, flat) in &site.cells {
                                 let rubble = if flat { crt_cursor.rubble_tile_id() } else { 0 };
-                                shadow_buildings[city_index(x, y)] = rubble;
-                                let text = shadow_text[city_index(x, y)];
+                                let cell = city_index(x, y);
+                                shadow_buildings[cell] = rubble;
+                                shadow_corners[cell] = 0;
+                                let text = shadow_text[cell];
                                 if (0x01..=0xc8).contains(&text) {
-                                    shadow_text[city_index(x, y)] = 0;
+                                    shadow_text[cell] = 0;
                                     if text >= 0x3d {
                                         let released = usize::from(text - MIN_SIM_TEXT_ENTRIES);
                                         if released < live_rows.len() {

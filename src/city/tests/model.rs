@@ -5,6 +5,84 @@ use crate::paths::{self, test_mac_city, test_win_city, test_win_populated_city};
 use crate::win95_random::Win95CrtRand;
 
 #[test]
+fn mac_phase22_scenario_comparisons_match_native_threshold_matrix() {
+    let mut city = City::new_blank("/tmp/mac-scenario-goals.city", "Goals").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_scenario_active(true);
+    let countdown = MAC_SCENARIO_ACTIVE_STATE_OFFSET + 4;
+    city.set_misc_u32_values(
+        countdown,
+        &[
+            1,
+            10,
+            -5_i32 as u32,
+            7,
+            8,
+            197,
+            90,
+            60,
+            70,
+            10,
+            20,
+            30,
+            0xf8,
+            4,
+            2,
+            1,
+        ],
+    );
+    let budget_row_bytes = MISC_BUDGET_ROW_DWORDS * MISC_FIELD_LEN;
+    // The last entry for each input is the first failing value from the
+    // CODE 14 replay. Tile thresholds use the saved census.
+    let cases = [
+        (MISC_NORMAL_POPULATION_OFFSET, 10, 9),
+        (MAC_MISC_BUDGET_BOOK_OFFSET, -5_i32 as u32, -6_i32 as u32),
+        (MAC_MISC_BUDGET_BOOK_OFFSET + budget_row_bytes, 7, 6),
+        (MAC_MISC_BUDGET_BOOK_OFFSET + 2 * budget_row_bytes, 8, 7),
+        (MISC_CITY_BONDS_OFFSET, 3, 4),
+        (MISC_LAND_VALUE_OFFSET, 90, 89),
+        (MISC_CITY_LIFE_EXPECTANCY_OFFSET, 60, 59),
+        (MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 70, 69),
+        (MISC_CITY_POLLUTION_OFFSET, 10, 11),
+        (MISC_CITY_CRIME_OFFSET, 20, 21),
+        (MISC_CITY_TRAFFIC_OFFSET, 30, 31),
+        (MAC_XBLD_CENSUS_MISC_OFFSET + 0xf8 * 4, 2, 1),
+        (MAC_XBLD_CENSUS_MISC_OFFSET + 4 * 4, 1, 0),
+    ];
+    city.set_city_funds(200);
+    for (offset, passing, _) in cases {
+        city.set_mac_state_misc_u32_at(offset, passing);
+    }
+    let mut success = city.clone();
+    assert!(matches!(
+        success.tick_mac_saved_scenario(),
+        Some(MacScenarioResult::Won)
+    ));
+    assert_eq!(success.misc_u32_at(countdown), Some(1));
+    assert!(!success.mac_scenario_active());
+
+    for (offset, _, failing) in cases {
+        let mut attempt = city.clone();
+        attempt.set_mac_state_misc_u32_at(offset, failing);
+        assert!(
+            matches!(
+                attempt.tick_mac_saved_scenario(),
+                Some(MacScenarioResult::TimedOut)
+            ),
+            "MISC input at {offset:#x}"
+        );
+        assert_eq!(attempt.misc_u32_at(countdown), Some(0));
+        assert!(!attempt.mac_scenario_active());
+    }
+
+    city.set_mac_state_misc_u32_at(countdown, 0);
+    city.set_mac_state_misc_u32_at(countdown + 7 * 4, 0xffff);
+    assert!(city.tick_mac_saved_scenario().is_none());
+    assert_eq!(city.misc_u32_at(countdown), Some(u32::MAX));
+    assert!(city.mac_scenario_active());
+}
+
+#[test]
 fn mac_save_rebuilds_cached_bond_rate_sum_without_using_pe_tail() {
     let mut mac =
         City::new_blank("/tmp/sc2000-mac-bond-cache.city", "MacBondCache").expect("blank city");
@@ -466,11 +544,11 @@ fn mac_military_marker_bypasses_placetile_and_moves_censuses() {
     assert_eq!(city.zone_at(40, 30).unwrap().raw_bits(), 0xa7);
     assert_eq!(city.mac_xbld_tile_count(0x08), u16::MAX);
     assert_eq!(city.mac_zone7_census_count(0), 0);
-    assert!(
-        !city.mac_mark_military_zone_candidate(40, 30),
-        "a second visit must not double-count an already-marked military tile"
-    );
-    assert_eq!(city.mac_zone7_census_count(0), 0);
+    // Native fallback stamps overlapping patches without rechecking XZON.
+    assert!(city.mac_mark_military_zone_candidate(40, 30));
+    assert_eq!(city.zone_at(40, 30).unwrap().raw_bits(), 0xa7);
+    assert_eq!(city.mac_xbld_tile_count(0x08), u16::MAX - 1);
+    assert_eq!(city.mac_zone7_census_count(0), 1);
 
     city.set_zone(41, 30, 0);
     city.set_building(41, 30, 0x0d);
@@ -700,7 +778,9 @@ fn decodes_known_rle_chunks() {
     };
     let xter = decode_expected_chunk(&win.chunks, "XTER", CITY_TILES).expect("xter decode");
     let xbld = decode_expected_chunk(&win.chunks, "XBLD", CITY_TILES).expect("xbld decode");
-    let mac_xter = decode_expected_chunk(&mac.chunks, "XTER", CITY_TILES).expect("mac xter decode");
+    let mac_xter =
+        decode_expected_chunk_for_kind(&mac.chunks, "XTER", CITY_TILES, CityFileKind::MacCity)
+            .expect("mac xter decode");
     assert_eq!(xter.len(), CITY_TILES);
     assert_eq!(xbld.len(), CITY_TILES);
     assert_eq!(mac_xter.len(), CITY_TILES);
@@ -1028,6 +1108,8 @@ fn first_mac_open_of_win_city_uses_native_raw_saved_slots() {
         "sc2000-mac-service-summaries-cross-layout-{}.sc2",
         std::process::id()
     ));
+    let growth_misc = 380 * MISC_FIELD_LEN;
+    let growth = [88, 4, 12, 8, 8, 20, 36, 4];
     let power_misc = 1048 * MISC_FIELD_LEN;
     let water_misc = 1049 * MISC_FIELD_LEN;
     let police_gate_misc = 1039 * MISC_FIELD_LEN;
@@ -1035,6 +1117,7 @@ fn first_mac_open_of_win_city_uses_native_raw_saved_slots() {
     let hotspot_x_misc = 1030 * MISC_FIELD_LEN;
     let hotspot_y_misc = 1031 * MISC_FIELD_LEN;
     let mut city = City::new_blank(&path, "MacServiceSummaries").expect("blank Win-layout city");
+    city.set_misc_u32_values(growth_misc, &growth);
     city.set_misc_u32_at(power_misc, 0x1234_5678);
     city.set_misc_u32_at(water_misc, 0x8765_4321);
     city.set_misc_u32_at(police_gate_misc, 0xffff_fffe);
@@ -1048,6 +1131,11 @@ fn first_mac_open_of_win_city_uses_native_raw_saved_slots() {
 
     let mut loaded = City::load(&path).expect("load Win-layout fixture");
     loaded.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(
+        std::array::from_fn(|slot| loaded.mac_rci_counter(slot)),
+        growth
+    );
+    loaded.set_mac_rci_counter(2, 24);
     assert_eq!(loaded.mac_power_service_summary(), 0x1234_5678);
     assert_eq!(loaded.mac_water_service_summary(), 0x8765_4321);
     assert_eq!(loaded.mac_police_coverage_gate(), -2);
@@ -1061,6 +1149,8 @@ fn first_mac_open_of_win_city_uses_native_raw_saved_slots() {
         .expect("save Mac-fidelity Win-layout fixture");
     let mut reloaded = City::load(&path).expect("reload Mac-fidelity Win-layout fixture");
     reloaded.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(reloaded.mac_rci_counter(2), 24);
+    assert_eq!(reloaded.misc_u32_values(growth_misc, 8), growth);
     assert_eq!(reloaded.mac_power_service_summary(), 0x1234_5678);
     assert_eq!(reloaded.mac_water_service_summary(), 0x8765_4321);
     assert_eq!(reloaded.mac_police_coverage_gate(), -2);
@@ -1724,11 +1814,9 @@ fn pe_eq_le_calendar_month_runs_national_then_neighbors() {
     city.set_misc_u32_at(MISC_NATIONAL_TREND_OFFSET, 1);
     seed_pe_neighbor(&mut city, 0, 2, 12_000, 3_600, 5);
     city.advance_pe_eq_le_calendar_month(
-        0,
         100,
         100,
         100,
-        0,
         0,
         &mut Win95CrtRand::new(1),
         &mut Win95Lfsr::new(1),
@@ -1787,11 +1875,9 @@ fn dw_city_population_hydrates_from_misc_so_loaded_tables_are_not_wiped() {
     let mut loaded = City::load(&path).expect("reload");
     assert_eq!(loaded.pe_dw_city_population(), 8_000);
     loaded.advance_pe_eq_le_calendar_month(
-        0,
         100,
         100,
         100,
-        0,
         0,
         &mut Win95CrtRand::new(1),
         &mut Win95Lfsr::new(1),
@@ -1834,7 +1920,7 @@ fn pe_industry_demand_leaks_three_quarters_plus_era_jitter() {
         seed_pe_industry(&mut city, index, 0, 50, 0);
     }
     let mut lfsr = Win95Lfsr::new(1);
-    city.advance_pe_industry_mix_month(0, 0, 0, &mut Win95CrtRand::new(1), &mut lfsr);
+    city.advance_pe_industry_mix_month(0, &mut Win95CrtRand::new(1), &mut lfsr);
     let expected = [0, 1, 0, 1, 3, 1, 0, 3, 1, 0, 2];
     for (index, want) in expected.into_iter().enumerate() {
         assert_eq!(
@@ -1861,7 +1947,7 @@ fn pe_industry_leftover_grows_pops_toward_industrial_zone() {
         seed_pe_industry(&mut city, index, 0, 50, 0);
     }
     let mut lfsr = Win95Lfsr::new(1);
-    city.advance_pe_industry_mix_month(10, 0, 0, &mut Win95CrtRand::new(1), &mut lfsr);
+    city.advance_pe_industry_mix_month(10, &mut Win95CrtRand::new(1), &mut lfsr);
     assert_eq!(city.pe_industry_demand_at(0), 75);
     assert_eq!(city.pe_industry_pop_at(0), 10);
     assert_eq!(city.pe_industry_tax_at(0), 0);
@@ -1879,7 +1965,7 @@ fn pe_industry_shrinks_pops_when_mix_exceeds_zone() {
         seed_pe_industry(&mut city, index, 0, 50, 0);
     }
     let mut lfsr = Win95Lfsr::new(1);
-    city.advance_pe_industry_mix_month(10, 0, 0, &mut Win95CrtRand::new(1), &mut lfsr);
+    city.advance_pe_industry_mix_month(10, &mut Win95CrtRand::new(1), &mut lfsr);
     assert_eq!(city.pe_industry_pop_at(0), 10);
 }
 
@@ -1906,7 +1992,7 @@ fn pe_industry_population_shrink_uses_wrapped_dword_product() {
         expected_crt.random_u15();
     }
     let mut lfsr = Win95Lfsr::new(1);
-    city.advance_pe_industry_mix_month(90_000, 0, 0, &mut crt, &mut lfsr);
+    city.advance_pe_industry_mix_month(90_000, &mut crt, &mut lfsr);
 
     assert_eq!(city.pe_industry_pop_at(0), expected[0]);
     assert_eq!(city.pe_industry_pop_at(1), expected[1]);
@@ -1953,7 +2039,7 @@ fn pe_industry_education_modifier_rescales_prior_rows_after_sum() {
     let mut expected_crt = crt;
     let grew_extra = expected_crt.random_u15() % 100 < 33;
     let mut lfsr = Win95Lfsr::new(1);
-    city.advance_pe_industry_mix_month(100_000, 0, 0, &mut crt, &mut lfsr);
+    city.advance_pe_industry_mix_month(100_000, &mut crt, &mut lfsr);
 
     // Education below 60 scales row 6 by 0.8 five times: once when row 6
     // is produced and again for rows 7..=10. Its already-summed value
@@ -2008,33 +2094,6 @@ fn pe_industry_mix_bonus_thresholds_use_signed_comparisons() {
     assert_eq!(
         city.misc_i32_at(MISC_INDUSTRIAL_MIX_POLLUTION_BONUS_OFFSET),
         Some(-1)
-    );
-}
-
-#[test]
-fn pe_industry_construction_boost_when_rci_exceeds_city_population() {
-    // PE leftover[4] *= 1.1 when rci_zone_people > city_population
-    // (`dwCityPopulation` / `0x4CAA74`).
-    fn construction_pop(city_population: u32) -> u32 {
-        let mut city = City::new_blank("/tmp/sc2000-test.sc2", "indc").expect("blank");
-        city.set_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 100);
-        for index in 0..PE_INDUSTRY_COUNT {
-            seed_pe_industry(&mut city, index, 0, 50, 0);
-        }
-        seed_pe_industry(&mut city, 4, 100, 0, 0);
-        let mut lfsr = Win95Lfsr::new(1);
-        city.advance_pe_industry_mix_month(
-            100,
-            200,
-            city_population,
-            &mut Win95CrtRand::new(1),
-            &mut lfsr,
-        );
-        city.pe_industry_pop_at(4)
-    }
-    assert!(
-        construction_pop(100) > construction_pop(300),
-        "construction overflow boost should grow slot-4 pop when rci people exceed city pop"
     );
 }
 
@@ -2251,7 +2310,7 @@ fn pe_eq_month_death_birth_and_leftover_counters_wrap_like_pe_dwords() {
     let mut birth_counter_wrap =
         City::new_blank("/tmp/sc2000-eq-le-birth-counter-wrap.sc2", "eqbc").expect("blank city");
     birth_counter_wrap.pe_age_cohorts.fill(0);
-    birth_counter_wrap.pe_age_cohorts[4] = 300;
+    birth_counter_wrap.pe_age_cohorts[4] = 299;
     birth_counter_wrap.pe_eq_births = u32::MAX;
     assert_eq!(
         birth_counter_wrap.pe_age_cohorts_births_one_month(&params, &mut Win95CrtRand::new(1)),
@@ -2333,7 +2392,8 @@ fn mac_budget_rows_use_serialized_slot_479_without_aliasing_ordinance_state() {
     let Some(mut city) = load_mac() else {
         return;
     };
-    let serialized = decode_misc_bytes(&city.chunks).expect("Mac MISC chunk");
+    let serialized =
+        decode_misc_bytes_for_kind(&city.chunks, CityFileKind::MacCity).expect("Mac MISC chunk");
     let start = MAC_MISC_BUDGET_BOOK_OFFSET;
     let len = MISC_BUDGET_ROW_DWORDS * MISC_BUDGET_ROW_COUNT * MISC_FIELD_LEN;
     let raw_book = serialized
@@ -2843,14 +2903,8 @@ fn pe_eq_le_calendar_month_preserves_mac_owned_misc_state() {
     expected_national.advance_pe_national_economy_month(&mut expected_crt);
     expected_national.advance_pe_neighbor_economy_month(&mut expected_crt);
     let mut expected_lfsr = lfsr;
-    expected_national.advance_pe_industry_mix_month(
-        1_000,
-        2_000,
-        10_000,
-        &mut expected_crt,
-        &mut expected_lfsr,
-    );
-    city.advance_pe_eq_le_calendar_month(10_000, 100, 100, 100, 1_000, 2_000, &mut crt, &mut lfsr);
+    expected_national.advance_pe_industry_mix_month(1_000, &mut expected_crt, &mut expected_lfsr);
+    city.advance_pe_eq_le_calendar_month(100, 100, 100, 1_000, &mut crt, &mut lfsr);
 
     for (offset, expected) in sentinels {
         assert_eq!(
@@ -2910,18 +2964,10 @@ fn pe_month_national_economy_runs_on_mac_layout_without_touching_other_state() {
         expected.advance_pe_national_economy_month(&mut expected_rng);
         expected.advance_pe_neighbor_economy_month(&mut expected_rng);
         let mut expected_lfsr = Win95Lfsr::new(29);
-        expected.advance_pe_industry_mix_month(
-            1000,
-            2000,
-            10_000,
-            &mut expected_rng,
-            &mut expected_lfsr,
-        );
+        expected.advance_pe_industry_mix_month(1000, &mut expected_rng, &mut expected_lfsr);
         let mut rng = Win95CrtRand::new(seed);
         let mut lfsr = Win95Lfsr::new(29);
-        city.advance_pe_eq_le_calendar_month(
-            10_000, 100, 100, 100, 1000, 2000, &mut rng, &mut lfsr,
-        );
+        city.advance_pe_eq_le_calendar_month(100, 100, 100, 1000, &mut rng, &mut lfsr);
         for offset in [
             MISC_NATIONAL_POPULATION_OFFSET,
             MISC_NATIONAL_VALUE_OFFSET,
@@ -2993,16 +3039,10 @@ fn pe_neighbor_economy_on_mac_layout_matches_pe_state_and_saves() {
         expected.advance_pe_national_economy_month(&mut expected_rng);
         expected.advance_pe_neighbor_economy_month(&mut expected_rng);
         let mut expected_lfsr = Win95Lfsr::new(29);
-        expected.advance_pe_industry_mix_month(
-            1000,
-            2000,
-            1000,
-            &mut expected_rng,
-            &mut expected_lfsr,
-        );
+        expected.advance_pe_industry_mix_month(1000, &mut expected_rng, &mut expected_lfsr);
         let mut rng = Win95CrtRand::new(seed);
         let mut lfsr = Win95Lfsr::new(29);
-        city.advance_pe_eq_le_calendar_month(1000, 100, 100, 100, 1000, 2000, &mut rng, &mut lfsr);
+        city.advance_pe_eq_le_calendar_month(100, 100, 100, 1000, &mut rng, &mut lfsr);
         assert_eq!(rng.seed(), expected_rng.seed());
         for row in 0..PE_NEIGHBOR_COUNT {
             for field in [
@@ -3072,16 +3112,10 @@ fn pe_industry_mix_on_mac_layout_matches_full_pe_worker_and_saves() {
         reference.advance_pe_neighbor_economy_month(&mut reference_crt);
         reference.kind = CityFileKind::WinSc2;
         let mut reference_lfsr = Win95Lfsr::new(seed);
-        reference.advance_pe_industry_mix_month(
-            1000,
-            2000,
-            1000,
-            &mut reference_crt,
-            &mut reference_lfsr,
-        );
+        reference.advance_pe_industry_mix_month(1000, &mut reference_crt, &mut reference_lfsr);
         let mut crt = Win95CrtRand::new(17);
         let mut lfsr = Win95Lfsr::new(seed);
-        city.advance_pe_eq_le_calendar_month(1000, 100, 100, 100, 1000, 2000, &mut crt, &mut lfsr);
+        city.advance_pe_eq_le_calendar_month(100, 100, 100, 1000, &mut crt, &mut lfsr);
         assert_eq!(crt.seed(), reference_crt.seed());
         assert_eq!(lfsr.state(), reference_lfsr.state());
         assert_eq!(
@@ -4170,6 +4204,61 @@ fn pe_rebuild_tech_unlock_mask_46a0be_ors_zero_rank_bits() {
 }
 
 #[test]
+fn pe_rebuild_tech_unlock_mask_46a0be_grants_arcologies_only_at_native_gate() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-tech-arcology-gate.sc2", "TechArcology").expect("blank city");
+    for i in 0..17 {
+        city.set_pe_w_neighbor_fame_rank(i, 1900);
+    }
+    city.set_pe_w_neighbor_fame_rank(12, 0);
+
+    city.pe_w_city_progression = 5;
+    let _ = city.pe_rebuild_tech_unlock_mask_46a0be(0);
+    assert_eq!(city.rewards_available_mask() & (1 << 4), 0);
+
+    city.pe_w_city_progression = 6;
+    city.set_pe_w_neighbor_fame_rank(12, 1900);
+    city.set_pe_w_neighbor_fame_rank(11, 0);
+    let _ = city.pe_rebuild_tech_unlock_mask_46a0be(0);
+    assert_eq!(city.pe_w_tech_unlock_high_zero_count(), 0);
+    assert_eq!(city.rewards_available_mask() & (1 << 4), 0);
+
+    city.set_pe_w_neighbor_fame_rank(11, 1900);
+    city.set_pe_w_neighbor_fame_rank(15, 0);
+    let _ = city.pe_rebuild_tech_unlock_mask_46a0be(0);
+    assert_eq!(city.pe_w_tech_unlock_high_zero_count(), 1);
+    assert_ne!(city.rewards_available_mask() & (1 << 4), 0);
+
+    // FUN_00441e50 returns without clearing bit 4 when the gate later fails.
+    city.pe_w_city_progression = 5;
+    city.set_pe_w_neighbor_fame_rank(15, 1900);
+    let _ = city.pe_rebuild_tech_unlock_mask_46a0be(0);
+    assert_ne!(city.rewards_available_mask() & (1 << 4), 0);
+}
+
+#[test]
+fn pe_arcology_unlock_on_mac_layout_uses_pe_extension_without_clobbering_mac_latch() {
+    let mut city = City::new_blank("/tmp/sc2000-tech-arcology-mac-layout.city", "PeArcology")
+        .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.pe_cross_layout_active = true;
+    city.set_mac_state_misc_u32_at(MISC_REWARDS_AVAILABLE_OFFSET, 0xa5a5_5a5a);
+    city.pe_w_city_progression = 6;
+    for i in 0..17 {
+        city.set_pe_w_neighbor_fame_rank(i, if (12..=15).contains(&i) { 0 } else { 1900 });
+    }
+
+    let _ = city.pe_rebuild_tech_unlock_mask_46a0be(0);
+
+    assert_eq!(city.rewards_available_mask() & (1 << 4), 1 << 4);
+    assert_eq!(
+        city.mac_state_misc_u32_at(MISC_REWARDS_AVAILABLE_OFFSET),
+        Some(0xa5a5_5a5a),
+        "PE unlock state must stay in the cross-layout cache"
+    );
+}
+
+#[test]
 fn pe_rebuild_tech_unlock_mask_46a0be_ors_ui_globals_arms_6_through_11() {
     // PE jump-table arms 6..=11 @ `0x46a116`..`0x46a16a` atop defaults `0x4e9560`.
     let mut city = City::new_blank("/tmp/sc2000-tech-ui.sc2", "TechUi").expect("blank");
@@ -4740,7 +4829,7 @@ fn pe_disaster_bulk_clear_zeros_xtxt_not_restore_saved_a() {
 fn pe_tornado_spawn_clears_proxy_band_xtxt_via_fun_00401528() {
     let mut city = City::new_blank("/tmp/sc2000-tornado-proxy.sc2", "test").expect("blank city");
     let mut table = empty_overlay_table();
-    table[2] = Win95OverlayRecord {
+    table[1] = Win95OverlayRecord {
         kind: XTHG_SAILBOAT,
         tile_x: 12,
         tile_y: 34,
@@ -4748,20 +4837,58 @@ fn pe_tornado_spawn_clears_proxy_band_xtxt_via_fun_00401528() {
         saved_a: 0x11,
         ..Default::default()
     };
+    table[2].saved_b = 0x5a;
     city.set_traffic_overlays_for_test(table);
-    let prior_proxy = xthg_proxy_for_slot(2).expect("slot 2 proxy");
+    let prior_proxy = xthg_proxy_for_slot(1).expect("slot 1 proxy");
     city.set_text_overlay(12, 34, prior_proxy);
+
+    let mut full = city.clone();
+    for record in &mut full.traffic_overlays_mut().unwrap()[2..] {
+        record.kind = XTHG_SAILBOAT;
+    }
+    assert!(
+        full.place_pe_tornado_actor(12, 34, 0, 0, 0, 0, prior_proxy)
+            .is_none()
+    );
+    assert_eq!(full.text_overlay_at(12, 34), Some(prior_proxy));
+    assert_eq!(full.traffic_overlays().unwrap()[1].kind, XTHG_SAILBOAT);
+
     let slot = city
         .place_pe_tornado_actor(12, 34, 0, 0, 0, 0, prior_proxy)
         .expect("tornado");
-    assert_ne!(
+    assert_eq!(
         slot, 2,
-        "cleared prior slot stays free; tornado takes another"
+        "reserve the free slot before clearing the prior slot"
     );
-    assert_eq!(city.traffic_overlays().unwrap()[2].kind, 0);
-    assert_eq!(city.traffic_overlays().unwrap()[2].height, 1);
+    assert_eq!(city.traffic_overlays().unwrap()[1].kind, 0);
+    assert_eq!(city.traffic_overlays().unwrap()[1].height, 1);
     assert_eq!(city.traffic_overlays().unwrap()[slot].saved_a, 0);
+    assert_eq!(city.traffic_overlays().unwrap()[slot].saved_b, 0x5a);
+    assert_eq!(city.pe_w_monster_xthg_index(), slot as u16);
     assert_eq!(city.text_overlay_at(12, 34), xthg_proxy_for_slot(slot));
+}
+
+#[test]
+fn pe_tornado_constructor_rereads_mismatched_proxy_after_clearing_record_position() {
+    let mut city = City::new_blank("/tmp/tornado-stale-proxy.sc2", "Tornado proxy").unwrap();
+    let mut table = empty_overlay_table();
+    table[1] = Win95OverlayRecord {
+        kind: XTHG_SAILBOAT,
+        tile_x: 51,
+        tile_y: 96,
+        ..Default::default()
+    };
+    city.set_traffic_overlays_for_test(table);
+    city.set_text_overlay(50, 96, 0xca);
+    city.set_text_overlay(51, 96, 0xca);
+
+    assert_eq!(
+        city.place_pe_tornado_actor(50, 96, 1, 11, 42, 2, 0),
+        Some(2)
+    );
+    assert_eq!(city.text_overlay_at(51, 96), Some(0));
+    assert_eq!(city.text_overlay_at(50, 96), Some(0xcb));
+    assert_eq!(city.traffic_overlays().unwrap()[2].saved_a, 0xca);
 }
 
 #[test]
@@ -5475,6 +5602,112 @@ fn mac_dispatch_capacity_uses_reconstructed_selector_table() {
 }
 
 #[test]
+fn mac_dispatch_replays_native_ring_and_slot_reuse_on_both_layouts() {
+    for (layout, extension) in [
+        (CityFileKind::MacCity, "city"),
+        (CityFileKind::WinSc2, "sc2"),
+    ] {
+        for kind in [
+            DispatchKind::Police,
+            DispatchKind::Firefighters,
+            DispatchKind::Military,
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "citygame-mac-dispatch-{}-{}.{}",
+                std::process::id(),
+                kind.index(),
+                extension
+            ));
+            let mut city = City::new_blank(&path, "Mac dispatch").unwrap();
+            city.kind = layout;
+            stamp_complete_building(&mut city, 100, 100, 210, 3);
+            stamp_complete_building(&mut city, 103, 100, 210, 3);
+            stamp_complete_building(&mut city, 106, 100, 211, 3);
+            stamp_complete_building(&mut city, 109, 100, 211, 3);
+            city.set_mac_state_misc_u32_at(MAC_DISPATCH_SELECTOR_MISC_OFFSET, 3);
+            let stale = Win95OverlayRecord::from_bytes(&[
+                0, 0x93, 0x99, 0x77, 0x78, 0x77, 0x79, 0x7a, 0x51, 0x52, 0x53, 0x5a,
+            ]);
+            for slot in &mut city.mac_object_slot_records_mut()[1..] {
+                *slot = stale;
+            }
+            city.reset_emergency_dispatch_for_engine(EngineFidelity::Mac68k);
+            city.mac_object_slot_records_mut()[1].kind = 2;
+            city.set_tile_bits(13, 21, TileBits::new(0x04));
+            city.set_text_overlay(14, 21, 0x22);
+            let place = |city: &mut City, x| {
+                city.place_dispatch_actor_for_engine(x, 21, kind, EngineFidelity::Mac68k)
+            };
+            assert!(place(&mut city, 10));
+            city.mac_object_slot_records_mut()[1].kind = 0;
+            assert!(place(&mut city, 11));
+            assert!(place(&mut city, 12));
+            assert!(!place(&mut city, 13));
+            assert!(!place(&mut city, 14));
+            assert!(place(&mut city, 15));
+            assert_eq!(
+                (10..16)
+                    .map(|x| city.text_overlay_at(x, 21).unwrap())
+                    .collect::<Vec<_>>(),
+                [0, 0, 0xcb, 0, 0x22, 0xca]
+            );
+            let (_, record) = city.dispatch_actor_at(15, 21).unwrap();
+            assert_eq!(
+                record.to_bytes(),
+                [
+                    kind.overlay_kind(),
+                    0,
+                    0x99,
+                    15,
+                    21,
+                    0,
+                    0,
+                    0,
+                    0x51,
+                    0x52,
+                    0,
+                    0x5a
+                ]
+            );
+            city.save(&path).unwrap();
+            let mut loaded = City::load(&path).unwrap();
+            loaded.clear_legacy_dispatch_actor_proxies();
+            assert_eq!(loaded.kind, layout);
+            assert_eq!(loaded.dispatch_actor_at(15, 21), Some((1, record)));
+            loaded.reset_emergency_dispatch_for_engine(EngineFidelity::Mac68k);
+            assert_eq!(loaded.text_overlay_at(15, 21), Some(0));
+            assert_eq!(loaded.traffic_overlays().unwrap()[1].saved_b, 0x5a);
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn mac_dispatch_full_table_advances_ring_and_setup_clears_first_proxy() {
+    let mut city = City::new_blank("/tmp/citygame-dispatch-ring.sc2", "Mac dispatch").unwrap();
+    city.set_mac_state_misc_u32_at(MAC_DISPATCH_SELECTOR_MISC_OFFSET, 3);
+    city.reset_emergency_dispatch_for_engine(EngineFidelity::Mac68k);
+    for slot in &mut city.mac_object_slot_records_mut()[1..] {
+        slot.kind = 2;
+    }
+    let place = |city: &mut City, x| {
+        city.place_dispatch_actor_for_engine(x, 21, DispatchKind::Military, EngineFidelity::Mac68k)
+    };
+    assert!(!place(&mut city, 10));
+    city.mac_object_slot_records_mut()[1].kind = 0;
+    assert!(place(&mut city, 11));
+    assert!(!place(&mut city, 12));
+    assert!(place(&mut city, 15));
+    assert_eq!(city.text_overlay_at(11, 21), Some(0));
+    city.set_text_overlay(16, 21, 0xca);
+    city.mac_object_slot_records_mut()[2].kind = DispatchKind::Military.overlay_kind();
+    city.reset_emergency_dispatch_for_engine(EngineFidelity::Mac68k);
+    assert_eq!(city.text_overlay_at(15, 21), Some(0));
+    assert_eq!(city.text_overlay_at(16, 21), Some(0xca));
+    assert_eq!(city.traffic_overlays().unwrap()[2].kind, 14);
+}
+
+#[test]
 fn dispatch_setup_retains_original_military_fallback() {
     let city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
 
@@ -5505,6 +5738,47 @@ fn emergency_reset_removes_all_dispatch_records_and_proxies() {
             .iter()
             .all(|record| !record.is_dispatch_actor())
     );
+}
+
+#[test]
+fn win95_dispatch_setup_preserves_unlinked_native_responders() {
+    let mut city = City::new_blank("/tmp/citygame-dispatch-setup.sc2", "Dispatch").unwrap();
+    stamp_complete_building(&mut city, 110, 100, 211, 3);
+    let kind = DispatchKind::Firefighters;
+    let unlinked = Win95OverlayRecord {
+        kind: kind.overlay_kind(),
+        tile_x: 42,
+        tile_y: 37,
+        ..Default::default()
+    };
+    let linked = Win95OverlayRecord {
+        tile_x: 10,
+        tile_y: 20,
+        ..unlinked
+    };
+    let records = city.mac_object_slot_records_mut();
+    records[1] = unlinked;
+    records[2] = linked;
+    city.set_building(10, 20, 0xcb);
+    city.set_text_overlay(10, 21, 0xcb);
+    city.set_text_overlay(10, 22, 0xcb);
+
+    assert_eq!(city.clear_legacy_dispatch_actor_proxies(), 0);
+    assert_eq!(city.traffic_overlays().unwrap()[1..=2], [unlinked, linked]);
+
+    city.reset_emergency_dispatch();
+    assert_eq!(city.building_at(10, 20), 0xcb);
+    assert_eq!(city.text_overlay_at(10, 21), Some(0));
+    assert_eq!(city.text_overlay_at(10, 22), Some(0xcb));
+    assert_eq!(city.traffic_overlays().unwrap()[1], unlinked);
+    assert_eq!(
+        city.traffic_overlays().unwrap()[2],
+        Win95OverlayRecord { kind: 0, ..linked }
+    );
+
+    assert!(city.place_dispatch_actor(30, 40, kind));
+    assert_eq!(city.dispatch_actor_at(30, 40).unwrap().0, 2);
+    assert_eq!(city.traffic_overlays().unwrap()[1], unlinked);
 }
 
 #[test]
@@ -5854,8 +6128,9 @@ fn mac_xthg_records_round_trip_without_pe_interpretation() {
     assert_eq!(loaded.text_overlay_at(12, 34), Some(0xd0));
     assert_eq!(loaded.text_overlay_at(64, 65), Some(0xff));
     assert_eq!(loaded.text_overlay_at(127, 127), Some(0x33));
-    let xtxt = decode_expected_chunk(&loaded.chunks, "XTXT", CITY_TILES)
-        .expect("decoded Mac XTXT payload");
+    let xtxt =
+        decode_expected_chunk_for_kind(&loaded.chunks, "XTXT", CITY_TILES, CityFileKind::MacCity)
+            .expect("decoded Mac XTXT payload");
     assert_eq!(xtxt[city_index(12, 34)], 0xd0);
     assert_eq!(xtxt[city_index(64, 65)], 0xff);
     assert_eq!(xtxt[city_index(127, 127)], 0x33);
@@ -5864,8 +6139,13 @@ fn mac_xthg_records_round_trip_without_pe_interpretation() {
         Some(records.as_slice()),
         "Mac XTHG bytes must round-trip without running PE actor semantics"
     );
-    let raw = decode_expected_chunk(&loaded.chunks, "XTHG", XTHG_CHUNK_SIZE)
-        .expect("decoded Mac XTHG payload");
+    let raw = decode_expected_chunk_for_kind(
+        &loaded.chunks,
+        "XTHG",
+        XTHG_CHUNK_SIZE,
+        CityFileKind::MacCity,
+    )
+    .expect("decoded Mac XTHG payload");
     let expected = records
         .iter()
         .flat_map(|record| record.to_bytes())
@@ -5981,7 +6261,9 @@ fn decodes_rotation_and_corner_flags() {
     };
     assert_eq!(mac.rotation(), 0);
 
-    let zone_bytes = decode_expected_chunk(&mac.chunks, "XZON", CITY_TILES).expect("xzon decode");
+    let zone_bytes =
+        decode_expected_chunk_for_kind(&mac.chunks, "XZON", CITY_TILES, CityFileKind::MacCity)
+            .expect("xzon decode");
     assert_eq!(zone_bytes.len(), CITY_TILES);
     assert!(
         mac.zones
@@ -6205,6 +6487,40 @@ fn rle_decoder_handles_literal_and_repeat_runs() {
 }
 
 #[test]
+fn mac_rle_decoder_uses_count_minus_one_literal_controls() {
+    assert_eq!(mac_rle_decode(&[0, 0x41]).expect("one literal"), [0x41]);
+    assert_eq!(
+        mac_rle_decode(&[2, 0x10, 0x20, 0x30, 0x82, 0x7f]).expect("literal and repeat"),
+        [0x10, 0x20, 0x30, 0x7f, 0x7f, 0x7f]
+    );
+    assert_eq!(
+        mac_rle_decode(&[1, 0xaa, 0xbb]).expect("Mac two-byte literal"),
+        [0xaa, 0xbb]
+    );
+    assert_eq!(
+        sc2_rle_decode(&[1, 0xaa]).expect("Win95 one-byte literal"),
+        [0xaa]
+    );
+    assert!(mac_rle_decode(&[1, 0xaa]).is_err());
+}
+
+#[test]
+fn mac_rle_encoder_round_trips_literals_and_repeats() {
+    for len in 0..=300 {
+        let input = (0..len)
+            .map(|index| ((index * 37 + index / 7) & 0xff) as u8)
+            .collect::<Vec<_>>();
+        assert_eq!(mac_rle_decode(&mac_rle_encode(&input)).unwrap(), input);
+    }
+    for run_len in [1, 2, 3, 127, 128, 129, 256] {
+        let input = vec![0xe7; run_len];
+        assert_eq!(mac_rle_decode(&mac_rle_encode(&input)).unwrap(), input);
+    }
+    assert_eq!(mac_rle_encode(&[0x27, 0x27]), [0x81, 0x27]);
+    assert_eq!(mac_rle_encode(&[0xe7, 0xe7, 0xe7]), [2, 0xe7, 0xe7, 0xe7]);
+}
+
+#[test]
 fn decodes_altm_land_water_and_tunnel_levels() {
     let raw = u16::from_be_bytes([0x7d, 0x42]);
     let sample = AltmSample {
@@ -6351,10 +6667,97 @@ fn xtrf_microsim_resize_roundtrip() {
             micro[y * 64 + x] = ((x + y) % 256) as u8;
         }
     }
-    let expanded = resize_map_64_to_128(&micro);
+    let expanded = resize_map_64_to_128(&micro, MicrosimOrder::Native);
     assert_eq!(expanded.len(), CITY_TILES);
     let resaved = resize_map_128_to_64(&expanded);
     assert_eq!(resaved, micro);
+}
+
+#[test]
+fn compact_maps_preserve_coordinates_across_original_and_legacy_saves() {
+    for (suffix, legacy_marker) in [
+        ("sc2", None),
+        ("sc2", Some(CITYGAME_FIRE_COVERAGE_CHUNK)),
+        ("sc2", Some(CITYGAME_EXTENSION_CHUNK)),
+        ("city", None),
+        ("city", Some(CITYGAME_FIRE_COVERAGE_CHUNK)),
+        ("city", Some(CITYGAME_EXTENSION_CHUNK)),
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-compact-map-{}-{legacy_marker:?}.{suffix}",
+            std::process::id()
+        ));
+        let planes = [
+            ("XTRF", 64),
+            ("XVAL", 64),
+            ("XCRM", 64),
+            ("XPLT", 64),
+            ("XPLC", 32),
+            ("XPOP", 32),
+            ("XROG", 32),
+        ];
+        let (mx, my) = (11, 7);
+        let mut chunks = Vec::new();
+        let mut index = HashMap::new();
+        let mut misc = vec![0; WIN95_MISC_RECORD_SIZE];
+        misc[..4].copy_from_slice(&WIN95_MISC_RECORD_VERSION.to_be_bytes());
+        upsert_chunk(&mut chunks, &mut index, "MISC", &misc);
+        if let Some(marker) = legacy_marker {
+            let version: &[u8] = if marker == CITYGAME_FIRE_COVERAGE_CHUNK {
+                CITYGAME_FIRE_COVERAGE_VERSION
+            } else {
+                &[0, 0, 0, 1, 0, 0, 0, 0]
+            };
+            upsert_chunk(&mut chunks, &mut index, marker, version);
+        }
+        for (name, size) in planes {
+            let mut data = vec![0; size * size];
+            let order = if legacy_marker.is_some() {
+                MicrosimOrder::Legacy
+            } else {
+                MicrosimOrder::Native
+            };
+            let (first, second) = match order {
+                MicrosimOrder::Native => (mx * size + my, my * size + mx),
+                MicrosimOrder::Legacy => (my * size + mx, mx * size + my),
+            };
+            data[first] = 193;
+            data[second] = 17;
+            upsert_chunk(&mut chunks, &mut index, name, &data);
+        }
+        fs::write(&path, encode_scdh_file(&chunks).unwrap()).unwrap();
+
+        let assert_positions = |city: &City| {
+            for (name, map, step) in [
+                ("XTRF", city.traffic_density_slice(), 2),
+                ("XVAL", city.land_value_slice(), 2),
+                ("XCRM", city.crime_density_slice(), 2),
+                ("XPLT", city.pollution_density_slice(), 2),
+                ("XPLC", city.police_coverage_slice(), 4),
+                ("XPOP", city.population_density_slice(), 4),
+                ("XROG", city.rate_of_growth_slice(), 4),
+            ] {
+                let map = map.unwrap();
+                assert_eq!(map[city_index(mx * step, my * step)], 193, "{name}");
+                assert_eq!(map[city_index(my * step, mx * step)], 17, "{name}");
+            }
+        };
+        let mut city = City::load(&path).unwrap();
+        assert_positions(&city);
+        city.save(&path).unwrap();
+        let reopened = City::load(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_positions(&reopened);
+        for (name, size) in planes {
+            let raw = decode_expected_chunk(&reopened.chunks, name, size * size).unwrap();
+            assert_eq!(raw[mx * size + my], 193, "{name}");
+            assert_eq!(raw[my * size + mx], 17, "{name}");
+        }
+        assert_eq!(
+            decode_expected_chunk(&reopened.chunks, CITYGAME_MAP_PLANES_CHUNK, 4).unwrap(),
+            CITYGAME_MAP_PLANES_VERSION
+        );
+    }
 }
 
 #[test]
@@ -6403,6 +6806,24 @@ fn mac_xtrf_accepts_expanded_128_square_payload() {
 }
 
 #[test]
+fn mac_xtrf_accepts_win95_rle_encoded_64_square_payload() {
+    let compact = (0..4096)
+        .map(|index| ((index * 37 + index / 64) & 0xff) as u8)
+        .collect::<Vec<_>>();
+    let chunk = CityChunk {
+        name: "XTRF".to_owned(),
+        offset: 0,
+        raw_len: compact.len(),
+        data: sc2_rle_encode(&compact),
+    };
+
+    let (decoded, format) =
+        decode_xtrf(&[chunk], CityFileKind::MacCity).expect("decode Mac saved XTRF");
+    assert_eq!(format, XtrfStorageFormat::Microsim64);
+    assert_eq!(decoded, resize_map_64_to_128(&compact, MicrosimOrder::Native));
+}
+
+#[test]
 fn win95_xplt_rejects_expanded_128_square_payload() {
     let chunk = CityChunk {
         name: "XPLT".to_owned(),
@@ -6429,6 +6850,47 @@ fn mac_xplt_accepts_expanded_128_square_payload() {
 }
 
 #[test]
+fn mac_xplt_accepts_win95_rle_encoded_64_square_payload() {
+    let compact = (0..4096)
+        .map(|index| ((index * 37 + index / 64) & 0xff) as u8)
+        .collect::<Vec<_>>();
+    let chunk = CityChunk {
+        name: "XPLT".to_owned(),
+        offset: 0,
+        raw_len: compact.len(),
+        data: sc2_rle_encode(&compact),
+    };
+
+    let decoded = decode_microsim64_chunk(&[chunk], "XPLT", CityFileKind::MacCity)
+        .expect("decode Mac saved XPLT");
+    assert_eq!(decoded, resize_map_64_to_128(&compact, MicrosimOrder::Native));
+}
+
+#[test]
+fn mac_optional_microsim32_accepts_win95_rle_encoded_plane() {
+    let compact = (0..1024)
+        .map(|index| ((index * 29 + index / 32) & 0xff) as u8)
+        .collect::<Vec<_>>();
+    let chunk = CityChunk {
+        name: "XPLC".to_owned(),
+        offset: 0,
+        raw_len: compact.len(),
+        data: sc2_rle_encode(&compact),
+    };
+
+    let decoded = decode_optional_microsim32_chunk(&[chunk], "XPLC", CityFileKind::MacCity)
+        .expect("load optional XPLC")
+        .expect("decode Mac saved XPLC");
+    let mut expected = vec![0; CITY_TILES];
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            expected[city_index(x, y)] = compact[(x / 4) * 32 + y / 4];
+        }
+    }
+    assert_eq!(decoded, expected);
+}
+
+#[test]
 fn win95_load_propagates_present_invalid_xplt() {
     let temp = std::env::temp_dir().join(format!(
         "sc2000-invalid-win95-xplt-{}.sc2",
@@ -6448,6 +6910,74 @@ fn win95_load_propagates_present_invalid_xplt() {
     let _ = std::fs::remove_file(temp);
     let error = load_result.expect_err("present invalid XPLT must fail Win95 load");
     assert!(error.to_string().contains("loading XPLT chunk"));
+}
+
+#[test]
+fn xfir_loads_native_order_and_migrates_legacy_citygame_saves() {
+    let (mx, my) = (11, 10);
+    let (x, y) = (mx * 4, my * 4);
+    let mut native = vec![0; 1024];
+    native[mx * 32 + my] = 193;
+    native[my * 32 + mx] = 17;
+
+    for (kind, suffix) in [
+        (CityFileKind::MacCity, "city"),
+        (CityFileKind::WinSc2, "sc2"),
+    ] {
+        for legacy in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "citygame-xfir-{}-{legacy}.{suffix}",
+                std::process::id()
+            ));
+            let mut seed = City::new_blank(&path, "Coverage").expect("blank city");
+            seed.kind = kind;
+            seed.update_chunks_from_layers();
+            let mut chunks = seed.chunks;
+            chunks.retain(|chunk| {
+                chunk.name != CITYGAME_EXTENSION_CHUNK && chunk.name != CITYGAME_FIRE_COVERAGE_CHUNK
+            });
+            let mut chunk_index = HashMap::new();
+            let mut fixture = native.clone();
+            if legacy {
+                fixture.swap(mx * 32 + my, my * 32 + mx);
+                upsert_chunk(
+                    &mut chunks,
+                    &mut chunk_index,
+                    CITYGAME_EXTENSION_CHUNK,
+                    &[0, 0, 0, 1, 0, 0, 0, 0],
+                );
+            }
+            let data = if kind.is_win95() {
+                sc2_rle_encode(&fixture)
+            } else {
+                fixture
+            };
+            chunks.push(CityChunk {
+                name: "XFIR".to_owned(),
+                offset: 0,
+                raw_len: data.len(),
+                data,
+            });
+            fs::write(&path, encode_scdh_file(&chunks).unwrap()).unwrap();
+
+            let mut city = City::load(&path).expect("load coverage fixture");
+            assert_eq!(city.fire_coverage_at(x + 3, y + 3), Some(193));
+            assert_eq!(city.fire_coverage_at(y, x), Some(17));
+            city.save(&path).expect("save canonical XFIR");
+            let reopened = City::load(&path).expect("reopen canonical XFIR");
+            let _ = fs::remove_file(&path);
+            assert_eq!(reopened.fire_coverage_at(x, y), Some(193));
+            assert_eq!(reopened.fire_coverage_at(y + 3, x + 3), Some(17));
+            assert_eq!(
+                decode_expected_chunk(&reopened.chunks, "XFIR", 1024).unwrap(),
+                native
+            );
+            assert_eq!(
+                decode_expected_chunk(&reopened.chunks, CITYGAME_FIRE_COVERAGE_CHUNK, 4).unwrap(),
+                CITYGAME_FIRE_COVERAGE_VERSION
+            );
+        }
+    }
 }
 
 #[test]
@@ -6621,7 +7151,7 @@ fn win95_altm_misc_and_xgrp_validate_decoded_sizes() {
         data: sc2_rle_encode(&vec![0; CITY_TILES * 2]),
     };
     assert_eq!(
-        decode_altm(&[compressed_altm])
+        decode_altm(&[compressed_altm], CityFileKind::WinSc2)
             .expect("ALTM accepts a valid encoded payload")
             .len(),
         CITY_TILES
@@ -7063,8 +7593,9 @@ fn pe_opinion_poll_consumes_latched_scores_and_saved_rates() {
     city.pe_eq_averages_ready = false;
     city.pe_city_crime = 37;
     city.pe_city_pollution = 49;
+    city.set_pe_dw_city_population(1_000);
     let mut rng = Win95CrtRand::new(123);
-    city.run_pe_opinion_poll_with_rng(1_000, 100, 5, 10, &mut rng);
+    city.run_pe_opinion_poll_with_rng(7, &mut rng);
     assert_eq!(city.pe_attitude_scores, scores);
     assert_eq!(city.pe_city_crime, 37);
     assert_eq!(city.pe_city_pollution, 49);
@@ -7229,4 +7760,119 @@ fn mac_zero_scalar_cohort_clear_matches_original_68020() {
             }
         }
     }
+}
+
+#[test]
+fn mac_scenario_cgex_preserves_goals_actions_and_native_pe_fields() {
+    use crate::mac_scenario::MacScenarioStart;
+
+    let path = std::env::temp_dir().join(format!(
+        "citygame-mac-scenario-cross-layout-{}.sc2",
+        std::process::id()
+    ));
+    let mut city = City::new_blank(&path, "Cross-layout goals").unwrap();
+    let pe_action = [7, 0x10, 0xaabb_ccdd];
+    city.set_misc_u32_values(MISC_MONSTER_XTHG_INDEX_OFFSET, &pe_action);
+    city.set_misc_u32_at(MAC_SCENARIO_ACTIVE_STATE_OFFSET + 4, 88);
+    assert_eq!(
+        city.mac_state_misc_u32_at(MISC_CURRENT_DISASTER_TYPE_OFFSET),
+        Some(0)
+    );
+    assert_eq!(
+        city.mac_state_misc_u32_at(MISC_DISASTER_ACTIVE_OFFSET),
+        Some(0)
+    );
+
+    city.prepare_mac_fidelity_from_saved_city();
+    let mut goals = [0; 16];
+    goals[0] = 2;
+    goals[1] = u32::MAX;
+    city.initialize_mac_scenario(MacScenarioStart {
+        action: 16,
+        point: (68, 99),
+        goals,
+    });
+    city.set_mac_residential_pair_total(12345);
+    for (slot, value) in [
+        (0x1040, 3),
+        (0x1044, 16),
+        (0x1048, 1),
+        (0x10b0, 49),
+        (0x10b4, 59),
+    ] {
+        city.set_mac_state_misc_u32_at(slot, value);
+    }
+    assert!(city.tick_mac_saved_scenario().is_none());
+    city.save(&path).unwrap();
+
+    let mut reloaded = City::load(&path).unwrap();
+    let extension = decode_citygame_extension(&reloaded.chunks).unwrap();
+    assert_eq!(extension.version, 18);
+    assert_eq!(
+        reloaded.misc_u32_values(MISC_MONSTER_XTHG_INDEX_OFFSET, 3),
+        pe_action
+    );
+    assert_eq!(
+        reloaded.misc_u32_at(MAC_SCENARIO_ACTIVE_STATE_OFFSET + 4),
+        Some(88)
+    );
+    assert_eq!(reloaded.mac_residential_pair_total(), 12345);
+    assert_eq!(reloaded.mac_pending_action(), 16);
+    assert_eq!(reloaded.take_mac_scenario_pending_point(), Some((68, 99)));
+    assert!(reloaded.mac_scenario_active());
+    assert_eq!(reloaded.mac_state_misc_u32_at(0x1040), Some(3));
+    assert_eq!(reloaded.mac_state_misc_u32_at(0x1044), Some(16));
+    assert_eq!(reloaded.mac_state_misc_u32_at(0x1048), Some(1));
+    assert_eq!(reloaded.mac_state_misc_u32_at(0x10b0), Some(49));
+    assert_eq!(reloaded.mac_state_misc_u32_at(0x10b4), Some(59));
+    assert!(matches!(
+        reloaded.tick_mac_saved_scenario(),
+        Some(crate::city::MacScenarioResult::TimedOut)
+    ));
+    reloaded.save(&path).unwrap();
+    let finished = City::load(&path).unwrap();
+    assert!(!finished.mac_scenario_active());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mac_road_link_tally_preserves_win95_sewer_bonus_through_save_and_reload() {
+    let path = std::env::temp_dir().join(format!(
+        "citygame-mac-road-link-cross-layout-{}.sc2",
+        std::process::id()
+    ));
+    let mut city = City::new_blank(&path, "Cross-layout link").unwrap();
+    city.set_misc_u32_at(MISC_SEWER_BONUS_OFFSET, 4);
+    city.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(city.mac_rci_overlay_cap_counts()[0], 4);
+
+    city.mac_increment_road_neighbor_link_count();
+    city.set_text_overlay(0, 86, 0xfa);
+    assert_eq!(city.mac_rci_overlay_cap_counts()[0], 5);
+    assert_eq!(city.pe_w_sewer_bonus(), 4);
+    city.save(&path).unwrap();
+
+    let mut reloaded = City::load(&path).unwrap();
+    assert_eq!(reloaded.misc_u32_at(MISC_SEWER_BONUS_OFFSET), Some(4));
+    assert_eq!(reloaded.pe_w_sewer_bonus(), 4);
+    assert_eq!(reloaded.text_overlay_at(0, 86), Some(0xfa));
+    assert!(reloaded.mac_scenario_runtime.is_none());
+    reloaded.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(reloaded.mac_rci_overlay_cap_counts()[0], 5);
+    reloaded.mac_export80_decrement_xtxt_fa_counter(0x1d);
+    assert_eq!(reloaded.mac_rci_overlay_cap_counts()[0], 4);
+
+    reloaded.initialize_mac_scenario(crate::mac_scenario::MacScenarioStart {
+        action: 16,
+        point: (68, 99),
+        goals: [0; 16],
+    });
+    reloaded.save(&path).unwrap();
+    let mut reloaded = City::load(&path).unwrap();
+    assert_eq!(reloaded.mac_pending_action(), 16);
+    assert_eq!(reloaded.take_mac_scenario_pending_point(), Some((68, 99)));
+    assert_eq!(reloaded.mac_rci_overlay_cap_counts()[0], 4);
+    assert_eq!(reloaded.pe_w_sewer_bonus(), 4);
+
+    std::fs::remove_file(path).unwrap();
 }

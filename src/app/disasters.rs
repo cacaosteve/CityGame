@@ -82,8 +82,8 @@ const PE_FIRE_CENTER_JITTER_MOD: u16 = 0x28;
 const PE_FIRE_CENTER_JITTER_BIAS: isize = 0x14;
 pub(super) const PE_FIRE_SPIRAL_ARM_LIMIT: isize = 0x40;
 pub(super) const PE_FIRE_FALLBACK_ATTEMPTS: usize = 0xc8;
-/// Win95 firestorm start @ `0x45e030`: NESW spiral until 0x41 ignites, origin unpainted.
-pub(super) const PE_FIRESTORM_PAINT_COUNT: usize = 0x41;
+/// Win95 `0x45e030` and Mac selector 12 both count up to 65 successful ignitions.
+pub(super) const FIRESTORM_IGNITION_LIMIT: usize = 0x41;
 /// Win95 `0x4e87d8` / `0x4e87e0` NESW step tables.
 pub(super) const PE_FIRESTORM_DX: [isize; 4] = [0, 1, 0, -1];
 pub(super) const PE_FIRESTORM_DY: [isize; 4] = [-1, 0, 1, 0];
@@ -299,8 +299,8 @@ pub(super) fn pe_earthquake_overlays_with_rng(
                     tiles.insert((x, y), 0xff);
                 }
             } else {
-                // PE @ `0x45ed49`: `call 0x401604` DestroyStructure → clear XBLD/XTXT.
-                pe_flood_destroy_tile_with_crt(city, rng, x, y);
+                // PE `0x45ed49` passes both DestroyStructure flags as zero.
+                pe_flood_destroy_tile_mode_maybe_crt(city, Some(rng), x, y, false);
             }
             di += 1;
         }
@@ -608,6 +608,38 @@ pub(super) fn pe_firestorm_can_ignite(city: &City, x: usize, y: usize) -> bool {
     pe_ignite_paints_fire_xtxt(city.text_overlay_at(x, y).unwrap_or(0))
 }
 
+/// The two binaries walk the same NESW spiral, starting one cell north
+/// of the origin. Ignition and successful-paint accounting are caller-owned.
+pub(super) fn firestorm_spiral_candidates(
+    origin_x: usize,
+    origin_y: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    disaster_spiral_candidates((origin_x as isize, origin_y as isize), 0x7f)
+}
+
+pub(super) fn disaster_spiral_candidates(
+    origin: (isize, isize),
+    max_leg_length: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    (0..2 * max_leg_length)
+        .flat_map(|leg| {
+            let direction = leg & 3;
+            std::iter::repeat_n(
+                (PE_FIRESTORM_DX[direction], PE_FIRESTORM_DY[direction]),
+                leg / 2 + 1,
+            )
+        })
+        .scan(origin, |point, step| {
+            point.0 += step.0;
+            point.1 += step.1;
+            Some(*point)
+        })
+        .filter_map(|(x, y)| {
+            ((0..CITY_WIDTH as isize).contains(&x) && (0..CITY_HEIGHT as isize).contains(&y))
+                .then_some((x as usize, y as usize))
+        })
+}
+
 /// Win95 firestorm start @ `0x45e030`: predict tiles that would return paint success from
 /// FUN_00460e10 flag 1 (water / non-paint XTXT skipped). Live seeding walks every in-bounds
 /// step and calls the helper — including rubble-band side effects.
@@ -616,34 +648,10 @@ pub(super) fn pe_firestorm_spiral_tiles(
     origin_x: usize,
     origin_y: usize,
 ) -> Vec<(usize, usize)> {
-    let mut x = origin_x as isize;
-    let mut y = origin_y as isize;
-    let mut dir = 0_usize;
-    let mut arm_len = 1_isize;
-    let mut steps_on_arm = 0_isize;
-    let mut tiles = Vec::new();
-    while tiles.len() < PE_FIRESTORM_PAINT_COUNT && arm_len < 0x80 {
-        x += PE_FIRESTORM_DX[dir];
-        y += PE_FIRESTORM_DY[dir];
-        if (0..CITY_WIDTH as isize).contains(&x)
-            && (0..CITY_HEIGHT as isize).contains(&y)
-            && !city
-                .tile_bits_at(x as usize, y as usize)
-                .is_some_and(|bits| bits.water_tile())
-            && pe_ignite_paints_fire_xtxt(city.text_overlay_at(x as usize, y as usize).unwrap_or(0))
-        {
-            tiles.push((x as usize, y as usize));
-        }
-        steps_on_arm += 1;
-        if steps_on_arm >= arm_len {
-            steps_on_arm = 0;
-            if dir & 1 != 0 {
-                arm_len += 1;
-            }
-            dir = (dir + 1) & 3;
-        }
-    }
-    tiles
+    firestorm_spiral_candidates(origin_x, origin_y)
+        .filter(|&(x, y)| pe_firestorm_can_ignite(city, x, y))
+        .take(FIRESTORM_IGNITION_LIMIT)
+        .collect()
 }
 
 /// Win95 type-3 riot arm @ `0x47219a`: `dwCityUnemployment >= 0x0A`, `bWeatherHeat >= 0xAA`.
@@ -654,6 +662,11 @@ pub(super) fn pe_riot_disaster_ready(city: &City) -> bool {
 /// Win95 type-0xD mass-riot arm @ `0x47218e`: type 3 plus `dwCityPopulation >= 0x7530`.
 pub(super) fn pe_mass_riot_disaster_ready(city: &City) -> bool {
     city.pe_dw_city_population() >= 30_000 && pe_riot_disaster_ready(city)
+}
+
+/// Win95 `0x45f090` checks the signed visit counter before allocating a slot.
+pub(super) fn pe_tornado_constructor_ready(city: &City) -> bool {
+    (city.pe_tornado_actor_counter as i16) < 1 && pe_xthg_disaster_slot_available(city)
 }
 
 pub(super) fn pe_xthg_disaster_slot_available(city: &City) -> bool {

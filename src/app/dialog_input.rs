@@ -2,6 +2,7 @@
 
 use super::dialog_content::*;
 use super::dialog_layout::*;
+use super::network::{show_rail_neighbor_link_confirmation, show_road_neighbor_link_confirmation};
 use super::*;
 
 pub(super) fn handle_modal_pointer_down(
@@ -68,11 +69,36 @@ pub(super) fn handle_modal_pointer_down(
             );
             return true;
         }
-        if point_in_float_rect(screen, city_info_dialog_rect_for(dialog, window_size)) {
+        if state.mac_loop_scheduler.january_budget_review_pending
+            || (!state.engine_fidelity.uses_win95() && dialog.holds_mac_simulation())
+            || point_in_float_rect(screen, city_info_dialog_rect_for(dialog, window_size))
+        {
             return true;
         }
     }
     false
+}
+
+pub(super) fn close_city_info_dialog_from_input(
+    state: &mut ViewerState,
+    window: &sdl3::video::Window,
+) {
+    let dialog = state.city_info_dialog;
+    if matches!(dialog, Some(CityInfoDialog::StadiumTeam { .. })) {
+        return;
+    }
+    state.close_city_info_dialog();
+    match dialog {
+        Some(CityInfoDialog::RoadBridge {
+            mac_neighbor_link, ..
+        }) => {
+            show_road_neighbor_link_confirmation(state, window, mac_neighbor_link);
+        }
+        Some(CityInfoDialog::RailBridge { neighbor_link, .. }) => {
+            show_rail_neighbor_link_confirmation(state, window, neighbor_link);
+        }
+        _ => {}
+    }
 }
 
 pub(super) fn apply_city_info_dialog_action(
@@ -85,9 +111,7 @@ pub(super) fn apply_city_info_dialog_action(
     sound: Option<&crate::audio::SoundPlayer>,
 ) {
     match action {
-        CityInfoDialogAction::Close => {
-            state.close_city_info_dialog();
-        }
+        CityInfoDialogAction::Close => close_city_info_dialog_from_input(state, window),
         CityInfoDialogAction::CenterMapOn { x, y } => {
             state.center_tile_at_viewport(x, y, window_size, pixel_scale);
             state.play_click_sound(sound);
@@ -155,17 +179,16 @@ pub(super) fn apply_city_info_dialog_action(
                 direction,
                 span_count,
                 selector_mask,
+                ..
             }) = state.city_info_dialog
                 && selector_mask & (1 << selector) != 0
             {
-                let placed = state.finish_win95_road_bridge(
-                    (seed_x, seed_y),
-                    direction,
-                    span_count,
-                    selector,
-                );
+                let placed =
+                    state.finish_road_bridge((seed_x, seed_y), direction, span_count, selector);
+                if placed > 0 || !state.engine_fidelity.uses_win95() {
+                    close_city_info_dialog_from_input(state, window);
+                }
                 if placed > 0 {
-                    state.close_city_info_dialog();
                     state.play_click_sound(sound);
                     state.update_window_title(video, window.id());
                 }
@@ -175,12 +198,20 @@ pub(super) fn apply_city_info_dialog_action(
             if let Some(CityInfoDialog::HighwayWaterBridge { candidate }) = state.city_info_dialog
                 && candidate.selector_mask & (1 << selector) != 0
             {
-                let placed = state.finish_win95_highway_water_bridge(candidate, selector);
+                let placed = state.finish_highway_water_bridge(candidate, selector);
+                if placed > 0 || !state.engine_fidelity.uses_win95() {
+                    close_city_info_dialog_from_input(state, window);
+                }
                 if placed > 0 {
-                    state.close_city_info_dialog();
                     state.play_click_sound(sound);
                     state.update_window_title(video, window.id());
                 }
+            }
+        }
+        CityInfoDialogAction::SelectStadiumTeam(team) => {
+            if state.finish_mac_stadium_team(team) {
+                state.play_click_sound(sound);
+                state.update_window_title(video, window.id());
             }
         }
         CityInfoDialogAction::SelectRailBridge => {
@@ -189,15 +220,21 @@ pub(super) fn apply_city_info_dialog_action(
                 seed_y,
                 direction,
                 span_count,
+                ..
             }) = state.city_info_dialog
             {
-                let placed =
-                    state.finish_win95_rail_bridge((seed_x, seed_y), direction, span_count);
+                let placed = state.finish_rail_bridge((seed_x, seed_y), direction, span_count);
+                close_city_info_dialog_from_input(state, window);
                 if placed > 0 {
-                    state.close_city_info_dialog();
                     state.play_click_sound(sound);
                     state.update_window_title(video, window.id());
                 }
+            }
+        }
+        CityInfoDialogAction::ConfirmTunnel => {
+            if state.accept_mac_tunnel_quote() > 0 {
+                state.play_click_sound(sound);
+                state.update_window_title(video, window.id());
             }
         }
         CityInfoDialogAction::SelectPowerBridge => {
@@ -206,12 +243,12 @@ pub(super) fn apply_city_info_dialog_action(
                 seed_y,
                 direction,
                 span_count,
+                ..
             }) = state.city_info_dialog
             {
-                let placed =
-                    state.finish_win95_power_bridge((seed_x, seed_y), direction, span_count);
+                let placed = state.finish_power_bridge((seed_x, seed_y), direction, span_count);
+                state.close_city_info_dialog();
                 if placed > 0 {
-                    state.close_city_info_dialog();
                     state.play_click_sound(sound);
                     state.update_window_title(video, window.id());
                 }
@@ -262,6 +299,14 @@ pub(super) fn city_info_dialog_hit_test(
     active_dialog: CityInfoDialog,
 ) -> Option<CityInfoDialogAction> {
     let dialog = city_info_dialog_rect_for(active_dialog, window_size);
+    if let CityInfoDialog::StadiumTeam { available, .. } = active_dialog {
+        return (0..5)
+            .find(|&team| {
+                available & (1 << team) != 0
+                    && point_in_float_rect(screen, stadium_team_choice_rect(dialog, team))
+            })
+            .map(CityInfoDialogAction::SelectStadiumTeam);
+    }
     let close = if matches!(active_dialog, CityInfoDialog::Newspaper(_)) {
         newspaper::close_rect(dialog)
     } else if active_dialog == CityInfoDialog::Budget {
@@ -286,6 +331,10 @@ pub(super) fn city_info_dialog_hit_test(
     if matches!(active_dialog, CityInfoDialog::RailBridge { .. }) {
         return point_in_float_rect(screen, road_bridge_choice_rect(dialog, 0))
             .then_some(CityInfoDialogAction::SelectRailBridge);
+    }
+    if matches!(active_dialog, CityInfoDialog::TunnelQuote { .. }) {
+        return point_in_float_rect(screen, road_bridge_choice_rect(dialog, 0))
+            .then_some(CityInfoDialogAction::ConfirmTunnel);
     }
     if matches!(active_dialog, CityInfoDialog::PowerBridge { .. }) {
         return point_in_float_rect(screen, road_bridge_choice_rect(dialog, 0))

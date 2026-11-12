@@ -2,10 +2,23 @@
 
 use super::*;
 
-/// PE `FUN_0044f910` / Mac `export_163`: signed station XBLD tile census WORD, `sar 3`.
+/// PE `FUN_0044f910`: signed station XBLD tile census WORD, `sar 3`.
 /// Negative values are malformed census state and do not expose a usable actor capacity.
 pub(super) fn dispatch_capacity_from_station_tile_count(tile_count: u16) -> usize {
     ((tile_count as i16) >> 3).max(0) as usize
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct MacDispatch {
+    capacities: Option<[usize; 3]>,
+    cursors: [usize; 3],
+    coordinates: [[(u8, u8); 29]; 3],
+}
+
+fn mac_dispatch_proxy_slot(proxy: u8) -> Option<usize> {
+    (0xc9..=0xf0)
+        .contains(&proxy)
+        .then(|| usize::from(proxy - 0xc9))
 }
 
 impl City {
@@ -149,13 +162,11 @@ impl City {
         if x >= CITY_WIDTH || y >= CITY_HEIGHT {
             return None;
         }
-        // PE dispatch actors may overlay nonzero XBLD. Identify a live CityGame actor by its
-        // actual XTXT slot proxy, so an orphaned record cannot hide or replace later map art.
+        // A live dispatch actor needs its XTXT proxy and matching coordinates.
+        // Legacy XBLD-only records cannot hide later map art.
         let slot = xthg_slot_for_proxy(self.text_overlay_at(x, y)?)?;
         let record = *self.traffic_overlays.as_ref()?.get(slot)?;
-        (record.is_rust_dispatch_actor()
-            && record.tile_x as usize == x
-            && record.tile_y as usize == y)
+        (record.is_dispatch_actor() && record.tile_x as usize == x && record.tile_y as usize == y)
             .then_some((slot, record))
     }
 
@@ -174,36 +185,21 @@ impl City {
         kind: DispatchKind,
         fidelity: EngineFidelity,
     ) -> usize {
-        // PE `FUN_0044f910` reads live tile-count WORDs 210/211 at runtime
-        // `+0x1a4/+0x1a6`; Mac CODE 3 `export_163` reads the corresponding saved
-        // XBLD census WORDs. Both apply signed `sar ..., 3`, so every eight counted
-        // station tiles add one dispatch slot, whether or not they form a complete
-        // 3x3 footprint.
-        let (police_tiles, fire_tiles) = match fidelity {
-            EngineFidelity::Win95 => (self.pe_dw_tile_count[210], self.pe_dw_tile_count[211]),
-            EngineFidelity::Mac68k => {
-                (self.mac_xbld_tile_count(210), self.mac_xbld_tile_count(211))
-            }
-        };
-        let police = dispatch_capacity_from_station_tile_count(police_tiles)
+        if fidelity == EngineFidelity::Mac68k {
+            return self
+                .mac_dispatch
+                .capacities
+                .unwrap_or_else(|| self.mac_dispatch_capacities())[kind.index()];
+        }
+        let police = dispatch_capacity_from_station_tile_count(self.pe_dw_tile_count[210])
             .min(DispatchKind::Police.capacity_limit());
-        let fire = dispatch_capacity_from_station_tile_count(fire_tiles)
+        let fire = dispatch_capacity_from_station_tile_count(self.pe_dw_tile_count[211])
             .min(DispatchKind::Firefighters.capacity_limit());
-        let military = match fidelity {
-            EngineFidelity::Win95 => match self.pe_w_military_base_type {
-                2 => 5,
-                3 => 2,
-                4 => 3,
-                _ => 0,
-            },
-            EngineFidelity::Mac68k => self
-                .mac_state_misc_u32_at(MAC_DISPATCH_SELECTOR_MISC_OFFSET)
-                .and_then(|selector| {
-                    MAC_DISPATCH_MILITARY_CAPACITY_BY_SELECTOR
-                        .get(selector as u8 as usize)
-                        .copied()
-                })
-                .unwrap_or(0),
+        let military: usize = match self.pe_w_military_base_type {
+            2 => 5,
+            3 => 2,
+            4 => 3,
+            _ => 0,
         }
         .min(DispatchKind::Military.capacity_limit());
 
@@ -213,6 +209,25 @@ impl City {
             DispatchKind::Military if police == 0 && fire == 0 && military == 0 => 1,
             DispatchKind::Military => military,
         }
+    }
+
+    fn mac_dispatch_capacities(&self) -> [usize; 3] {
+        // CODE 3 export 163 uses LSR.W and one-based coordinates.
+        // Limit station counts to the 29 usable entries before the next lane.
+        let police = usize::from(self.mac_xbld_tile_count(210) >> 3).min(29);
+        let fire = usize::from(self.mac_xbld_tile_count(211) >> 3).min(29);
+        let selector = self
+            .mac_state_misc_u32_at(MAC_DISPATCH_SELECTOR_MISC_OFFSET)
+            .unwrap_or(0) as u8;
+        let military = MAC_DISPATCH_MILITARY_CAPACITY_BY_SELECTOR
+            .get(usize::from(selector))
+            .copied()
+            .unwrap_or(0);
+        [
+            police,
+            fire,
+            military.max(usize::from(police == 0 && fire == 0)),
+        ]
     }
 
     pub fn can_place_dispatch_actor(&self, x: usize, y: usize, kind: DispatchKind) -> bool {
@@ -245,15 +260,19 @@ impl City {
             return false;
         }
 
+        if fidelity == EngineFidelity::Mac68k {
+            // CODE 3 updates the coordinate ring even if CODE 6 cannot allocate.
+            return true;
+        }
         self.traffic_overlays.as_ref().is_none_or(|table| {
             table
                 .iter()
                 .enumerate()
                 .skip(XTHG_FIRST_USABLE_SLOT)
-                .any(|(_, record)| {
+                .any(|(slot, record)| {
                     record.kind == 0
                         || (record.is_rust_dispatch_actor() && record.kind == kind.overlay_kind())
-                        || (record.is_dispatch_actor() && !record.is_rust_dispatch_actor())
+                        || self.legacy_dispatch_xbld_proxy(slot, *record)
                 })
         })
     }
@@ -273,6 +292,9 @@ impl City {
     ) -> bool {
         if !self.can_place_dispatch_actor_for_engine(x, y, kind, fidelity) {
             return false;
+        }
+        if fidelity == EngineFidelity::Mac68k {
+            return self.place_mac_dispatch_actor(x, y, kind);
         }
         if self.traffic_overlays.is_none() {
             self.traffic_overlays = Some(empty_overlay_table());
@@ -300,11 +322,7 @@ impl City {
             .iter()
             .enumerate()
             .skip(XTHG_FIRST_USABLE_SLOT)
-            .find_map(|(slot, record)| {
-                (record.kind == 0
-                    || (record.is_dispatch_actor() && !record.is_rust_dispatch_actor()))
-                .then_some(slot)
-            });
+            .find_map(|(slot, record)| (record.kind == 0).then_some(slot));
         let Some(slot) = kind_slots
             .get(ring_index)
             .copied()
@@ -337,6 +355,50 @@ impl City {
         }
         self.mark_dirty(x, y);
         self.dispatch_cursors[kind.index()] = (ring_index + 1) % capacity;
+        true
+    }
+
+    fn place_mac_dispatch_actor(&mut self, x: usize, y: usize, kind: DispatchKind) -> bool {
+        let service = kind.index();
+        let capacity = self.dispatch_capacity_for_engine(kind, EngineFidelity::Mac68k);
+        let next = self.mac_dispatch.cursors[service] % capacity;
+        self.mac_dispatch.cursors[service] = next + 1;
+        let (old_x, old_y) = std::mem::replace(
+            &mut self.mac_dispatch.coordinates[service][next],
+            (x as u8, y as u8),
+        );
+        let (old_x, old_y) = (usize::from(old_x), usize::from(old_y));
+        let old_slot = self
+            .text_overlay_at(old_x, old_y)
+            .and_then(mac_dispatch_proxy_slot);
+        let records = self.mac_object_slot_records_mut();
+        if let Some(slot) = old_slot
+            && records[slot].kind == kind.overlay_kind()
+        {
+            // The native cleanup keys on the old map proxy and kind, even
+            // when the stored record coordinates have gone stale.
+            records[slot].kind = 0;
+            self.set_text_overlay(old_x, old_y, 0);
+        }
+        let Some((slot, record)) = self
+            .mac_object_slot_records_mut()
+            .iter_mut()
+            .enumerate()
+            .skip(XTHG_FIRST_USABLE_SLOT)
+            .find(|(_, record)| record.kind == 0)
+        else {
+            return false;
+        };
+        // CODE 6 export 108 keeps +2, +8/+9, and +11 from the free slot.
+        record.kind = kind.overlay_kind();
+        record.lane = 0;
+        record.tile_x = x as u8;
+        record.tile_y = y as u8;
+        record.height = 0;
+        record.sub_x = 0;
+        record.sub_y = 0;
+        record.saved_a = 0;
+        self.paint_xthg_proxy_tile(slot, x, y);
         true
     }
 
@@ -452,94 +514,72 @@ impl City {
 
     /// Opening the original emergency palette removes all prior dispatch markers and resets the
     /// three service cursors before accepting a new dispatch sequence.
-    pub fn reset_emergency_dispatch(&mut self) {
-        self.dispatch_cursors = [0; 3];
-        let slots = self
-            .traffic_overlays
-            .as_ref()
-            .map(|table| {
-                table
-                    .iter()
-                    .enumerate()
-                    .skip(XTHG_FIRST_USABLE_SLOT)
-                    .filter_map(|(slot, record)| record.is_rust_dispatch_actor().then_some(slot))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for slot in slots {
-            self.remove_dispatch_actor_slot(slot);
+    pub(crate) fn reset_emergency_dispatch_for_engine(&mut self, fidelity: EngineFidelity) {
+        if fidelity.uses_win95() {
+            self.reset_emergency_dispatch();
+        } else {
+            self.mac_dispatch.capacities = Some(self.mac_dispatch_capacities());
+            self.mac_dispatch.cursors = [0; 3];
+            self.mac_clear_dispatch_proxies();
         }
     }
 
-    /// PE Maxis Man daily epilogue `0x45d230`: walk the map; when XTXT is in the
-    /// actor proxy band `0xC9..0xF1` and the resolved slot kind is dispatch
-    /// `0x07`/`0x08`/`0x0E`, zero that XTXT and clear kind only (`FUN_004507D0`).
-    pub fn pe_maxis_daily_clear_dispatch_xtxt_proxies(&mut self) -> usize {
-        let mut cleared = 0;
-        for y in 0..CITY_HEIGHT {
-            for x in 0..CITY_WIDTH {
-                let xtxt = self.text_overlay_at(x, y).unwrap_or(0);
-                if !(0xc9..0xf1).contains(&xtxt) {
-                    continue;
-                }
-                let Some(slot) = xthg_slot_for_proxy(xtxt) else {
+    /// Native setup and end-of-action cleanup visit proxies in x-major order.
+    pub(crate) fn mac_clear_dispatch_proxies(&mut self) {
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                let Some(slot) = self.text_overlay_at(x, y).and_then(mac_dispatch_proxy_slot)
+                else {
                     continue;
                 };
-                let kind = self
+                let Some(record) = self
                     .traffic_overlays
-                    .as_ref()
-                    .and_then(|table| table.get(slot).map(|record| record.kind))
-                    .unwrap_or(0);
-                if DispatchKind::from_overlay_kind(kind).is_none() {
+                    .as_mut()
+                    .and_then(|table| table.get_mut(slot))
+                else {
                     continue;
-                }
-                if let Some(table) = self.traffic_overlays.as_mut()
-                    && let Some(record) = table.get_mut(slot)
-                {
+                };
+                if record.is_dispatch_actor() {
                     record.kind = 0;
+                    self.set_text_overlay(x, y, 0);
                 }
-                self.set_text_overlay(x, y, 0);
-                self.mark_dirty(x, y);
-                cleared += 1;
             }
         }
-        cleared
     }
 
-    pub fn clear_legacy_dispatch_actor_proxies(&mut self) -> usize {
-        let legacy_slots = self
-            .traffic_overlays
-            .as_ref()
-            .map(|table| {
-                table
-                    .iter()
-                    .enumerate()
-                    .skip(XTHG_FIRST_USABLE_SLOT)
-                    .filter_map(|(slot, record)| {
-                        (record.is_dispatch_actor() && !record.is_rust_dispatch_actor())
-                            .then_some((slot, *record))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+    pub fn reset_emergency_dispatch(&mut self) {
+        self.dispatch_cursors = [0; 3];
+        self.pe_maxis_daily_clear_dispatch_xtxt_proxies();
+    }
 
+    /// PE palette setup at `0x44fa53` and disaster end at `0x45d22f` clear
+    /// responder records reached through XTXT in increasing X, then Y.
+    pub fn pe_maxis_daily_clear_dispatch_xtxt_proxies(&mut self) -> usize {
+        if self.traffic_overlays.is_none() || self.text_overlays.is_none() {
+            return 0;
+        }
         let mut cleared = 0;
-        for (slot, record) in legacy_slots {
-            if let Some(table) = self.traffic_overlays.as_mut()
-                && let Some(cell) = table.get_mut(slot)
-            {
-                // PE `FUN_004507D0`: clear kind only; height/saved_b remain.
-                cell.kind = 0;
-                cleared += 1;
-            }
-
-            let x = record.tile_x as usize;
-            let y = record.tile_y as usize;
-            let proxy = xthg_proxy_for_slot(slot).unwrap_or(0);
-            if x < CITY_WIDTH && y < CITY_HEIGHT && self.building_at(x, y) == proxy {
-                self.set_building(x, y, record.saved_a);
-            } else if x < CITY_WIDTH && y < CITY_HEIGHT {
-                self.mark_dirty(x, y);
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                let Some(slot) = self
+                    .text_overlay_at(x, y)
+                    .and_then(|marker| marker.checked_sub(XTHG_PROXY_BASE))
+                    .map(usize::from)
+                else {
+                    continue;
+                };
+                let Some(record) = self
+                    .traffic_overlays
+                    .as_mut()
+                    .and_then(|table| table.get_mut(slot))
+                else {
+                    continue;
+                };
+                if record.is_dispatch_actor() {
+                    record.kind = 0;
+                    self.set_text_overlay(x, y, 0);
+                    cleared += 1;
+                }
             }
         }
         if cleared > 0 {
@@ -548,13 +588,64 @@ impl City {
         cleared
     }
 
+    fn legacy_dispatch_xbld_proxy(&self, slot: usize, record: Win95OverlayRecord) -> bool {
+        let Some(proxy) = xthg_proxy_for_slot(slot) else {
+            return false;
+        };
+        let (x, y) = (usize::from(record.tile_x), usize::from(record.tile_y));
+        // Older CityGame dispatch wrote its proxy into XBLD and saved the
+        // displaced building in +0xa. Native dispatch puts the proxy in XTXT.
+        record.is_dispatch_actor()
+            && [
+                record.lane,
+                record.state,
+                record.sub_x,
+                record.sub_y,
+                record.target_x,
+                record.target_y,
+                record.saved_b,
+            ] == [0; 7]
+            && self.building_at(x, y) == proxy
+            && self
+                .text_overlays
+                .as_ref()
+                .is_none_or(|plane| !plane.contains(&proxy))
+    }
+
+    pub fn clear_legacy_dispatch_actor_proxies(&mut self) -> usize {
+        let legacy_slots: Vec<_> = self
+            .traffic_overlays
+            .iter()
+            .flat_map(|table| {
+                table
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .skip(XTHG_FIRST_USABLE_SLOT)
+            })
+            .filter(|&(slot, record)| self.legacy_dispatch_xbld_proxy(slot, record))
+            .collect();
+        for &(slot, record) in &legacy_slots {
+            self.traffic_overlays.as_mut().unwrap()[slot].kind = 0;
+            self.set_building(
+                usize::from(record.tile_x),
+                usize::from(record.tile_y),
+                record.saved_a,
+            );
+        }
+        if !legacy_slots.is_empty() {
+            self.modified = true;
+        }
+        legacy_slots.len()
+    }
+
     pub(super) fn remove_dispatch_actor_slot(&mut self, slot: usize) -> bool {
         let Some(record) = self
             .traffic_overlays
             .as_ref()
             .and_then(|table| table.get(slot))
             .copied()
-            .filter(|record| record.is_rust_dispatch_actor())
+            .filter(|record| record.is_dispatch_actor())
         else {
             return false;
         };

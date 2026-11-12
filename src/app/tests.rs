@@ -95,6 +95,7 @@ pub(super) fn test_state(mut city: City) -> ViewerState {
         show_infrastructure: true,
         show_zones: true,
         show_underground: false,
+        modifiers: Mod::empty(),
         auto_goto_enabled,
         pending_disaster_auto_goto: None,
         pending_disaster_start_sound: None,
@@ -123,36 +124,24 @@ pub(super) fn test_state(mut city: City) -> ViewerState {
             crate::mac_random::MacGameLcgRng::INITIAL_STATE,
         ),
         pe_process_game_rand,
-        pe_raise_submode: PE_RAISE_SUBMODE_DEFAULT,
-        pe_raise_adjust_land: 0,
+        edit_map_height_hold: None,
         pe_raise_xter_ui_byte: 0,
         pe_raise_ui_tool_id: 0,
         pe_raise_ui_tile_x: 0,
         pe_raise_ui_tile_y: 0,
-        pe_raise_press_y: 0,
         pe_raise_ui_press_y_byte: 0,
         pe_raise_ui_byte6: 0,
         pe_raise_ui_byte7: 0,
         pe_raise_ui_byte8: 0,
         pe_raise_ui_byte9: 0,
-        pe_raise_drag_dir: 0xffff,
-        pe_raise_this_f8: 0,
         pe_spread_tool4_ui_timer: 0,
         pe_spread_prev_tile_x: 0,
         pe_spread_prev_tile_y: 0,
-        pe_stretch_hold_si: 0,
         pe_stretch_hold_ui_refresh_count: 0,
         pe_stretch_hold_cursor_id: 0,
         pe_stretch_hold_cursor_arg: 0,
         pe_stretch_hold_ui_wait_4012c1_count: 0,
         pe_lower_hold_ui_refresh_count: 0,
-        pe_lower_hold_cursor_id: 0,
-        pe_lower_hold_cursor_arg: 0,
-        pe_level_hold_sound_after_altm: 0,
-        pe_level_hold_sound_after_smooth: 0,
-        pe_level_hold_ui_refresh_count: 0,
-        pe_level_hold_cursor_id: 0,
-        pe_level_hold_cursor_arg: 0,
         pe_level_hold_ui_wait_4012c1_count: 0,
         pe_spread_hold_ui_refresh_count: 0,
         pe_spread_hold_cursor_id: 0,
@@ -160,21 +149,6 @@ pub(super) fn test_state(mut city: City) -> ViewerState {
         pe_spread_ui_cursor_4519e0_count: 0,
         pe_spread_ui_cursor_4519e0_last_arg: 0,
         pe_spread_ui_wait_4012c1_count: 0,
-        pe_raise_hold_ui_refresh_count: 0,
-        pe_raise_hold_cursor_id: 0,
-        pe_raise_hold_cursor_arg: 0,
-        pe_raise_ui_cursor_4519e0_count: 0,
-        pe_raise_ui_cursor_4519e0_last_arg: 0,
-        pe_raise_ui_wait_4012c1_count: 0,
-        pe_raise_midband_refuse_sound_401096_count: 0,
-        pe_raise_midband_refuse_dialog_402c4d_count: 0,
-        pe_raise_midband_refuse_dialog_402c4d_a: 0,
-        pe_raise_midband_refuse_dialog_402c4d_b: 0,
-        pe_raise_midband_refuse_dialog_402c4d_c: 0,
-        pe_raise_midband_refuse_ui_402900_count: 0,
-        pe_raise_midband_refuse_ui_402900_a: 0,
-        pe_raise_midband_refuse_ui_402900_b: 0,
-        pe_raise_hold_blit_count: 0,
         pe_lower_hold_blit_count: 0,
         pe_process_lfsr,
         engine_fidelity: EngineFidelity::Win95,
@@ -204,7 +178,6 @@ pub(super) fn test_state(mut city: City) -> ViewerState {
         highway_drag: None,
         terrain_drag: None,
         edit_map_stretch_drag: None,
-        edit_map_lower_drag: None,
         edit_map_level_drag: None,
         nature_drag: None,
         power_plant_dialog: None,
@@ -292,15 +265,9 @@ fn preview_pe_monster_tick(
     crt: &mut Win95CrtRand,
     lfsr: &mut Win95Lfsr,
 ) -> (City, PeMonsterTickStats) {
-    let (view_x, view_y) = state.disaster_target_tile();
+    let (center_x, center_y) = state.city.pe_city_center();
     let mut expected = state.city.clone();
-    let stats = pe_monster_tick_city_with_rng(
-        &mut expected,
-        view_x.min(255) as u8,
-        view_y.min(255) as u8,
-        crt,
-        lfsr,
-    );
+    let stats = pe_monster_tick_city_with_rng(&mut expected, center_x, center_y, crt, lfsr);
     (expected, stats)
 }
 
@@ -420,8 +387,7 @@ fn seed_all_drag_states(state: &mut ViewerState) {
         tile: (18, 19),
         start_mouse_y: 100.0,
         start_land: 3,
-        water: 3,
-        applied_levels: 0,
+        last_land: 3,
         changed: false,
     });
     state.nature_drag = Some(NatureDrag {
@@ -529,10 +495,12 @@ fn seed_service_coverage_footprint_for_test(
     size: usize,
     powered: bool,
 ) {
-    // PE FUN_0046A840 only counts D2/D3 source tiles with saved XBIT 0x80;
-    // XBIT 0x40 on those same tiles selects full rather than half strength.
+    let corners = pe_choose_and_place_corner_bits(city.rotation());
     for y in origin_y..origin_y + size {
         for x in origin_x..origin_x + size {
+            let zone = city.zone_at(x, y).unwrap().raw_bits() & 0x0f;
+            let corner = building_zone_bits_for_tile(origin_x, origin_y, x, y, size, corners);
+            city.set_zone(x, y, zone | corner);
             city.set_tile_bits(
                 x,
                 y,
@@ -1441,7 +1409,7 @@ fn first_ambient_chance_clock_with_remainder_for<R: AmbientDisasterRandom>(
 fn power_water_source_for_test(city: &mut City, x: usize, y: usize) {
     assert!(x >= 1);
     city.set_building(x - 1, y, 200);
-    pe_seed_power_plant_xval_for_test(city, x - 1, y, 30);
+    pe_seed_power_plant_altitude_for_test(city, x - 1, y, 30);
     stamp_power_plant_xbit_powerable(city, &[(x - 1, y)]);
 }
 
@@ -1468,8 +1436,7 @@ fn seed_saved_water_worker_bits_for_test(city: &mut City) {
 }
 
 fn power_adjacent_building_for_test(city: &mut City, x: usize, y: usize) {
-    // Coal `0xC6` is a 1×1 fixed-capacity PE source. Wind `0xC8` reads XVAL&0x1f, so a
-    // later `stamp_xval_for_test(XVAL_POPLEVEL_LOW)` (32) zeroes plant output.
+    // Use a fixed-capacity PE source so elevation does not affect this fixture.
     city.set_building(x, y, 198);
     stamp_power_plant_xbit_powerable(city, &[(x, y)]);
     // This helper models a saved powered source for candidate-isolation tests.
@@ -2105,12 +2072,12 @@ mod app_state;
 mod city_data;
 mod city_tools;
 mod economy_growth;
-#[path = "tests/mac_cgms_rust_scan_probe.rs"]
-mod mac_cgms_rust_scan_probe;
-#[path = "tests/mac_cgms_phase2_probe.rs"]
-mod mac_cgms_phase2_probe;
 #[path = "tests/mac_cgms_phase1_probe.rs"]
 mod mac_cgms_phase1_probe;
+#[path = "tests/mac_cgms_phase2_probe.rs"]
+mod mac_cgms_phase2_probe;
+#[path = "tests/mac_cgms_rust_scan_probe.rs"]
+mod mac_cgms_rust_scan_probe;
 mod map_interaction;
 mod scenario_disaster;
 mod terrain_rendering;

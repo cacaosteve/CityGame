@@ -7,6 +7,15 @@ impl ViewerState {
         x: usize,
         y: usize,
     ) -> usize {
+        self.seed_disaster_footprint_at(kind, (x as isize, y as isize))
+    }
+
+    pub(super) fn seed_disaster_footprint_at(
+        &mut self,
+        kind: DisasterKind,
+        origin: (isize, isize),
+    ) -> usize {
+        let (x, y) = (origin.0 as usize, origin.1 as usize);
         let was_active = self.city.has_active_disaster();
         let (x, y) = if kind == DisasterKind::Meltdown {
             let Some(tile) = pe_meltdown_plant_tile(&self.city, (x, y)) else {
@@ -34,7 +43,7 @@ impl ViewerState {
         } else if kind == DisasterKind::Hurricane {
             seeded = self.seed_pe_hurricane();
         } else if kind == DisasterKind::Flood {
-            seeded = self.seed_pe_flood(x, y);
+            seeded = self.seed_pe_flood(origin.0, origin.1);
         } else if kind == DisasterKind::BlizzardFlood {
             seeded = self.seed_pe_blizzard_flood(x, y);
         } else if kind == DisasterKind::Fire {
@@ -95,7 +104,11 @@ impl ViewerState {
         let Some(disaster_id) = u8::try_from(self.city.pe_w_current_disaster_type()).ok() else {
             return 0;
         };
-        let (event_x, event_y) = self.disaster_target_tile();
+        // PE `0x452fd6` reads the Point after the disaster constructor's writes.
+        let (event_x, event_y) = match self.pe_idle_scheduler.pending_disaster_point {
+            Some((x, y)) => (x as usize, y as usize),
+            None => self.disaster_target_tile(),
+        };
         if event_x >= CITY_WIDTH || event_y >= CITY_HEIGHT {
             return 0;
         }
@@ -148,6 +161,9 @@ impl ViewerState {
 
     /// Win95 type-7 start @ `0x45f090`: one XTHG tornado + XTXT `slot-0x37`.
     pub(in crate::app) fn seed_pe_tornado(&mut self, x: usize, y: usize) -> usize {
+        if !pe_tornado_constructor_ready(&self.city) {
+            return 0;
+        }
         let (lane, height, target_x, target_y, saved_a) =
             pe_tornado_xthg_fields_with_rng(&self.city, x, y, &mut self.pe_process_crt);
         self.city
@@ -158,12 +174,19 @@ impl ViewerState {
 
     /// Win95 type-8 start @ `0x45ee10`: one XTHG monster + XTXT `slot-0x37`.
     pub(in crate::app) fn seed_pe_monster(&mut self, x: usize, y: usize) -> usize {
+        let mut crt = self.pe_process_crt;
         let (target_x, target_y, saved_a, saved_b) =
-            pe_monster_xthg_fields_with_rng(&self.city, x, y, &mut self.pe_process_crt);
-        self.city
+            pe_monster_xthg_fields_with_rng(&self.city, x, y, &mut crt);
+        if self
+            .city
             .place_pe_monster_actor(x, y, target_x, target_y, saved_a, saved_b)
-            .map(|_| 1)
-            .unwrap_or(0)
+            .is_none()
+        {
+            return 0;
+        }
+        // The original advances CRT only after the constructor gets a slot.
+        self.pe_process_crt = crt;
+        1
     }
 
     /// Win95 type-0x12 start @ `0x45e7d0`: random inner empty XTXT, airplane + proxy.
@@ -194,9 +217,9 @@ impl ViewerState {
             y,
             &mut self.pe_process_crt,
         );
-        // Markers already painted live during scatter; re-stamp is idempotent.
-        for &(tile_x, tile_y) in &clouds {
-            self.city.set_text_overlay(tile_x, tile_y, 0xfb);
+        if let Some(&(tile_x, tile_y)) = clouds.last() {
+            // Native 0x45d943 publishes each valid stamp to the disaster Point.
+            self.pe_idle_scheduler.pending_disaster_point = Some((tile_x as i16, tile_y as i16));
         }
         clouds.len()
     }
@@ -221,21 +244,18 @@ impl ViewerState {
     }
 
     /// Win95 type-2 start @ `0x45db00`: XTER `0x20..0x30` neighbors, else random XTER `0`.
-    pub(in crate::app) fn seed_pe_flood(&mut self, x: usize, y: usize) -> usize {
-        // PE @ `0x45db00`: type-2 paints `0xfc` on the map live during the start.
-        let overlays = pe_flood_paint_with_lfsr(&mut self.city, x, y, &mut self.pe_process_lfsr);
-        if !overlays.is_empty() {
+    pub(in crate::app) fn seed_pe_flood(&mut self, x: isize, y: isize) -> usize {
+        let (source, overlays) =
+            pe_flood_paint_with_lfsr(&mut self.city, x, y, &mut self.pe_process_lfsr);
+        if let Some(source) = source {
+            // PE 0x45de6c sets duration after finding a shore even when
+            // no neighbor passed the paint gates.
             self.pe_disaster_duration = PE_FLOOD_HURRICANE_DURATION;
-        }
-        // Markers already painted live; re-stamp is idempotent.
-        for (&(tile_x, tile_y), &marker) in &overlays {
-            self.city.set_text_overlay(tile_x, tile_y, marker);
-        }
-        if self.auto_goto_enabled {
-            if let Some(source) = pe_flood_source_tile(&self.city, x, y) {
+            // Both native success arms publish their final tile back to the Point.
+            self.pe_idle_scheduler.pending_disaster_point =
+                Some((source.0 as i16, source.1 as i16));
+            if self.auto_goto_enabled {
                 self.pending_disaster_auto_goto = Some(source);
-            } else if let Some((&tile, _)) = overlays.iter().next() {
-                self.pending_disaster_auto_goto = Some(tile);
             }
         }
         overlays.len()
@@ -385,43 +405,30 @@ impl ViewerState {
     /// in-bounds step; only paint successes decrement the `0x41` budget (PE `test eax`).
     /// Each success also updates the auto-goto tile (`0x40174e` → last paint).
     pub(in crate::app) fn seed_pe_firestorm_spiral(&mut self, x: usize, y: usize) -> usize {
-        let mut bp = x as isize;
-        let mut si = y as isize;
-        let mut dir = 0_usize;
-        let mut arm_len = 1_isize;
-        let mut steps_on_arm = 0_isize;
-        let mut remaining = PE_FIRESTORM_PAINT_COUNT;
         let mut painted = 0usize;
         let mut last_success = None;
-        while remaining > 0 && arm_len < 0x80 {
-            bp += PE_FIRESTORM_DX[dir];
-            si += PE_FIRESTORM_DY[dir];
-            if (0..CITY_WIDTH as isize).contains(&bp) && (0..CITY_HEIGHT as isize).contains(&si) {
-                // PE @ `0x45e0a4`: `push 1; call 0x401bf4` — no outer water/XTXT prefilter.
-                if pe_fun_00460e10_ignite(
-                    &mut self.city,
-                    Some(&mut self.pe_process_crt),
-                    &mut self.pe_process_lfsr,
-                    bp as usize,
-                    si as usize,
-                    1,
-                ) {
-                    remaining -= 1;
-                    painted += 1;
-                    last_success = Some((bp as usize, si as usize));
+        for (x, y) in firestorm_spiral_candidates(x, y) {
+            // PE @ `0x45e0a4`: `push 1; call 0x401bf4` — no outer water/XTXT prefilter.
+            if pe_fun_00460e10_ignite(
+                &mut self.city,
+                Some(&mut self.pe_process_crt),
+                &mut self.pe_process_lfsr,
+                x,
+                y,
+                1,
+            ) {
+                painted += 1;
+                last_success = Some((x, y));
+                if painted == FIRESTORM_IGNITION_LIMIT {
+                    break;
                 }
-            }
-            steps_on_arm += 1;
-            if steps_on_arm >= arm_len {
-                steps_on_arm = 0;
-                if dir & 1 != 0 {
-                    arm_len += 1;
-                }
-                dir = (dir + 1) & 3;
             }
         }
+        if let Some((x, y)) = last_success {
+            // The Point write at `0x45e0bc` is independent of auto-goto.
+            self.pe_idle_scheduler.pending_disaster_point = Some((x as i16, y as i16));
+        }
         if self.auto_goto_enabled {
-            // PE @ `0x45e10a`: auto-goto uses the spiral cursor after the last successful paint.
             self.pending_disaster_auto_goto = last_success;
         }
         painted

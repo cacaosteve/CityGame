@@ -9,15 +9,12 @@ use super::network::{
     network_kind_for_tool, network_placement_sound, show_highway_neighbor_link_confirmation,
     show_rail_neighbor_link_confirmation, show_road_neighbor_link_confirmation,
 };
-use super::terrain_editing::pe_raise_tool0_clear_temp_xtxt_0xc9;
 use super::tool_controller::one_click_placement_sound;
 use super::underground::{underground_kind_for_tool, underground_placement_sound};
 use super::{
-    PE_RAISE_SUBMODE_ADJUST_TOWARD, PlacementSound, ViewerState, play_placement_sound,
-    zone_id_for_tool, zone_placement_sound,
+    PlacementSound, ViewerState, play_placement_sound, zone_id_for_tool, zone_placement_sound,
 };
 use crate::city::AppMode;
-use crate::engine_fidelity::EngineFidelity;
 use crate::touch_input::MapTouchAction;
 use crate::ui::EditTool;
 use glam::Vec2;
@@ -155,24 +152,14 @@ pub(super) fn begin_map_pointer_interaction(
     state.update_hover_tile(screen, window_size, pixel_scale);
     *paint_tile = None;
     if state.mode == AppMode::EditNewMap {
-        if state.tool == EditTool::StretchTerrain {
+        if state.edit_map_sampled_height_tool() {
+            *painting = state.begin_edit_map_height_hold();
+            *paint_tile = state.hover_tile;
+        } else if state.tool == EditTool::StretchTerrain {
             *painting = state.begin_edit_map_stretch_drag(screen, window_size, pixel_scale);
-        } else if state.tool == EditTool::LowerTerrain
-            && state.engine_fidelity != EngineFidelity::Mac68k
-        {
-            *painting = state.begin_edit_map_lower_drag(screen, window_size, pixel_scale);
         } else if state.tool == EditTool::LevelTerrain {
             *painting = state.begin_edit_map_level_drag(screen, window_size, pixel_scale);
         } else {
-            if state.tool == EditTool::RaiseTerrain
-                && state.engine_fidelity != EngineFidelity::Mac68k
-                && let Some((tile_x, tile_y)) = state.hover_tile
-            {
-                state.pe_raise_press_y = tile_y as u8;
-                if state.pe_raise_submode == PE_RAISE_SUBMODE_ADJUST_TOWARD {
-                    state.pe_raise_adjust_land = state.city.altitude_at(tile_x, tile_y);
-                }
-            }
             *painting = true;
             state.apply_tool_at_with_shift(screen, window_size, pixel_scale, shift_down);
             *paint_tile = state.hover_tile;
@@ -310,12 +297,8 @@ pub(super) fn move_map_pointer_interaction(
         state.update_edit_map_stretch_drag_at(screen.y);
         state.refresh_status_line();
         feedback(state, MapInteractionFeedback::UpdateTitle);
-    } else if state.edit_map_lower_drag_active() {
-        state.update_edit_map_lower_drag_at(screen.y);
-        state.refresh_status_line();
-        feedback(state, MapInteractionFeedback::UpdateTitle);
     } else if state.edit_map_level_drag_active() {
-        state.update_edit_map_level_drag_at(screen.y);
+        state.update_edit_map_level_drag();
         state.refresh_status_line();
         feedback(state, MapInteractionFeedback::UpdateTitle);
     } else if state.nature_drag_active() {
@@ -343,7 +326,7 @@ fn finish_map_left_pointer_up(
     window: &sdl3::video::Window,
     sound: Option<&crate::audio::SoundPlayer>,
 ) {
-    release_map_tools(state, *paint_tile, shift_down, window, sound);
+    release_map_tools(state, shift_down, window, sound);
     *paint_tile = None;
     state.release_palette_button();
     state.update_window_title(video, window.id());
@@ -352,7 +335,6 @@ fn finish_map_left_pointer_up(
 /// Commit/cancel tools, confirmations and held-tool cleanup before caller flag resets.
 pub(super) fn release_map_tools(
     state: &mut ViewerState,
-    paint_tile: Option<(usize, usize)>,
     shift_down: bool,
     window: &sdl3::video::Window,
     sound: Option<&crate::audio::SoundPlayer>,
@@ -381,14 +363,6 @@ pub(super) fn release_map_tools(
     }
     if let Some((tool, placed_tiles)) = outcome.nature {
         play_nature_placement_sound(sound_effects, tool, placed_tiles);
-    }
-    if state.mode == AppMode::EditNewMap
-        && state.tool == EditTool::RaiseTerrain
-        && state.engine_fidelity != EngineFidelity::Mac68k
-        && let Some((tx, ty)) = paint_tile
-    {
-        pe_raise_tool0_clear_temp_xtxt_0xc9(&mut state.city, tx, ty);
-        state.finish_edit_map_raise_hold();
     }
     if state.mode == AppMode::EditNewMap && state.tool == EditTool::SpreadTerrain {
         state.finish_edit_map_spread_hold();

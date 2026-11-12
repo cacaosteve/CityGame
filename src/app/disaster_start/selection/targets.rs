@@ -154,8 +154,21 @@ pub(in crate::app) fn hurricane_ambient_target_tile<R: AmbientDisasterRandom>(
     }
 }
 
-/// Weather-first proposal tiles: Mac tornado @ `0x3596e` uses `%0x7E+1`; Mac hurricane
-/// sets type only. Win95 land-probes both.
+/// Both executables draw two interior coordinates for Tornado. The PE pushes
+/// Y before X into its point setter at `0x42b4d0`.
+pub(in crate::app) fn tornado_ambient_target_tile<R: AmbientDisasterRandom>(
+    rng: &mut R,
+    fidelity: EngineFidelity,
+) -> (usize, usize) {
+    let (first, second) = mac_random_interior_map_tile(rng);
+    if fidelity.uses_win95() {
+        (second, first)
+    } else {
+        (first, second)
+    }
+}
+
+/// Mac hurricane sets the type alone. Win95 hurricane retains the land probe.
 pub(in crate::app) fn weather_disaster_ambient_target_tile<R: AmbientDisasterRandom>(
     city: &City,
     rng: &mut R,
@@ -164,7 +177,7 @@ pub(in crate::app) fn weather_disaster_ambient_target_tile<R: AmbientDisasterRan
 ) -> (usize, usize) {
     match kind {
         DisasterKind::Hurricane => hurricane_ambient_target_tile(city, rng, fidelity),
-        DisasterKind::Tornado => mac_mod7e_plus_one_ambient_target_tile(city, rng, fidelity),
+        DisasterKind::Tornado => tornado_ambient_target_tile(rng, fidelity),
         _ => ambient_disaster_target_tile(city, rng),
     }
 }

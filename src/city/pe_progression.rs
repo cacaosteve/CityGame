@@ -92,6 +92,17 @@ impl City {
         }
         self.pe_w_tech_unlock_mask = mask;
         self.pe_w_tech_unlock_high_zero_count = high_zero_count;
+        // Win95 @ 0x46a1ae calls FUN_00441e50(4, 1) after rebuilding this
+        // table. That helper only applies the bit-4 reward when progression is
+        // at least 6 and one of technology slots 12..=15 has no year. It ORs
+        // the reward into the saved availability mask and does not revoke it
+        // when a later rebuild fails the gate.
+        if self.pe_w_city_progression >= 6
+            && high_zero_count != 0
+            && (self.kind.is_win95() || self.pe_cross_layout_active)
+        {
+            self.set_rewards_available_mask(self.rewards_available_mask() | (1 << 4));
+        }
         mask
     }
 
@@ -155,8 +166,8 @@ impl City {
 
     /// PE FUN_00484cd0 ocean/river prologue @ `0x484cd0`: XBIT water bit `0x04` at
     /// `(0,0)` (`[0x4cab10][0]`) and `(0x7f,0x7f)` (`[0x4cad0c]+0x7f`) → ocean=1/river=0;
-    /// else river=1/ocean=0. PE also writes sea-level word `0x4ca818` = 2 (skipped —
-    /// sea remains max-ALTM derived).
+    /// else river=1/ocean=0. The Classic conversion also writes selected
+    /// water height `0x4ca818` = 2.
     pub fn pe_publish_ocean_river_flags_484cd0(&mut self) {
         let sw_water = self
             .tile_bits_at(0, 0)
@@ -173,8 +184,8 @@ impl City {
         }
     }
 
-    /// PE scenario/national join @ `0x484cd0` after ocean flags: fame pop ladder,
-    /// tax `3`, trend `difficulty-1`, then fame-rank reseed @ `0x484d9f` (same as `0x42e585`).
+    /// Classic CTY conversion @ `0x484cd0` after ocean flags: fame pop ladder,
+    /// tax `3`, trend `difficulty-1`, then fame-rank reseed @ `0x484d9f`.
     pub fn pe_fun_00484cd0_national_from_fame(&mut self, crt: &mut Win95CrtRand) {
         self.pe_publish_ocean_river_flags_484cd0();
         self.pe_scale_national_population_from_fame_484d1e();

@@ -12,6 +12,28 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 #[test]
+#[ignore = "requires locally extracted Macintosh Scenario Disk data and forks"]
+fn mac_scenario_retail_catalog_import_preserves_data_and_forks() {
+    use crate::mac_scenario::{MacScenario, scenario_sidecar_path};
+    let source = PathBuf::from(std::env::var_os("CITYGAME_MAC_SCENARIO_FIXTURES").unwrap());
+    let output = scratch("mac-scenario-catalog");
+    copy_mac_scenario_catalog(&source, &output).unwrap();
+    let catalog = output.join("catalog/scenarios");
+    assert_eq!(fs::read_dir(&catalog).unwrap().count(), 10);
+    for name in ["Charleston", "Dullsville", "Flint", "Hollywood", "Oakland"] {
+        let original = source.join(name);
+        let copied = catalog.join(name);
+        assert_eq!(fs::read(&original).unwrap(), fs::read(&copied).unwrap());
+        assert_eq!(
+            fs::read(scenario_sidecar_path(&original)).unwrap(),
+            fs::read(scenario_sidecar_path(&copied)).unwrap()
+        );
+        assert!(MacScenario::read(&copied).is_some());
+    }
+    fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
 fn bundled_pack_is_found_in_a_moved_app_without_its_source_checkout() {
     let root = scratch("moved-app-art");
     let exe = root.join("Renamed Game.app/Contents/MacOS/CityGame");

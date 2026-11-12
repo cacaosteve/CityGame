@@ -296,7 +296,7 @@ impl City {
     pub fn set_saved_date_and_day(&mut self, date: CityDate, day: u8) {
         let month = date.month.clamp(1, 12);
         let day = day.min((DAYS_PER_MONTH - 1) as u8);
-        let mut misc = decode_misc_bytes(&self.chunks).unwrap_or_default();
+        let mut misc = decode_misc_bytes_for_kind(&self.chunks, self.kind).unwrap_or_default();
         misc.resize(misc.len().max(MISC_CITY_AGE_OFFSET + MISC_FIELD_LEN), 0);
 
         let stored_founded_raw = u32::from_be_bytes(
@@ -339,7 +339,13 @@ impl City {
             .copy_from_slice(&founded_misc.to_be_bytes());
         misc[MISC_CITY_AGE_OFFSET..MISC_CITY_AGE_OFFSET + MISC_FIELD_LEN]
             .copy_from_slice(&stored_time.to_be_bytes());
-        upsert_chunk(&mut self.chunks, &mut self.chunk_index, "MISC", &misc);
+        upsert_chunk_for_kind(
+            &mut self.chunks,
+            &mut self.chunk_index,
+            "MISC",
+            &misc,
+            self.kind,
+        );
         self.pe_w_year_founded = founded.min(u32::from(u16::MAX)) as u16;
         self.pe_dw_city_age = age_days;
         // PE age→calendar words @ `0x41354e` (same formulas as daily age tick / graph).

@@ -2,7 +2,7 @@
 //!
 //! The parent overlay adapter retains actor scheduling and movement progression.
 
-use super::{City, Win95GameRand, Win95OverlayRecord, Win95OverlayRng};
+use super::{City, Win95GameRand, Win95Lfsr, Win95OverlayRecord, Win95OverlayRng};
 use crate::city::{CITY_HEIGHT, CITY_WIDTH};
 use crate::win95_overlay::{
     XTHG_EXPLOSION_XTXT_GATE, XTHG_SUBWAY_TRAIN_CAR, XTHG_SUBWAY_TRAIN_ENGINE, XTHG_TRAIN_CAR,
@@ -173,8 +173,60 @@ pub fn ambient_train_spawn_direction(
     None
 }
 
-/// `FUN_00455500`: occasionally attempt a perpendicular route, then continue
-/// straight or invoke the PE fallback scan.
+fn pe_train_lane_is_open(record: &Win95OverlayRecord, city: &City, lane: u8) -> bool {
+    let (dx, dy) = xthg_direction_delta(pe_train_compass_direction(lane));
+    let x = i16::from(record.tile_x) + dx;
+    let y = i16::from(record.tile_y) + dy;
+    (0..CITY_WIDTH as i16).contains(&x)
+        && (0..CITY_HEIGHT as i16).contains(&y)
+        && pe_train_kind_can_occupy(record.kind, city, x as usize, y as usize)
+}
+
+pub(super) struct PeTrainRoute {
+    pub travel_lane: u8,
+    pub stored_lane: u8,
+    pub draw_code: u8,
+}
+
+/// Native engine route at `0x455945..0x455ad1`. Only the fallback arm
+/// writes the selected direction back to the saved lane.
+pub(super) fn pick_live_pe_train_route<R: Win95OverlayRng>(
+    record: &Win95OverlayRecord,
+    city: &City,
+    crt: &mut R,
+    lfsr: &mut Win95Lfsr,
+    game_rand: &mut Win95GameRand,
+    play_sound: &mut bool,
+) -> Option<PeTrainRoute> {
+    let saved_lane = record.lane & 3;
+    let mut lane = saved_lane;
+    if lfsr.random_mod(4) == 0 {
+        let turn = if lfsr.random_mod(2) == 0 { 3 } else { 1 };
+        let candidate = (lane + turn) & 3;
+        if pe_train_lane_is_open(record, city, candidate) {
+            lane = candidate;
+        }
+        // The CRT sound roll follows the probe even when the turn is blocked.
+        *play_sound = crt.random_u16() & 0xff == 0;
+    }
+    if pe_train_lane_is_open(record, city, lane) {
+        return Some(PeTrainRoute {
+            travel_lane: lane,
+            stored_lane: saved_lane,
+            draw_code: lane * 2,
+        });
+    }
+    let mut fallback = *record;
+    fallback.lane = lane;
+    let direction = pick_pe_train_fallback(&fallback, city, game_rand)?;
+    Some(PeTrainRoute {
+        travel_lane: direction,
+        stored_lane: direction,
+        draw_code: pe_train_draw_code(lane, direction),
+    })
+}
+
+/// Compatibility route for ambient callers with a single random stream.
 pub(super) fn pick_pe_train_route<R: Win95OverlayRng>(
     record: &Win95OverlayRecord,
     city: &City,
@@ -183,33 +235,16 @@ pub(super) fn pick_pe_train_route<R: Win95OverlayRng>(
 ) -> Option<u8> {
     let mut direction = record.lane & 3;
     if rng.roll_mod_is_zero(4) {
-        // PE uses `rand() % 2 != 0` for +1 cardinal (clockwise) and zero for -1.
         let turn = if rng.roll_mod_is_zero(2) {
             direction.wrapping_add(3) & 3
         } else {
             direction.wrapping_add(1) & 3
         };
-        let (dx, dy) = xthg_direction_delta(pe_train_compass_direction(turn));
-        let x = record.tile_x as i16 + dx;
-        let y = record.tile_y as i16 + dy;
-        if x >= 0
-            && y >= 0
-            && x < CITY_WIDTH as i16
-            && y < CITY_HEIGHT as i16
-            && pe_train_kind_can_occupy(record.kind, city, x as usize, y as usize)
-        {
+        if pe_train_lane_is_open(record, city, turn) {
             direction = turn;
         }
     }
-    let (dx, dy) = xthg_direction_delta(pe_train_compass_direction(direction));
-    let x = record.tile_x as i16 + dx;
-    let y = record.tile_y as i16 + dy;
-    if x >= 0
-        && y >= 0
-        && x < CITY_WIDTH as i16
-        && y < CITY_HEIGHT as i16
-        && pe_train_kind_can_occupy(record.kind, city, x as usize, y as usize)
-    {
+    if pe_train_lane_is_open(record, city, direction) {
         return Some(direction);
     }
     let mut fallback = *record;

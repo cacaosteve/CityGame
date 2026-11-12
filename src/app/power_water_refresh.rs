@@ -7,17 +7,44 @@
 use super::{
     GRAPH_EXTRA_HISTORY_MISC_OFFSET, MISC_POWER_USED_PERCENT_OFFSET, MISC_SPEED_OFFSET,
     MISC_WATER_USED_PERCENT_OFFSET, NEIGHBOR_CONNECTION_MISC_OFFSET, ViewerState, WaterServiceMaps,
-    pe_fun_00467860, pe_water_worker_utilization_percent,
-    power_used_percent_for_city_with_process_crt, power_water, publish_pe_sewer_bonus,
-    saved_base_pipe_bit_can_persist, service_percent, sewer_bonus_from_water_scan,
+    pe_attitude_tile_is_developed, pe_fun_00464550, pe_fun_00467860,
+    power_used_percent_for_city_with_process_crt, power_water, service_utilization_percent,
     water_pipe_tile_connects_to, water_service_maps_with_entry_seed_and_fidelity,
-    water_service_summary_with_entry_seed, water_used_percent_for_city_with_entry_seed,
-    zone_pipe_service_mask,
+    water_supply_capacity_tiles_with_entry_seed,
 };
+#[cfg(test)]
+use super::{saved_base_pipe_bit_can_persist, zone_pipe_service_mask};
 use crate::city::{CITY_HEIGHT, CITY_WIDTH, City, CityFileKind, TileBits};
 use crate::engine_fidelity::EngineFidelity;
 
 impl ViewerState {
+    /// Win95 post-load helper 0x434b70 rebuilds power before water, then
+    /// marks the half-resolution XBIT cells used by the derived city scan.
+    pub(super) fn rebuild_services_after_city_open(&mut self) {
+        if self.engine_fidelity.uses_win95() {
+            self.city.reset_pe_transit_passenger_totals();
+            pe_fun_00467860(&mut self.city, &mut self.pe_process_crt);
+            pe_fun_00464550(&mut self.city);
+            for x in 0..CITY_WIDTH {
+                for y in 0..CITY_HEIGHT {
+                    if pe_attitude_tile_is_developed(&self.city, x, y)
+                        && let Some(bits) = self.city.tile_bits_at(x / 2, y / 2)
+                        && bits.raw_bits() & 0x08 == 0
+                    {
+                        self.city.set_tile_bits(
+                            x / 2,
+                            y / 2,
+                            TileBits::new(bits.raw_bits() | 0x08),
+                        );
+                    }
+                }
+            }
+        }
+        // Mac loads its saved XBIT and summary longwords for first use.
+        self.load_transit_passengers_from_city();
+    }
+
+    #[cfg(test)]
     pub(super) fn refresh_water_pipe_bits(&mut self) {
         let maps = water_service_maps_with_entry_seed_and_fidelity(
             &self.city,
@@ -48,6 +75,7 @@ impl ViewerState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn refresh_mac_watered_bits(&mut self, maps: &WaterServiceMaps) {
         apply_mac_watered_bits(&mut self.city, maps);
     }
@@ -57,6 +85,7 @@ impl ViewerState {
         publish_mac_water_result_for_city(&mut self.city, maps);
     }
 
+    #[cfg(test)]
     pub(super) fn refresh_simulation_service_bits(&mut self) {
         // Water bits have a verified refresh path. PE power XBIT `0x40` is known to
         // be network membership, but the current Rust power graph still differs from
@@ -99,12 +128,30 @@ impl ViewerState {
         self.city.mark_all_dirty();
     }
 
+    /// CODE 5 @ 0x2ef8 calls the same Mac worker after a successful
+    /// wire tool return below the weighted growth threshold.
+    pub(super) fn mac_power_tool_post_place_recalc(&mut self) {
+        if self.city.mac_state_misc_u32_at(0x102c).unwrap_or(0) < 50_000 {
+            self.sim_calendar_day1_power();
+        }
+    }
+
     pub(super) fn sim_calendar_day20_water(&mut self) {
-        // Win95 keeps its existing water refresh and PE summary publication.
-        // Mac phase 20 (`export_209`) publishes its map and summary together.
+        // Both native phase-20 callers publish map bits and counters from one pass.
         if self.engine_fidelity.uses_win95() {
-            self.refresh_simulation_service_bits();
-            self.persist_water_used_percent();
+            let maps = pe_fun_00464550(&mut self.city);
+            if self.can_persist_viewer_service_misc() {
+                let capacity = water_supply_capacity_tiles_with_entry_seed(
+                    &self.city,
+                    self.city.misc_water_table_level().unwrap_or(0),
+                    self.city.misc_humidity().unwrap_or(0),
+                    self.pe_process_crt.seed(),
+                );
+                let used =
+                    service_utilization_percent(maps.watered_consumers(&self.city), capacity);
+                self.city
+                    .set_misc_u32_at(MISC_WATER_USED_PERCENT_OFFSET, used);
+            }
         } else {
             // export_209 publishes the map and summary from one component
             // walk. A newly filled tower contributes carry only next month.
@@ -163,47 +210,6 @@ impl ViewerState {
         self.city.set_pe_power_used_percent(percent);
         self.city
             .set_misc_u32_at(MISC_POWER_USED_PERCENT_OFFSET, percent);
-    }
-
-    pub(super) fn persist_water_used_percent(&mut self) {
-        let entry_seed = self.pe_process_crt.seed();
-        if self.engine_fidelity.uses_win95() {
-            let can_persist_extensions = self.can_persist_viewer_service_misc();
-            // This is a PE/viewer extension, not a Mac MISC field. Mac CODE 4
-            // serializes its state vector through dword 1067 and zero-fills
-            // dwords 1068..1199, including byte offset 0x1130.
-            if can_persist_extensions {
-                self.city.set_misc_u32_at(
-                    MISC_WATER_USED_PERCENT_OFFSET,
-                    water_used_percent_for_city_with_entry_seed(&self.city, entry_seed),
-                );
-            }
-            // Win95 `0x4CC4B8` is served worker cells ×100 / raw worker capacity;
-            // Mac `fffff00e` uses the same ratio shape but is persisted in its
-            // state vector at dword 1049. Publish each only from its edition's
-            // bounded saved-XBIT worker path.
-            let water = water_service_summary_with_entry_seed(&self.city, entry_seed);
-            let water_percent = pe_water_worker_utilization_percent(&self.city, entry_seed)
-                .unwrap_or_else(|| service_percent(water.served, water.demand));
-            self.city.set_pe_water_coverage_percent(water_percent);
-            if can_persist_extensions {
-                publish_pe_sewer_bonus(&mut self.city);
-            } else {
-                // Keep the PE BSS current without extending a short MISC record
-                // or publishing into the zero-filled Mac CODE 4 tail.
-                self.city
-                    .set_pe_w_sewer_bonus(sewer_bonus_from_water_scan(&self.city).max(0) as u16);
-            }
-        } else {
-            let maps = water_service_maps_with_entry_seed_and_fidelity(
-                &self.city,
-                entry_seed,
-                EngineFidelity::Mac68k,
-            );
-            if let Some(water_percent) = maps.mac_worker_utilization_percent() {
-                self.city.set_mac_water_service_summary(water_percent);
-            }
-        }
     }
 
     fn water_pipe_connects_to(&self, x: usize, y: usize, side: u8) -> bool {

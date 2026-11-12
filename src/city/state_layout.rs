@@ -31,6 +31,7 @@ pub(super) const MISC_AUTO_GOTO_OFFSET: usize = 0x0ff4;
 pub(super) const MISC_SOUND_EFFECTS_OFFSET: usize = 0x0ff8;
 pub(super) const MISC_MUSIC_OFFSET: usize = 0x0ffc;
 pub(super) const MISC_NEWSPAPER_EXTRA_OFFSET: usize = 0x1008;
+pub(super) const MISC_NEWSPAPER_SUBSCRIPTION_OFFSET: usize = 0x1004;
 /// Win95 MISC city progression / newspaper choice word @ `+0x20` (PE BSS `0x4cb010`).
 pub(super) const MISC_CITY_PROGRESSION_OFFSET: usize = 0x0020;
 /// Win95 MISC city value dword @ `+0x24` (PE BSS mirror `0x4ca4d0`).
@@ -169,9 +170,9 @@ pub(super) const MAC_MISC_BUDGET_BOOK_OFFSET: usize = 0x077c;
 /// Mac CODE 4 saved WORD counters for export-80 XTXT-0xfa removal.
 pub(super) const MAC_XTXT_FA_NON_NETWORK_COUNT_MISC_OFFSET: usize = 0x1024;
 pub(super) const MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET: usize = 0x1050;
-/// Mac kind-2 actor target center, loaded/saved by CODE 4 slots 1030 and 1031.
-pub(super) const MAC_KIND2_HOTSPOT_X_MISC_OFFSET: usize = 1030 * MISC_FIELD_LEN;
-pub(super) const MAC_KIND2_HOTSPOT_Y_MISC_OFFSET: usize = 1031 * MISC_FIELD_LEN;
+/// Developed-city center words shared by Win95 and Mac save layouts.
+pub(super) const MISC_DEVELOPED_CENTER_X_OFFSET: usize = 1030 * MISC_FIELD_LEN;
+pub(super) const MISC_DEVELOPED_CENTER_Y_OFFSET: usize = 1031 * MISC_FIELD_LEN;
 
 /// Mac `fffff00a` power summary, whose low WORD aliases `fffff00c`.
 pub(super) const MAC_POWER_SUMMARY_MISC_OFFSET: usize = 1048 * MISC_FIELD_LEN;

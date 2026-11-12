@@ -2,6 +2,7 @@
 //!
 //! The parent adapter retains slot scheduling, ambient train routing, and common XTXT helpers.
 
+use super::pe_train_routing::pick_live_pe_train_route;
 use super::{
     City, Win95CrtRand, Win95GameRand, Win95Lfsr, Win95OverlayRecord, Win95OverlayRng,
     Win95OverlaySim, ambient_actor_can_occupy, clear_xthg_slot_pe, pe_clear_xthg_kind,
@@ -39,8 +40,18 @@ impl Win95OverlaySim {
         if !record.is_ambient_train_engine() {
             return false;
         }
-        let changed =
-            step_pe_train_engine_slot(city, slot, record, &table_snapshot, crt, lfsr, game_rand);
+        let mut play_sound = false;
+        let changed = step_pe_train_engine_slot(
+            city,
+            slot,
+            record,
+            &table_snapshot,
+            crt,
+            lfsr,
+            game_rand,
+            &mut play_sound,
+        );
+        self.train_sfx_plays = self.train_sfx_plays.saturating_add(usize::from(play_sound));
         if changed {
             city.mark_traffic_layers_dirty();
         }
@@ -270,6 +281,7 @@ pub(super) fn step_pe_train_engine_slot<R: Win95OverlayRng>(
     crt: &mut R,
     lfsr: &mut Win95Lfsr,
     game_rand: &mut Win95GameRand,
+    play_sound: &mut bool,
 ) -> bool {
     let old_x = record.tile_x as usize;
     let old_y = record.tile_y as usize;
@@ -341,46 +353,43 @@ pub(super) fn step_pe_train_engine_slot<R: Win95OverlayRng>(
     }
 
     let mut next = record;
-    let step =
-        step_ambient_train_engine_after_preflight(&mut next, city, crt, game_rand, next_x, next_y);
+    next.tile_x = next_x as u8;
+    next.tile_y = next_y as u8;
+    sync_train_kind_to_tile(&mut next, city);
     if let Some(saved_a) = next_saved_a {
         next.saved_a = saved_a;
     }
-
-    match step {
-        TrainEngineStep::Blocked => return false,
-        TrainEngineStep::NeedsTurnaround => {
-            let turnaround_tail = second_car_after_copy
-                .or_else(|| train_consist.map(|(_, _, tail_slot, tail_car)| (tail_slot, tail_car)));
-            if let Some((tail_slot, tail_car)) = turnaround_tail {
-                let mut tail_after = tail_car;
-                reverse_pe_train_consist(&mut next, &mut tail_after);
+    if let Some(route) = pick_live_pe_train_route(&next, city, crt, lfsr, game_rand, play_sound) {
+        let (dx, dy) = xthg_direction_delta(pe_train_compass_direction(route.travel_lane));
+        next.sub_x = (next_x as i16 + dx) as u8;
+        next.sub_y = (next_y as i16 + dy) as u8;
+        next.lane = route.stored_lane;
+        next.target_x = route.draw_code;
+    } else {
+        let turnaround_tail = second_car_after_copy
+            .or_else(|| train_consist.map(|(_, _, tail_slot, tail_car)| (tail_slot, tail_car)));
+        if let Some((tail_slot, tail_car)) = turnaround_tail {
+            let mut tail_after = tail_car;
+            reverse_pe_train_consist(&mut next, &mut tail_after);
+            if let Some(overlays) = city.traffic_overlays_mut() {
+                overlays[slot] = next;
+                overlays[tail_slot] = tail_after;
+            }
+            city.mark_render_dirty(old_x, old_y);
+            city.mark_render_dirty(next.tile_x as usize, next.tile_y as usize);
+            if let Some((first_slot, first_car)) = first_car_after_copy {
+                city.mark_render_dirty(first_car.tile_x as usize, first_car.tile_y as usize);
                 if let Some(overlays) = city.traffic_overlays_mut() {
-                    overlays[slot] = next;
-                    overlays[tail_slot] = tail_after;
+                    overlays[first_slot] = first_car;
                 }
-                city.mark_render_dirty(old_x, old_y);
-                city.mark_render_dirty(next.tile_x as usize, next.tile_y as usize);
-                if let Some((first_slot, first_car)) = first_car_after_copy {
-                    city.mark_render_dirty(first_car.tile_x as usize, first_car.tile_y as usize);
-                    if let Some(overlays) = city.traffic_overlays_mut() {
-                        overlays[first_slot] = first_car;
-                    }
-                }
-                city.mark_render_dirty(tail_car.tile_x as usize, tail_car.tile_y as usize);
-                city.mark_render_dirty(tail_after.tile_x as usize, tail_after.tile_y as usize);
-                return true;
             }
-            pe_clear_xthg_kind(&mut next);
-            pe_zero_tile_xtxt(city, old_x, old_y);
-            pe_zero_tile_xtxt(city, next.tile_x as usize, next.tile_y as usize);
+            city.mark_render_dirty(tail_car.tile_x as usize, tail_car.tile_y as usize);
+            city.mark_render_dirty(tail_after.tile_x as usize, tail_after.tile_y as usize);
+            return true;
         }
-        TrainEngineStep::Cleared => {
-            if record.is_ambient_train_engine() && !next.is_ambient_train_engine() {
-                pe_zero_tile_xtxt(city, old_x, old_y);
-            }
-        }
-        TrainEngineStep::Advanced => {}
+        pe_clear_xthg_kind(&mut next);
+        pe_zero_tile_xtxt(city, old_x, old_y);
+        pe_zero_tile_xtxt(city, next.tile_x as usize, next.tile_y as usize);
     }
 
     if let Some(overlays) = city.traffic_overlays_mut() {

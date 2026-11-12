@@ -19,8 +19,7 @@ pub(super) fn pe_powerline_post_place_power_recalc_43f396(city: &mut City, crt: 
 }
 
 /// PE pipe-tool post-place @ `0x43f419`–`0x43f42f`: subtype `[0x4c9c58]==0` success and
-/// `dwCityPopulation < 0xc350` → `FUN_00464550`. Its native ordered pump walk is
-/// approximated by the current CityGame allocator; exact PE queue parity remains open.
+/// `dwCityPopulation < 0xc350` → `FUN_00464550`, with the saved-XBIT source and queue scans.
 pub(super) fn pe_pipetool_post_place_water_recalc_43f419(city: &mut City) {
     if city.pe_dw_city_population() >= 0xc350 {
         return;
@@ -532,8 +531,8 @@ mod pe_network_queue_tests {
             for (nx, ny) in [
                 (x, y.wrapping_sub(1)),
                 (x.wrapping_sub(1), y),
-                (x + 1, y),
                 (x, y + 1),
+                (x + 1, y),
             ] {
                 if nx >= 0x80 || ny >= 0x80 {
                     continue;
@@ -549,11 +548,11 @@ mod pe_network_queue_tests {
         // This connected saved-XBIT pattern overflows the native 0x200-slot
         // ring. The 511-pending drop-oldest walk loses this reachable tail;
         // an unbounded flood visits 12,289 cells instead of 11,729.
-        assert_eq!(order.len(), 11_729);
+        assert_eq!(order.len(), 11_805);
         assert_eq!(reachable.iter().filter(|&&visited| visited).count(), 12_289);
-        assert!(reachable[67 * CITY_WIDTH + 4]);
-        assert!(city.tile_bits_at(4, 67).is_some_and(TileBits::piped));
-        assert!(!work[67 * CITY_WIDTH + 4]);
+        assert!(reachable[66 * CITY_WIDTH + 107]);
+        assert!(city.tile_bits_at(107, 66).is_some_and(TileBits::piped));
+        assert!(!work[66 * CITY_WIDTH + 107]);
         assert!(work[64 * CITY_WIDTH + 64]);
 
         // The worker then performs a second bounded FIFO over the transient
@@ -562,11 +561,11 @@ mod pe_network_queue_tests {
         // also lets non-piped neighbors occupy the bounded ring. Both PE and
         // Mac wrappers use this shared pass.
         let service_order = saved_xbit_water_second_pass((64, 64), &mut work);
-        assert_eq!(service_order.len(), 11_729);
+        assert_eq!(service_order.len(), 11_805);
         assert_eq!(service_order.first(), Some(&(64, 64)));
         assert_ne!(service_order, order);
         assert!(!work.iter().any(|&marked| marked));
-        assert!(!service_order.contains(&(4, 67)));
+        assert!(!service_order.contains(&(107, 66)));
     }
 
     #[test]
@@ -627,6 +626,63 @@ mod pe_network_queue_tests {
     }
 
     #[test]
+    fn water_overflow_second_root_reads_the_live_tower_marker() {
+        for (tower, expected_plane) in
+            [(0x30, 0x75f8_5e75_4b54_3c75), (0x70, 0xf452_0fc2_d24e_7035)]
+        {
+            let mut city = City::new_blank("/tmp/pe-water-second-root.sc2", "Second root").unwrap();
+            city.set_mac_state_misc_u32_at(0x0e40, 0);
+            city.pe_b_weather_humid = 2;
+            for x in 0..128 {
+                for y in 0..128 {
+                    if (x * 17 + y * 31 + x * y * 3) % 2 != 0 {
+                        city.set_building(x, y, 0x70);
+                        city.set_tile_bits(x, y, TileBits::new(0x20));
+                    }
+                }
+            }
+            for (x, y) in [(64, 64), (107, 66)] {
+                city.set_building(x, y, 0xdc);
+                city.set_tile_bits(x, y, TileBits::new(0x60));
+            }
+            city.set_building(65, 64, 0xeb);
+            city.set_tile_bits(65, 64, TileBits::new(tower));
+
+            for fidelity in [EngineFidelity::Win95, EngineFidelity::Mac68k] {
+                let mut city = city.clone();
+                if fidelity.uses_win95() {
+                    let maps = pe_fun_00464550(&mut city);
+                    assert_eq!(maps.pe_worker_capacity_units, 103);
+                    assert_eq!(maps.pe_worker_served_cells, 103);
+                    assert_eq!(city.pe_water_coverage_percent(), 100);
+                    assert_eq!(city.pe_w_sewer_bonus(), 0);
+                } else {
+                    city.kind = crate::city::CityFileKind::MacCity;
+                    city.set_mac_state_misc_u32_at(0x68, 2);
+                    city.set_mac_selected_water_height(0);
+                    let maps = water_service_maps_with_entry_seed_and_fidelity(&city, 1, fidelity);
+                    assert_eq!(maps.mac_worker_capacity_units, 103);
+                    assert_eq!(maps.mac_worker_served_cells, 103);
+                    assert_eq!(maps.mac_worker_utilization_percent(), Some(100));
+                    crate::app::power_water_refresh::publish_mac_water_result_for_city(
+                        &mut city, &maps,
+                    );
+                }
+                // Original output is captured in first-coordinate row-table order.
+                let mut fingerprint = 0xcbf2_9ce4_8422_2325u64;
+                for x in 0..128 {
+                    for y in 0..128 {
+                        let byte = city.tile_bits_at(x, y).unwrap().raw_bits();
+                        fingerprint =
+                            (fingerprint ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                    }
+                }
+                assert_eq!(fingerprint, expected_plane, "{fidelity:?}");
+            }
+        }
+    }
+
+    #[test]
     fn pe_water_second_pass_drains_a_full_128_plane_without_losing_marks() {
         // Unlike pass one, pass two enqueues only coordinates carrying the
         // transient work mark. Stress its largest possible saved-plane input
@@ -642,7 +698,7 @@ mod pe_network_queue_tests {
 
         assert_eq!(order.len(), 0x80 * 0x80);
         assert_eq!(order.first(), Some(&(64, 64)));
-        assert_eq!(&order[1..5], &[(64, 63), (63, 64), (65, 64), (64, 65)]);
+        assert_eq!(&order[1..5], &[(64, 63), (63, 64), (64, 65), (65, 64)]);
         assert!(!work.iter().any(|&marked| marked));
     }
 
@@ -682,6 +738,27 @@ mod pe_network_queue_tests {
             assert_eq!(order[0], expected_root, "rotation {rotation}");
             assert_eq!(order.len(), component.len(), "rotation {rotation}");
         }
+    }
+
+    #[test]
+    fn mac_water_serves_positive_y_before_positive_x_when_capacity_runs_out() {
+        let mut city = City::new_blank("/tmp/mac-water-fork.city", "Water").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_mac_state_misc_u32_at(0x68, 2);
+        city.set_mac_selected_water_height(0);
+        for (x, y, building, bits) in [
+            (10, 10, 0xdc, 0x60),
+            (10, 11, 0x70, 0x20),
+            (11, 10, 0x71, 0x20),
+        ] {
+            city.set_building(x, y, building);
+            city.set_tile_bits(x, y, TileBits::new(bits));
+        }
+        let maps =
+            water_service_maps_with_entry_seed_and_fidelity(&city, 1, EngineFidelity::Mac68k);
+        assert_eq!(maps.mac_worker_capacity_units, 1);
+        assert!(maps.watered_tiles[11 * CITY_WIDTH + 10]);
+        assert!(!maps.watered_tiles[10 * CITY_WIDTH + 11]);
     }
 
     #[test]
@@ -848,6 +925,8 @@ mod pe_network_queue_tests {
             pipe_tiles: Vec::new(),
             watered_tiles: Vec::new(),
             pe_worker_capacity_units: 0,
+            pe_worker_served_cells: 0,
+            pe_worker_pending_tiles: Vec::new(),
             pe_worker_contract_complete: false,
             mac_worker_capacity_units: 2,
             mac_worker_served_cells: 1,
@@ -1114,6 +1193,121 @@ mod pe_network_queue_tests {
             );
         }
     }
+
+    #[test]
+    fn mac_water_source_weather_matrix_matches_native_fingerprints() {
+        // Extension of the original CODE 14 source/weather matrix. These
+        // source-only maps isolate the byte humidity, selected-height, and
+        // local-water terms; the native full-plane fingerprints are pinned
+        // below as regression oracles.
+        let cases: [(&str, u8, u8, u8, usize, u32, u32, u64); 6] = [
+            (
+                "pump-zero",
+                220,
+                0,
+                0,
+                0,
+                0,
+                100,
+                956_091_040_562_241_557_u64,
+            ),
+            (
+                "pump-high",
+                220,
+                255,
+                31,
+                0,
+                282,
+                0,
+                956_091_040_562_241_557,
+            ),
+            (
+                "pump-high-local-water",
+                220,
+                255,
+                31,
+                8,
+                362,
+                0,
+                9_077_960_052_210_056_117,
+            ),
+            ("desal-zero", 250, 15, 0, 0, 0, 100, 956_091_040_562_241_557),
+            (
+                "desal-one-salt-neighbor",
+                250,
+                15,
+                0,
+                1,
+                20,
+                0,
+                10_254_596_661_353_056_654,
+            ),
+            (
+                "desal-eight-salt-neighbors",
+                250,
+                15,
+                0,
+                8,
+                160,
+                0,
+                4_840_327_164_549_656_109,
+            ),
+        ];
+        let neighbors = [
+            (9, 9),
+            (9, 10),
+            (9, 11),
+            (10, 9),
+            (10, 11),
+            (11, 9),
+            (11, 10),
+            (11, 11),
+        ];
+
+        for (name, source, humidity, height, wet_neighbors, capacity, summary, native_hash) in cases
+        {
+            let mut city =
+                City::new_blank("/tmp/mac-water-source-weather.sc2", name).expect("blank city");
+            city.kind = crate::city::CityFileKind::MacCity;
+            city.saved_rotation = 0;
+            for x in 0..128 {
+                for y in 0..128 {
+                    city.set_building(x, y, 0);
+                    city.set_tile_bits(x, y, TileBits::new(0));
+                }
+            }
+            city.set_mac_state_misc_u32_at(0x68, u32::from(humidity));
+            city.set_mac_selected_water_height(height);
+            city.set_building(10, 10, source);
+            city.set_tile_bits(10, 10, TileBits::new(0x60));
+            let water_bits = if source == 220 { 0x04 } else { 0x05 };
+            for &(x, y) in neighbors.iter().take(wet_neighbors) {
+                city.set_tile_bits(x, y, TileBits::new(water_bits));
+            }
+
+            let maps =
+                water_service_maps_with_entry_seed_and_fidelity(&city, 1, EngineFidelity::Mac68k);
+            assert!(maps.mac_worker_contract_complete, "{name}");
+            assert_eq!(maps.mac_worker_served_cells, 0, "{name} served");
+            assert_eq!(maps.mac_worker_capacity_units, capacity, "{name} capacity");
+            assert_eq!(
+                maps.mac_worker_utilization_percent(),
+                Some(summary),
+                "{name} ratio"
+            );
+            crate::app::power_water_refresh::publish_mac_water_result_for_city(&mut city, &maps);
+
+            let mut hash = 14_695_981_039_346_656_037_u64;
+            for x in 0..128 {
+                for y in 0..128 {
+                    hash = (hash ^ u64::from(city.tile_bits_at(x, y).unwrap().raw_bits()))
+                        .wrapping_mul(1_099_511_628_211);
+                }
+            }
+            assert_eq!(hash, native_hash, "{name} full XBIT fingerprint");
+        }
+    }
+
     #[test]
     fn mac_treatment_gate_matches_original_68020_replay() {
         let csv = include_str!("../../tests/fixtures/simulation/mac/mac_treatment_gate.csv");

@@ -126,6 +126,9 @@ pub(super) fn live_density_maps_for_city_with_fidelity(
     // XROG updates from the XPOP delta against the prior stored map (PE @ `0x46b437`).
     let rate_of_growth = live_rate_of_growth_map_for_city(city, &population_density);
     LiveDensityMaps {
+        pe_city_center: fidelity
+            .uses_win95()
+            .then_some((land_value_center.0 as i16, land_value_center.1 as i16)),
         land_value,
         crime,
         pollution,
@@ -342,37 +345,10 @@ pub(super) fn sewer_bonus_for_pollution_blur(city: &City) -> i16 {
     city.pe_w_sewer_bonus() as i16
 }
 
-/// PE water-scan formula (`0x46488c`/`0x4648a2`): 1 when the served-water
-/// numerator meets 2,000 per Water Treatment tile-footprint.
-pub(super) fn sewer_bonus_from_water_scan(city: &City) -> i16 {
-    let entry_seed = pe_power_recalc_seed(city);
-    let water_maps =
-        water_service_maps_with_entry_seed_and_fidelity(city, entry_seed, EngineFidelity::Win95);
-    let served = water_maps.pe_served_worker_counter(city);
-    let treatment_tiles = u32::from(city.pe_dw_tile_count[244]);
-    let threshold = treatment_tiles.div_ceil(4).saturating_mul(2_000);
-    if served >= threshold { 1 } else { 0 }
-}
-
-/// PE `FUN_00464550` finalizes `0x4CC4B8` as the worker's served-cell count
-/// divided by raw source capacity. Return `None` when a component cannot be
-/// reconciled with the saved-XBIT worker flood so callers can retain their
-/// established estimate without presenting it as recovered PE behavior.
-pub(super) fn pe_water_worker_utilization_percent(city: &City, entry_seed: u32) -> Option<u32> {
-    let maps =
-        water_service_maps_with_entry_seed_and_fidelity(city, entry_seed, EngineFidelity::Win95);
-    maps.pe_worker_utilization_percent(city)
-}
-
-/// Publish PE `wSewerBonus` BSS + MISC from served water and raw plant tiles.
+#[cfg(test)]
 pub(super) fn publish_pe_sewer_bonus(city: &mut City) {
-    let entry_seed = pe_power_recalc_seed(city);
-    let water_maps =
-        water_service_maps_with_entry_seed_and_fidelity(city, entry_seed, EngineFidelity::Win95);
-    city.publish_pe_sewer_bonus(
-        water_maps.pe_served_worker_counter(city),
-        u32::from(city.pe_dw_tile_count[244]),
-    );
+    let maps = pe_water_service_maps_from_saved_xbit(city, Vec::new());
+    city.publish_pe_sewer_bonus(maps.pe_worker_served_cells, city.pe_dw_tile_count[0xf4]);
 }
 
 /// Win95 `wIndustrialMixBonus` (`0x4ca1e8`): PE `FUN_00468150` @ `0x4682be` reads BSS.
@@ -608,8 +584,7 @@ fn live_pe_station_coverage_map(
     let ordinance_enabled = ordinance_enabled_for_city(city, ordinance);
 
     // PE `FUN_0046A840` scans individual interior map cells and calls
-    // `FUN_0046BA90` for every eligible XBLD station tile. A 3×3 station is
-    // therefore nine ring sources, not one source at the footprint center.
+    // `FUN_0046BA90` for station tiles with the XZON 0x80 corner marker.
     // In the same x-major pass, each developed tile (`0x70..=0xc5`) adds two
     // points to the ordinance-selected plane, even when station funding is 0.
     for x in 1..CITY_WIDTH - 1 {
@@ -624,19 +599,15 @@ fn live_pe_station_coverage_map(
                 }
             }
 
-            if base_strength == 0 || tile != building {
+            if base_strength == 0
+                || tile != building
+                || !city.zone_at(x, y).is_some_and(|zone| zone.left())
+            {
                 continue;
             }
-            let Some(tile_bits) = city.tile_bits_at(x, y) else {
-                continue;
-            };
-            // PE gates every source tile on XBIT 0x80, then halves its
-            // contribution when that same tile lacks connected XBIT 0x40.
-            if !tile_bits.powerable() {
-                continue;
-            }
+            // The same corner's XBIT 0x40 selects full or half strength.
             let connected = if use_pe_xbit_power {
-                tile_bits.powered()
+                city.tile_bits_at(x, y).is_some_and(TileBits::powered)
             } else {
                 power_maps.energized_tiles[y * CITY_WIDTH + x]
             };

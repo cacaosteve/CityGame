@@ -38,15 +38,16 @@ pub(super) fn pe_attitude_demand_inputs_for_city_with_power(
     )
 }
 
+pub(super) fn pe_attitude_tile_is_developed(city: &City, x: usize, y: usize) -> bool {
+    city.building_at(x, y) >= PE_ATTITUDE_DEVELOPED_BUILDING_MIN
+        || city.zone_at(x, y).is_some_and(|zone| zone.zone_id() != 0)
+}
+
 pub(super) fn pe_attitude_developed_tile_count(city: &City) -> u32 {
     let mut count = 0_u32;
     for y in 0..CITY_HEIGHT {
         for x in 0..CITY_WIDTH {
-            if city.building_at(x, y) >= PE_ATTITUDE_DEVELOPED_BUILDING_MIN {
-                count = count.saturating_add(1);
-                continue;
-            }
-            if city.zone_at(x, y).is_some_and(|zone| zone.zone_id() != 0) {
+            if pe_attitude_tile_is_developed(city, x, y) {
                 count = count.saturating_add(1);
             }
         }

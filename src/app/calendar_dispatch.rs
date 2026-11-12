@@ -22,7 +22,6 @@ impl ViewerState {
         // Win95 `dwCityDays % 25` SimCalendar, batched into one month tick.
         self.query_status_pinned = false;
         self.sim_calendar_day0_budget_and_date();
-        let had_active_disaster = self.city.has_active_disaster();
         // Calendar phases do not own the separate pending disaster dispatcher.
         if self.engine_fidelity.uses_win95() {
             self.sim_calendar_day1_power();
@@ -52,13 +51,12 @@ impl ViewerState {
         }
         self.sim_calendar_day20_water();
         self.publish_pe_growth_aggregate();
-        let (population, outcomes) = self.sim_calendar_day21_demand_and_graphs();
-        let day22 = self.sim_calendar_day22_scenario(had_active_disaster, population, outcomes);
+        let (population, _) = self.sim_calendar_day21_demand_and_graphs();
+        let day22 = self.sim_calendar_day22_scenario(population);
         let scenario_outcome_announced = day22.scenario_outcome_announced;
         self.sim_calendar_day23_stats_dialogs();
         let newly_available_rewards = self.sim_calendar_day24_ui_chrome();
-        if !self.query_is_inspect && !scenario_outcome_announced && !day22.ambient_disaster_started
-        {
+        if !self.query_is_inspect && !scenario_outcome_announced {
             if newly_available_rewards != 0 {
                 self.set_sim_status_announcement(reward_available_status_line(
                     newly_available_rewards,
@@ -66,6 +64,11 @@ impl ViewerState {
             } else if !day22.status_announced && !self.query_status_pinned {
                 self.refresh_idle_status_line();
             }
+        }
+        if self.engine_fidelity.uses_win95() {
+            self.run_pe_phase24_disaster_chooser();
+        } else {
+            self.run_mac_phase24_disaster_chooser();
         }
     }
 
@@ -101,9 +104,6 @@ impl ViewerState {
                     self.sim_calendar_day2_density(population, outcomes);
                 }
                 d if (SIM_DAY_GROWTH_FIRST..=SIM_DAY_GROWTH_LAST).contains(&d) => {
-                    if d == SIM_DAY_GROWTH_FIRST {
-                        self.reset_monthly_growth_budget();
-                    }
                     if let Some((step, substep)) = sim_calendar_growth_phase(d) {
                         self.sim_calendar_one_growth_tick(step, substep);
                     }
@@ -138,16 +138,10 @@ impl ViewerState {
                 }
             }
             SIM_DAY_SCENARIO => {
-                let had_active_disaster = self.city.has_active_disaster();
                 let population = self.live_population_stats_for_fidelity();
-                let outcomes = self.live_city_service_outcomes_with_process_crt();
-                let day22 =
-                    self.sim_calendar_day22_scenario(had_active_disaster, population, outcomes);
+                let day22 = self.sim_calendar_day22_scenario(population);
                 let scenario_outcome_announced = day22.scenario_outcome_announced;
-                if !self.query_is_inspect
-                    && !scenario_outcome_announced
-                    && !day22.ambient_disaster_started
-                    && !day22.status_announced
+                if !self.query_is_inspect && !scenario_outcome_announced && !day22.status_announced
                 {
                     self.refresh_status_line();
                 }
@@ -161,6 +155,11 @@ impl ViewerState {
                     ));
                 } else if !self.query_is_inspect {
                     self.refresh_status_line();
+                }
+                if self.engine_fidelity.uses_win95() {
+                    self.run_pe_phase24_disaster_chooser();
+                } else {
+                    self.run_mac_phase24_disaster_chooser();
                 }
             }
             _ => {}

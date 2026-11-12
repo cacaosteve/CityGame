@@ -2,9 +2,10 @@
 //!
 //! Both binaries use the same season×trend×8 transition table and per-trend
 //! heat/wind/humidity targets. Season is `(month_index + 1) % 12 / 3` (0..3).
-//! The transition math is shared; Mac's phase-21 `_Random` input is not
-//! session-aligned yet because earlier conditional draws in CODE 8
-//! `export_237` are not modeled.
+//! The transition math is shared. Mac's phase-21 worker models its local
+//! `export_237` map, event, technology, and weather draws; the RNG input is
+//! not session-aligned because the preceding natural CODE 2/6/8 schedule and
+//! its shared-stream interleaving are not yet reproduced.
 
 use super::*;
 use crate::mac_random::MacToolboxRng;

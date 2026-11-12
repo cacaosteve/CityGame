@@ -253,28 +253,27 @@ pub(in crate::app) fn pe_lower_terrain_444440_mode_skips_funds(mode: u32) -> boo
     mode == 0
 }
 
-/// Win95 LowerTerrain tool-2 `0x401ea1`→`0x443900`: CRT jitter then mode-0 land--.
+/// Win95 Lower samples four CRT draws and calls the free dig worker if the
+/// jittered tile is in bounds. The boolean reports whether that worker dug.
 pub(in crate::app) fn pe_lower_terrain_crt_step_443900(
     city: &mut City,
     crt: &mut Win95CrtRand,
     x: usize,
     y: usize,
-) -> bool {
+) -> Option<bool> {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
-        return false;
+        return None;
     }
     let (dx, dy) = pe_stretch_hill_crt_jitter(crt);
-    let Some((tx, ty)) = offset_city_tile(x, y, dx, dy) else {
-        return false;
-    };
-    pe_lower_terrain_land_dec_444440_mode_with_submode_and_crt(
+    let (tx, ty) = offset_city_tile(x, y, dx, dy)?;
+    Some(pe_lower_terrain_land_dec_444440_mode_with_submode_and_crt(
         city,
         tx,
         ty,
         0,
         PE_RAISE_SUBMODE_DEFAULT,
         Some(crt),
-    )
+    ))
 }
 
 /// PE Lower `0x443900` @ `0x443961`/`0x443964`: unpack `0x444bf0` (`& 0x7f`) before CRT jitter.
@@ -282,9 +281,7 @@ pub(in crate::app) fn pe_lower_terrain_from_packed_443900(
     city: &mut City,
     crt: &mut Win95CrtRand,
     packed: i16,
-) -> bool {
-    let Some((x, y)) = pe_lower_unpack_tile_444bf0(packed) else {
-        return false;
-    };
+) -> Option<bool> {
+    let (x, y) = pe_lower_unpack_tile_444bf0(packed)?;
     pe_lower_terrain_crt_step_443900(city, crt, x, y)
 }

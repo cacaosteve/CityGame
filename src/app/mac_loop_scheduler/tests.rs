@@ -1,5 +1,56 @@
 use super::*;
-use crate::app::tests::test_state;
+use crate::app::tests::{blank_city_layout_fixture, test_state};
+
+fn reopen_with_actor_fixture_seed(state: &mut crate::app::ViewerState, path: &std::path::Path) {
+    // These native actor slices restart at the worker with a supplied seed.
+    // Apply the saved map and actor state, then inject that post-open seed.
+    let fixture_rng = state.mac_process_rng;
+    let reopened = state.load_city(path, (1280, 800), 1.0);
+    std::fs::remove_file(path).unwrap();
+    reopened.unwrap();
+    state.mac_process_rng = fixture_rng;
+}
+
+#[test]
+fn mac_action_completion_polls_before_the_next_calendar_dispatch() {
+    for kind in [
+        crate::city::CityFileKind::MacCity,
+        crate::city::CityFileKind::WinSc2,
+    ] {
+        let mut city = City::new_blank("/tmp/mac-action-poll.sc2", "Poll").unwrap();
+        city.kind = kind;
+        for (offset, value) in [
+            (0x48, 10),
+            (0x4c, 25),
+            (0xfa4, 12),
+            (0x1004, 0),
+            (0x1008, 0),
+            (0x102c, 1000),
+        ] {
+            city.set_mac_state_misc_u32_at(offset, value);
+        }
+        city.set_budget_misc_u32_values(0x0780, &[7]);
+        for (index, score) in (4..).zip([10, 20, 40, 30]) {
+            city.set_chunk_u32_values("XGRP", index * 52 * 4, &[score]);
+        }
+        city.set_microsim_tile_id(10, 0xf3);
+        city.set_microsim_stat2(10, 63);
+        for (suppressed, seed, approval) in [(false, 200_870_715, 29), (true, 123, 0)] {
+            let mut city = city.clone();
+            city.set_mac_newspaper_suppressed(suppressed);
+            scenario_action::begin_action(&mut city, 3);
+            let mut rng = crate::mac_random::MacToolboxRng::new(123);
+            let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+            assert!(pass.complete);
+            assert_eq!(city.mac_state_misc_u32_at(4), Some(1));
+            assert_eq!(rng.seed(), seed);
+            assert!(!scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0).complete);
+            city.refresh_mac_monthly_random_xmic_rows(100, 100, 100, 100, 100, false, &mut rng);
+            assert_eq!(rng.seed(), seed);
+            assert_eq!(city.microsim_at(10).unwrap().stat2, approval);
+        }
+    }
+}
 
 #[test]
 fn saved_flint_mac_rail_sweep_matches_original_on_both_city_layouts() {
@@ -73,6 +124,7 @@ fn saved_flint_mac_rail_sweep_matches_original_on_both_city_layouts() {
                 &mut sound_deadline,
                 0,
                 &mut tick_count,
+                &mut None,
             );
 
             let expected_changes: std::collections::HashMap<_, _> = input("xthg_changed")
@@ -186,6 +238,7 @@ fn mac_actor_sweep_matches_native_on_imported_win95_flint_scenario() {
         &mut sound_deadline,
         0,
         &mut tick_count,
+        &mut None,
     );
 
     // The native Win95-Flint-input replay has the same controlled QuickDraw
@@ -303,6 +356,54 @@ fn mac_run_state_two_counts_due_action_without_advancing_calendar() {
 }
 
 #[test]
+fn mac_run_state_one_clears_unknown_selector_then_advances_only_an_active_action() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        for (active, expected_seed) in [(false, 1), (true, 16_807)] {
+            let mut city =
+                City::new_blank("/tmp/mac-mode-one-unknown.sc2", "Unknown").expect("blank city");
+            city.kind = kind;
+            city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, 1);
+            city.set_mac_state_misc_u32_at(0x1044, 12);
+            city.set_mac_state_misc_u32_at(0x1048, u32::from(active));
+            city.set_mac_pending_action(19);
+            city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 327_630_000);
+            city.set_text_overlay(3, 79, 7);
+            city.set_text_overlay(20, 30, 0xff);
+
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.mac_process_rng = MacToolboxRng::new(1);
+            state.mac_loop_scheduler.disaster_point = (42, 40);
+            state.mac_loop_scheduler.actor_deadline = u32::MAX;
+            state.mac_loop_scheduler.deadline = 2;
+            state.traffic.set_speed(GameSpeed::Paused);
+            let clock = state.game_clock;
+
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                0
+            );
+            assert_eq!(state.city.mac_pending_action(), 0, "layout={kind:?}");
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(12));
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x1048),
+                Some(u32::from(active))
+            );
+            assert_eq!(state.city.text_overlay_at(3, 79), Some(7));
+            assert_eq!(state.city.text_overlay_at(20, 30), Some(0xff));
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                expected_seed,
+                "layout={kind:?}"
+            );
+            assert_eq!(state.game_clock, clock);
+        }
+    }
+}
+
+#[test]
 fn mac_kind2_sound_deadline_survives_opening_another_city() {
     let start_path = std::path::Path::new("/tmp/mac-kind2-deadline-start.city");
     let mut state = test_state(City::new_blank(start_path, "Start").expect("blank start city"));
@@ -371,6 +472,84 @@ fn mac_actor_timer_uses_scaled_dispatch_count_and_strict_due_gate() {
 }
 
 #[test]
+fn mac_actor_timer_uses_fresh_tick_for_next_deadline() {
+    let mut scheduler = MacLoopScheduler {
+        actor_deadline: 10,
+        ..MacLoopScheduler::default()
+    };
+    let mut refresh_calls = 0;
+
+    assert!(scheduler.due_actor_sweep_with_refresh(1, 2, 11, || {
+        refresh_calls += 1;
+        17
+    }));
+    assert_eq!(refresh_calls, 1);
+    assert_eq!(scheduler.actor_deadline, 62); // Fresh TickCount 17 + native +45.
+
+    let mut not_due = MacLoopScheduler {
+        actor_deadline: 17,
+        ..MacLoopScheduler::default()
+    };
+    assert!(!not_due.due_actor_sweep_with_refresh(1, 2, 17, || {
+        panic!("native second TickCount is not read when the actor sweep is not due")
+    }));
+    assert_eq!(not_due.actor_deadline, 17);
+}
+
+#[test]
+fn mac_calendar_timer_uses_fresh_tick_for_next_deadline() {
+    let mut state = mac_phase24_fixture("mac-calendar-refresh.city", WEATHER_TREND_BLIZZARD, 1);
+    state.city.set_mac_pending_action(0);
+    state.traffic.set_speed(GameSpeed::Turtle);
+    state.mac_loop_scheduler.deadline = 0;
+
+    let advance = state.finish_mac_frame_calendar_phase_with_tick_refresh(
+        Duration::from_millis(200),
+        0,
+        || Duration::from_millis(17),
+    );
+    assert_eq!(advance.days, 1);
+    // Check sample is tick 12; refresh sample is tick 13; native Turtle adds 36.
+    assert_eq!(state.mac_loop_scheduler.deadline, 49);
+
+    let mut not_due = mac_phase24_fixture(
+        "mac-calendar-refresh-not-due.city",
+        WEATHER_TREND_BLIZZARD,
+        1,
+    );
+    not_due.city.set_mac_pending_action(0);
+    not_due.traffic.set_speed(GameSpeed::Turtle);
+    not_due.mac_loop_scheduler.deadline = 12;
+    assert_eq!(
+        not_due.finish_mac_frame_calendar_phase_with_tick_refresh(
+            Duration::from_millis(200),
+            0,
+            || panic!("native second TickCount is not read when calendar is not due"),
+        ),
+        GameClockAdvance::default()
+    );
+    assert_eq!(not_due.mac_loop_scheduler.deadline, 12);
+}
+
+#[test]
+fn mac_actor_timer_keeps_native_unsigned_tickcount_comparison_at_wrap() {
+    let mut scheduler = MacLoopScheduler {
+        actor_deadline: u32::MAX - 10,
+        ..MacLoopScheduler::default()
+    };
+
+    // CODE 2 compares the current TickCount with the stored deadline using
+    // unsigned CMP.L/BLS semantics. If execution misses the due window and
+    // TickCount wraps, the low post-wrap values remain before that old
+    // unsigned deadline until the counter catches up on its next cycle.
+    assert!(!scheduler.due_actor_sweep(1, 2, u32::MAX - 10));
+    assert!(!scheduler.due_actor_sweep(1, 2, 0));
+    assert!(!scheduler.due_actor_sweep(1, 2, 1));
+    assert!(scheduler.due_actor_sweep(1, 2, u32::MAX - 9));
+    assert_eq!(scheduler.actor_deadline, 35);
+}
+
+#[test]
 fn mac_rail_head_dispatch_is_engine_scoped_not_city_layout_scoped() {
     for kind in [CityFileKind::WinSc2, CityFileKind::MacCity] {
         let mut city = City::new_blank(
@@ -380,7 +559,9 @@ fn mac_rail_head_dispatch_is_engine_scoped_not_city_layout_scoped() {
         .expect("blank city");
         city.kind = kind;
         let slot = XTHG_FIRST_USABLE_SLOT;
-        city.set_building(50, 49, 0xed);
+        // The seed-1 app LCG selects the native (-1, 0) neighbor from this
+        // head's x-major coordinates.
+        city.set_building(49, 50, 0xed);
         city.set_mac_object_slot_record(
             slot,
             crate::win95_overlay::Win95OverlayRecord {
@@ -661,6 +842,7 @@ fn mac_tornado_kind15_uses_native_turn_cleanup_and_runs_on_both_city_layouts() {
             &mut sound_deadline,
             0,
             &mut now,
+            &mut None,
         );
 
         assert!(sounds.is_empty(), "{kind:?}");
@@ -739,6 +921,7 @@ fn mac_tornado_cleanup_tests_low_byte_of_random_word_on_both_city_layouts() {
             &mut sound_deadline,
             0,
             &mut now,
+            &mut None,
         );
 
         let tornado = city.traffic_overlays().expect("actor table")[slot];
@@ -829,6 +1012,7 @@ fn mac_kind2_state_two_mover_and_xtrf_sound_match_across_city_layouts() {
         };
         let mut city = City::new_blank(path, "MacKind2State2").expect("blank city");
         city.kind = kind;
+        city.set_pe_city_center(12, 34);
         city.set_mac_kind2_hotspot(60, 60);
         // The state-2 lane turns from heading 0 toward the coincident target,
         // then the stride-8 mover advances into row 60, column 59.
@@ -879,8 +1063,8 @@ fn mac_kind2_state_two_mover_and_xtrf_sound_match_across_city_layouts() {
     // adapter and leaves the PE-owned MISC slots untouched.
     assert_eq!(outcomes[0].4, Some(60));
     assert_eq!(outcomes[0].5, Some(60));
-    assert_eq!(outcomes[1].4, Some(0));
-    assert_eq!(outcomes[1].5, Some(0));
+    assert_eq!(outcomes[1].4, Some(12));
+    assert_eq!(outcomes[1].5, Some(34));
 }
 
 #[test]
@@ -1168,7 +1352,7 @@ fn mac_kind5_state_zero_countdown_and_stride_eight_match_on_both_layouts() {
 }
 
 #[test]
-fn mac_kind5_state_three_clears_proxy_and_uses_random_parity_on_both_layouts() {
+fn mac_kind5_state_three_retires_actor_and_uses_random_parity_on_both_layouts() {
     let mut outcomes = Vec::new();
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         let mut city = City::new_blank(
@@ -1220,7 +1404,7 @@ fn mac_kind5_state_three_clears_proxy_and_uses_random_parity_on_both_layouts() {
     }
 
     assert_eq!(outcomes[0], outcomes[1]);
-    assert_eq!(outcomes[0].0.kind, 5, "state 3 does not retire the record");
+    assert_eq!(outcomes[0].0.kind, 0, "export 121 clears the actor kind");
     assert_eq!(outcomes[0].0.state, 3);
     assert_eq!(
         (outcomes[0].0.target_x, outcomes[0].0.target_y),
@@ -1396,7 +1580,7 @@ fn mac_kind5_state_one_map_branches_match_on_both_city_layouts() {
     expected_rng.random_u16(); // target Y (`% 128`)
     let expected_direction = mac_kind1_perturb_heading(4, &mut expected_rng);
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
-        for status in 0..=3u8 {
+        for status in [0, 1, 2, 3] {
             let mut city = City::new_blank(
                 std::path::Path::new("/tmp/mac-kind5-state-one.sc2"),
                 "MacKind5StateOne",
@@ -1407,6 +1591,15 @@ fn mac_kind5_state_one_map_branches_match_on_both_city_layouts() {
             city.set_tile_bits(x, y, TileBits::new(0));
             city.set_zone(x, y, 3);
             city.set_building(x, y, if status == 0 { 6 } else { 0x0e });
+            if status == 0 {
+                city.set_traffic_density(x, y, 0x5a);
+            }
+            if status == 3 {
+                // Export 157 reuses fixed XMIC row 4 for 0xc8 and increments
+                // its existing +2/+4 WORDs instead of clearing them.
+                city.set_microsim_stat1(4, 0x1234);
+                city.set_microsim_stat2(4, 0x4567);
+            }
 
             let slot = XTHG_FIRST_USABLE_SLOT;
             city.set_mac_object_slot_record(
@@ -1447,7 +1640,8 @@ fn mac_kind5_state_one_map_branches_match_on_both_city_layouts() {
                 actor.target_x,
                 actor.target_y,
                 quickdraw.seed(),
-                city.microsim_at(4).map(|record| record.tile_id),
+                city.microsim_at(4),
+                city.traffic_density_at(x, y),
             ));
         }
     }
@@ -1455,6 +1649,7 @@ fn mac_kind5_state_one_map_branches_match_on_both_city_layouts() {
     assert_eq!(&outcomes[..4], &outcomes[4..]);
     assert_eq!(outcomes[0].1, 6, "status 0 does not replace XBLD");
     assert_eq!(outcomes[0].4, Some(0xff), "status 0 claims the candidate");
+    assert_eq!(outcomes[0].11, Some(0), "status 0 clears native XTRF cell");
     assert!(
         (9..=12).contains(&outcomes[1].1),
         "status 1 places the QuickDraw _Random-selected tile"
@@ -1470,11 +1665,164 @@ fn mac_kind5_state_one_map_branches_match_on_both_city_layouts() {
     assert_eq!(outcomes[3].2 & 0xe0, 0xe0);
     assert_eq!(outcomes[3].3 & 0xf0, 0xf0);
     assert_eq!(outcomes[3].4, Some(0x37));
-    assert_eq!(outcomes[3].10, Some(0xc8));
+    assert_eq!(outcomes[3].10.map(|record| record.tile_id), Some(0xc8));
+    assert_eq!(outcomes[3].10.map(|record| record.stat1), Some(0x1235));
+    assert_eq!(outcomes[3].10.map(|record| record.stat2), Some(0x456b));
     for outcome in &outcomes {
         assert_eq!(outcome.5, 1, "seed 1's first Random % 25 is nonzero");
         assert_eq!(outcome.6, expected_direction);
         assert_ne!(outcome.7 & 0x80, 0, "nonzero-status epilogue/success gate");
+    }
+}
+
+#[test]
+fn mac_kind5_state_one_native_tile_families_match_selector_and_xbld_on_both_layouts() {
+    use crate::city::CityFileKind;
+    use crate::mac_random::{MacGameLcgRng, MacToolboxRng};
+    use crate::win95_overlay::Win95OverlayRecord;
+
+    // Original CODE 6 replay at actor tile (45,40), with the same isolated
+    // map planes, ALTM water level, XTRF value, QuickDraw seed, and starting
+    // actor bytes. The _Random trap at CODE 6 0xE12A supplies the selector;
+    // subsequent draws are route-specific handler work.
+    let cases = [
+        (0x0e, 0x0b, 8, 1_457_850_878, 1),
+        (0x1d, 0x0b, 8, 1_457_850_878, 1),
+        (0x51, 0x09, 7, 101_027_544, 1),
+        (0x61, 0x09, 25, 1_817_129_560, 1),
+        (0xdd, 0x0b, 5, 1_144_108_930, 1),
+        (0xdf, 0x0b, 5, 1_144_108_930, 1),
+        (0xe0, 0x0b, 5, 1_144_108_930, 1),
+        // Seed 3 distinguishes the native fifth draw (tile 12) from the
+        // former Rust eighth draw (tile 9) on the connected-runway branch.
+        (0xdd, 0x0c, 5, 1_284_843_143, 3),
+    ];
+
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        for (initial_building, expected_building, expected_draws, expected_seed, seed) in cases {
+            let mut city = City::new_blank(
+                std::path::Path::new("/tmp/mac-kind5-state-one-native-family.sc2"),
+                "MacKind5NativeFamily",
+            )
+            .expect("blank city");
+            city.kind = kind;
+            let (x, y) = (45, 40);
+            for map_x in 0..128 {
+                for map_y in 0..128 {
+                    city.set_altitude(map_x, map_y, 0, 0);
+                }
+            }
+            city.set_building(x, y, initial_building);
+            city.set_altitude(x, y, 0, 8);
+            city.set_traffic_density(x, y, 0x5a);
+            city.set_mac_object_slot_record(
+                XTHG_FIRST_USABLE_SLOT,
+                Win95OverlayRecord {
+                    kind: 5,
+                    lane: 2,
+                    state: 1,
+                    tile_x: x as u8,
+                    tile_y: y as u8,
+                    height: 10,
+                    sub_x: 8,
+                    sub_y: 8,
+                    saved_b: 1,
+                    ..Default::default()
+                },
+            );
+
+            let mut quickdraw = MacToolboxRng::new(seed);
+            let mut game_rng = MacGameLcgRng::new(1);
+            let mut sound_deadline = 0;
+            let mut tick_count = 0;
+            tick_mac_actors_with_rng_and_clock(
+                &mut city,
+                &mut quickdraw,
+                &mut game_rng,
+                &mut sound_deadline,
+                0,
+                &mut tick_count,
+                &mut None,
+            );
+
+            assert_eq!(
+                city.building_at(x, y),
+                expected_building,
+                "layout={kind:?}, initial XBLD={initial_building:#04x}"
+            );
+            assert_eq!(
+                quickdraw.seed(),
+                expected_seed,
+                "layout={kind:?}, initial XBLD={initial_building:#04x}, seed={seed}, draws={expected_draws}"
+            );
+            assert_eq!(city.tile_bits_at(x, y), Some(TileBits::new(0)));
+            assert_eq!(city.zone_at(x, y).map_or(0, |zone| zone.raw_bits()), 0);
+            assert_eq!(city.terrain_at(x, y), 0);
+            assert_eq!(city.text_overlay_at(x, y), Some(0));
+            assert_eq!(city.traffic_density_at(x, y), Some(0x5a));
+            if initial_building == 0x51 {
+                for adjacent_y in [39, 41] {
+                    let altm = city.altm_at(x, adjacent_y);
+                    assert_eq!(
+                        (altm.land, altm.water, altm.tunnel_levels),
+                        (31, 31, 63),
+                        "layout={kind:?}, native bridge classification sample y={adjacent_y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mac_kind5_status_zero_fa_marker_decrements_class_counter_on_both_layouts() {
+    for (kind, building, expected_counts) in [
+        (CityFileKind::MacCity, 0x1d, [6, 4]),
+        (CityFileKind::WinSc2, 0x06, [7, 3]),
+    ] {
+        let mut city = City::new_blank(
+            std::path::Path::new("/tmp/mac-kind5-status-zero-fa.sc2"),
+            "MacKind5StatusZeroFa",
+        )
+        .expect("blank city");
+        city.kind = kind;
+        let (x, y) = (50, 50);
+        city.set_tile_bits(x, y, TileBits::new(0));
+        city.set_building(x, y, building);
+        city.set_text_overlay(x, y, 0xfa);
+        city.set_traffic_density(x, y, 0x5a);
+        city.set_mac_state_misc_u32_at(0x1050, 7);
+        city.set_mac_state_misc_u32_at(0x1024, 4);
+        city.set_mac_object_slot_record(
+            XTHG_FIRST_USABLE_SLOT,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: 5,
+                state: 1,
+                lane: 4,
+                height: 15,
+                tile_x: x as u8,
+                tile_y: y as u8,
+                saved_b: 0,
+                sub_x: 8,
+                sub_y: 8,
+                ..Default::default()
+            },
+        );
+
+        let mut quickdraw = MacToolboxRng::new(1);
+        let mut kind2_sound_deadline = 0;
+        tick_mac_actors_with_rng_at(
+            &mut city,
+            &mut quickdraw,
+            &mut MacGameLcgRng::new(MacGameLcgRng::INITIAL_STATE),
+            &mut kind2_sound_deadline,
+            0,
+            16,
+        );
+
+        assert_eq!(city.mac_rci_overlay_cap_counts(), expected_counts);
+        assert_eq!(city.text_overlay_at(x, y), Some(0xff));
+        assert_eq!(city.traffic_density_at(x, y), Some(0));
     }
 }
 
@@ -1525,6 +1873,7 @@ fn mac_kind5_rendered_export80_wait_advances_later_actor_tickcount() {
             &mut kind2_sound_deadline,
             0,
             &mut now,
+            &mut None,
         );
 
         assert_eq!(now, 28, "export 80 waits through TickCount + 12");
@@ -1735,6 +2084,7 @@ fn mac_kind_one_height_redirect_matches_across_city_layouts() {
         city.set_building(41, 27, 0x81); // Native height 14, threshold 4.
         city.set_zone(41, 27, 0x03);
         let slot = XTHG_FIRST_USABLE_SLOT;
+        city.set_text_overlay(41, 27, 0xca);
         city.set_mac_object_slot_record(
             slot,
             crate::win95_overlay::Win95OverlayRecord {
@@ -1762,8 +2112,11 @@ fn mac_kind_one_height_redirect_matches_across_city_layouts() {
         ));
     }
     assert_eq!(outcomes[0], outcomes[1]);
-    assert_eq!((outcomes[0].0.lane, outcomes[0].0.state), (0, 5));
-    assert_eq!(outcomes[0].1, Some(6));
+    assert_eq!(
+        (outcomes[0].0.kind, outcomes[0].0.lane, outcomes[0].0.state),
+        (6, 0, 5)
+    );
+    assert_eq!(outcomes[0].1, Some(0xca));
     assert_eq!(outcomes[0].2, 1);
 }
 
@@ -1946,7 +2299,7 @@ fn mac_kind_one_phase_zero_moves_with_shared_proxy_rules_and_takeoff_order() {
 }
 
 #[test]
-fn mac_kind_one_phase_one_lands_on_runway_or_leaves_marker_across_city_layouts() {
+fn mac_kind_one_phase_one_lands_on_runway_or_hands_off_to_kind_six_across_city_layouts() {
     let slot = XTHG_FIRST_USABLE_SLOT;
     let proxy = 0xc9u8.wrapping_add(slot as u8);
     let mut outcomes = Vec::new();
@@ -2003,12 +2356,12 @@ fn mac_kind_one_phase_one_lands_on_runway_or_leaves_marker_across_city_layouts()
     assert_eq!(outcomes[0], outcomes[2]);
     assert_eq!(outcomes[1], outcomes[3]);
     let field = &outcomes[0];
-    assert_eq!((field.1.kind, field.1.state, field.1.lane), (1, 5, 0));
+    assert_eq!((field.1.kind, field.1.state, field.1.lane), (6, 5, 0));
     assert_eq!(
         (field.1.height, field.1.saved_a, field.1.saved_b),
         (0, 0x33, 1)
     );
-    assert_eq!((field.2, field.3), (Some(0x22), Some(6)));
+    assert_eq!((field.2, field.3), (Some(0x22), Some(0x33)));
     assert_eq!(field.4, &[crate::audio::SOUND_MAC_LAND]);
 
     let runway = &outcomes[1];
@@ -2263,7 +2616,7 @@ fn mac_kind_one_phase_seven_and_high_xbld_redirect_match_across_layouts() {
         phase_seven_move.push((
             city.traffic_overlays().unwrap()[slot],
             city.text_overlay_at(40, 40),
-            city.text_overlay_at(41, 39),
+            city.text_overlay_at(40, 39),
             sounds,
         ));
 
@@ -2351,7 +2704,7 @@ fn mac_kind_one_phase_seven_and_high_xbld_redirect_match_across_layouts() {
             1,
             7,
             8,
-            41,
+            40,
             39,
             Some(0x22),
             Some(proxy),
@@ -2360,16 +2713,18 @@ fn mac_kind_one_phase_seven_and_high_xbld_redirect_match_across_layouts() {
     );
     assert_eq!(
         (
+            phase_seven_done[0].0.kind,
             phase_seven_done[0].0.lane,
             phase_seven_done[0].0.state,
             phase_seven_done[0].0.saved_b,
             phase_seven_done[0].1,
         ),
-        (0, 5, 1, Some(6))
+        (6, 0, 5, 1, Some(0x22))
     );
     assert!(phase_seven_done[0].2.is_empty());
     assert_eq!(
         (
+            high_xbld[0].0.kind,
             high_xbld[0].0.lane,
             high_xbld[0].0.state,
             high_xbld[0].0.saved_b,
@@ -2379,7 +2734,17 @@ fn mac_kind_one_phase_seven_and_high_xbld_redirect_match_across_layouts() {
             high_xbld[0].2,
             high_xbld[0].3,
         ),
-        (0, 5, 1, 44, 42, Some(6), high_xbld[0].3, high_xbld[0].3,)
+        (
+            6,
+            0,
+            5,
+            1,
+            44,
+            42,
+            Some(0x31),
+            high_xbld[0].3,
+            high_xbld[0].3,
+        )
     );
     assert!(high_xbld[0].4.is_empty());
 }
@@ -2658,6 +3023,64 @@ fn mac_sevenspires_first_actor_sweep_matches_native_xthg_snapshot() {
         "native isolated actor sweep leaves the complete XTXT plane unchanged"
     );
     assert_eq!(quickdraw.seed(), 984_943_658);
+}
+
+/// Optional saved-state CODE 6 comparison. The input and expected CGMS
+/// snapshots stay outside the repository; this pins a native first actor
+/// sweep or later chained sweep independently of the saved-file layout.
+#[test]
+fn mac_saved_actor_sweep_matches_native_snapshot_on_both_layouts() {
+    let (Ok(input), Ok(expected), Ok(qd_final), Ok(game_final)) = (
+        std::env::var("CITYGAME_MAC_ACTOR_CGMS_INPUT"),
+        std::env::var("CITYGAME_MAC_ACTOR_EXPECTED_CGMS"),
+        std::env::var("CITYGAME_MAC_ACTOR_EXPECTED_QD_FINAL"),
+        std::env::var("CITYGAME_MAC_ACTOR_EXPECTED_GAME_FINAL"),
+    ) else {
+        return;
+    };
+    let input = std::fs::read(input).expect("read actor-sweep input CGMS v4");
+    let expected = std::fs::read(expected).expect("read native post-sweep CGMS v4");
+    let parse_hex = |value: &str| {
+        u32::from_str_radix(value.trim_start_matches("0x"), 16).expect("hex RNG seed")
+    };
+    let qd_seed = std::env::var("CITYGAME_MAC_ACTOR_QD_SEED")
+        .map(|value| parse_hex(&value))
+        .unwrap_or(1);
+    let game_seed = std::env::var("CITYGAME_MAC_ACTOR_GAME_SEED")
+        .map(|value| parse_hex(&value))
+        .unwrap_or(1);
+    let qd_final = parse_hex(&qd_final);
+    let game_final = parse_hex(&game_final);
+    let xtxt_start = 20 + 5 * CITY_TILES;
+    let actor_start = 20 + 9 * CITY_TILES + 2 * CITY_TILES + CITY_TILES + 1_200 * 4;
+    let source_city = crate::city::city_from_cgms_v4_for_test(&input)
+        .expect("decode actor-sweep input CGMS v4");
+
+    for kind in [
+        crate::city::CityFileKind::MacCity,
+        crate::city::CityFileKind::WinSc2,
+    ] {
+        let mut city = source_city.clone();
+        city.kind = kind;
+        let mut quickdraw = crate::mac_random::MacToolboxRng::new(qd_seed);
+        let mut game_rng = crate::mac_random::MacGameLcgRng::new(game_seed);
+        tick_mac_actors_with_rng(&mut city, &mut quickdraw, &mut game_rng, 0);
+
+        let output = crate::city::cgms_v4_from_city_for_test(&city)
+            .expect("encode post-sweep CGMS v4");
+        assert_eq!(
+            &output[actor_start..],
+            &expected[actor_start..],
+            "XTHG for {kind:?}"
+        );
+        assert_eq!(
+            &output[xtxt_start..xtxt_start + CITY_TILES],
+            &expected[xtxt_start..xtxt_start + CITY_TILES],
+            "XTXT for {kind:?}"
+        );
+        assert_eq!(quickdraw.seed(), qd_final, "QuickDraw state for {kind:?}");
+        assert_eq!(game_rng.state(), game_final, "game-LCG state for {kind:?}");
+    }
 }
 
 /// Optional native CODE 2 differential through the second scheduled actor
@@ -3891,6 +4314,131 @@ fn mac_sevenspires_phase11_to18_actor36_to60_matches_native() {
         }
         assert_eq!(&phase18[20 + 11 * n..20 + 12 * n], expanded_xtrf);
         assert_eq!(quickdraw.seed(), 63_948_679);
+        if let Ok(root) = std::env::var("CITYGAME_MAC_SEVEN_SPIRES_LATE_PHASES") {
+            compare_mac_seven_spires_late_phases(city, quickdraw, game_rng, root.as_ref(), &planes);
+        }
+    }
+}
+
+fn compare_mac_seven_spires_late_phases(
+    mut city: City,
+    mut quickdraw: MacToolboxRng,
+    mut game_rng: MacGameLcgRng,
+    root: &std::path::Path,
+    planes: &[(&str, usize, usize)],
+) {
+    let kind = city.kind;
+    if kind.is_win95() {
+        // The preceding CGMS actor probe starts from a Mac state image.
+        // Restore its complete scan bank into the Win-layout runtime fields.
+        city.prepare_mac_fidelity_from_saved_city();
+        let counts = std::fs::read(root.join("phase-18/counters.bin")).unwrap();
+        for (slot, value) in counts.chunks_exact(4).enumerate() {
+            city.set_mac_rci_counter(slot, u32::from_be_bytes(value.try_into().unwrap()));
+        }
+    }
+    // CGMS carries serialized fields rather than City::load's live caches.
+    for offset in [0x1c, 0x50, 0x54, 0x58, 0x5c] {
+        let saved = city.mac_state_misc_u32_at(offset).unwrap();
+        city.set_mac_state_misc_u32_at(offset, saved);
+    }
+    let base_year = city.mac_state_misc_u32_at(0x0c).unwrap() as u16;
+    let elapsed = city.mac_state_misc_u32_at(0x10).unwrap();
+    let mut state = test_state(city);
+    state.game_clock = crate::game_clock::GameClock::from_city_age(base_year, elapsed);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    for phase in 19..=21 {
+        tick_mac_actors_with_rng(&mut state.city, &mut quickdraw, &mut game_rng, 0);
+        assert_eq!(quickdraw.seed(), 1_043_624_453, "phase {phase} entry");
+        state.mac_process_rng = quickdraw;
+        match phase {
+            19 => state.sim_calendar_day19_traffic(),
+            20 => state.sim_calendar_day20_water(),
+            21 => {
+                state.sim_calendar_day21_demand_and_graphs();
+            }
+            _ => unreachable!(),
+        }
+        quickdraw = state.mac_process_rng;
+        let data = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+        let phase_dir = root.join(format!("phase-{phase:02}"));
+        for &(name, offset, length) in planes {
+            let native = std::fs::read(phase_dir.join(format!("{name}.bin"))).unwrap();
+            let actual = &data[offset..offset + length];
+            assert_eq!(actual.len(), native.len(), "{name} plane length");
+            let differences = actual
+                .iter()
+                .zip(native)
+                .enumerate()
+                .filter_map(|(i, (&actual, expected))| {
+                    (actual != expected).then_some((i, actual, expected))
+                })
+                .take(8)
+                .collect::<Vec<_>>();
+            assert!(
+                differences.is_empty(),
+                "{kind:?} phase {phase} {name} differences (offset, Rust, original): {differences:?}"
+            );
+        }
+        let native_xtrf = std::fs::read(phase_dir.join("xtrf.bin")).unwrap();
+        assert_eq!(native_xtrf.len(), 64 * 64);
+        let traffic = &data[20 + 11 * CITY_TILES..20 + 12 * CITY_TILES];
+        let differences = traffic
+            .iter()
+            .enumerate()
+            .filter(|&(i, value)| {
+                let (x, y) = (i / CITY_HEIGHT, i % CITY_HEIGHT);
+                *value != native_xtrf[(x / 2) * 64 + y / 2]
+            })
+            .count();
+        assert_eq!(differences, 0, "{kind:?} phase {phase} XTRF differences");
+        let globals = std::fs::read(phase_dir.join("app_globals.bin")).unwrap();
+        let native_u32 =
+            |offset| u32::from_be_bytes(globals[offset..offset + 4].try_into().unwrap());
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(0x30),
+            Some(native_u32(0xf002))
+        );
+        assert_eq!(state.city.mac_water_service_summary(), native_u32(0xf00e));
+        if phase == 21 {
+            let expected = std::fs::read(phase_dir.join("cohort_lanes.bin")).unwrap();
+            let rust = state.city.misc_u32_values(0x7c, 60);
+            for (i, actual) in rust.into_iter().enumerate() {
+                let offset = (i % 3) * 0x1000 + (i / 3) * 4;
+                assert_eq!(
+                    actual,
+                    u32::from_be_bytes(expected[offset..offset + 4].try_into().unwrap()),
+                    "{kind:?} phase 21 cohort dword {i}"
+                );
+            }
+            for (saved, native) in [
+                (0x44, 0xf026),
+                (0x48, 0xf02e),
+                (0x4c, 0xf02a),
+                (0x50, 0xf036),
+                (0x54, 0xf03a),
+                (0x102c, 0xf01a),
+            ] {
+                assert_eq!(
+                    state.city.mac_state_misc_u32_at(saved),
+                    Some(native_u32(native)),
+                    "{kind:?} phase 21 MISC {saved:#x}"
+                );
+            }
+            assert_eq!(
+                state.city.mac_population_change_balances,
+                [native_u32(0xf01e), native_u32(0xf022)]
+            );
+            for (index, offset) in [0x60, 0x64, 0x68, 0x6c].into_iter().enumerate() {
+                assert_eq!(
+                    state.city.mac_state_misc_u32_at(offset).unwrap() as u8,
+                    globals[0xf084 + index],
+                    "{kind:?} phase 21 weather byte {index}"
+                );
+            }
+            assert_eq!(state.city.misc_i32_values(0x718, 3), [2000, 1743, 2000]);
+            assert_eq!(quickdraw.seed(), 347_739_176);
+        }
     }
 }
 
@@ -4614,6 +5162,344 @@ fn mac_kind_six_flagged_scan_destroys_object_candidate_footprint() {
 }
 
 #[test]
+fn mac_export247_object_candidate_ignites_dry_footprint_and_spends_render_draws() {
+    let mut city = blank_city_layout_fixture("mac-object-ignition.city", "Ignition");
+    let (x, y) = (40, 41);
+    for (column, row) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        city.set_terrain(x + column, y - row, 0);
+        city.set_building(x + column, y - row, 0x8c);
+        city.set_tile_bits(x + column, y - row, TileBits::new(0));
+    }
+    city.set_tile_bits(x + 1, y, TileBits::new(4));
+    city.set_text_overlay(x, y, 0x33);
+    city.set_traffic_density(x, y, 17);
+    let mut quickdraw = MacToolboxRng::new(1);
+    let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
+    let mut tick_count = 7;
+
+    assert!(mac_export247_candidate(
+        &mut city,
+        x,
+        y,
+        false,
+        &mut app_lfsr,
+        &mut quickdraw,
+        &mut tick_count,
+    ));
+    assert_eq!(city.text_overlay_at(x, y), Some(0xff));
+    assert_eq!(city.text_overlay_at(x + 1, y), Some(0));
+    assert_eq!(city.text_overlay_at(x, y - 1), Some(0xff));
+    assert_eq!(city.text_overlay_at(x + 1, y - 1), Some(0xff));
+    assert_eq!(city.traffic_density_at(x, y), Some(0));
+    let mut expected_rng = MacToolboxRng::new(1);
+    // Two render draws in each of 2³ visits, then one rubble draw per tile.
+    for _ in 0..20 {
+        expected_rng.random_u16();
+    }
+    assert_eq!(quickdraw.seed(), expected_rng.seed());
+    assert_eq!(tick_count, 31);
+}
+
+#[test]
+fn mac_export80_aligns_rotated_two_by_two_before_removal_on_both_layouts() {
+    let footprint = [(40, 41, 3), (40, 40, 0), (41, 41, 2), (41, 40, 1)];
+    for path in ["mac-fire-anchor.city", "mac-fire-anchor.sc2"] {
+        for rotation in 0..4 {
+            let mut city = blank_city_layout_fixture(path, "Fire anchor");
+            city.saved_rotation = rotation;
+            city.set_view_rotation((rotation + 1) & 3);
+            for (x, y, corner) in footprint {
+                city.set_terrain(x, y, 0);
+                city.set_building(x, y, 0x8c);
+                city.set_zone(x, y, (0x10 << ((rotation + corner) & 3)) | 2);
+            }
+            // The southeast hit lies off the export-81 anchor.
+            // The adjacent building is where the old unaligned walk extended.
+            city.set_building(42, 40, 0x70);
+            let mut rng = MacToolboxRng::new(1);
+            assert_eq!(
+                super::super::budget::mac_destroy_building_export80(
+                    &mut city, 41, 40, &mut rng, false,
+                ),
+                0
+            );
+            let mut expected = MacToolboxRng::new(1);
+            for (x, y, _) in footprint {
+                assert_eq!(
+                    city.building_at(x, y),
+                    (expected.random_u16() as u8 & 3) + 1,
+                    "layout {path}, rotation {rotation}, cell ({x},{y})"
+                );
+                assert_eq!(city.zone_at(x, y).unwrap().raw_bits(), 2);
+            }
+            assert_eq!(rng.seed(), expected.seed());
+            assert_eq!(city.building_at(42, 40), 0x70);
+        }
+    }
+}
+
+#[test]
+fn mac_hollywood_slot_and_status_follow_native_monster_constructor() {
+    for (seed, status, draws) in [(1, 0, 3), (5, 3, 4)] {
+        let mut city =
+            blank_city_layout_fixture("mac-hollywood-constructor.city", "Monster fixture");
+        let mut rng = MacToolboxRng::new(seed);
+        city.set_text_overlay(80, 52, 0xca);
+        city.set_mac_object_slot_record(
+            1,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: 8,
+                tile_x: 80,
+                tile_y: 52,
+                saved_a: 0x20,
+                ..Default::default()
+            },
+        );
+        city.set_mac_pending_action(8);
+        assert!(scenario_action::seed_monster(&mut city, (80, 52), &mut rng));
+        assert_eq!(city.mac_pending_action(), 0);
+        let actors = city.traffic_overlays().unwrap();
+        assert_eq!(actors[1].kind, 0);
+        assert_eq!(actors[2].kind, 5);
+        assert_eq!(actors[2].saved_a, 0);
+        assert_eq!(actors[2].saved_b, status);
+        assert_eq!(city.text_overlay_at(80, 52), Some(0xcb));
+        let mut expected = MacToolboxRng::new(seed);
+        for _ in 0..draws {
+            expected.random_u16();
+        }
+        assert_eq!(rng.seed(), expected.seed());
+        city.set_mac_pending_action(8);
+        assert!(!scenario_action::seed_monster(
+            &mut city,
+            (80, 52),
+            &mut rng
+        ));
+        assert_eq!(city.mac_pending_action(), 0);
+        assert_eq!(rng.seed(), expected.seed());
+    }
+}
+
+#[test]
+fn mac_oakland_resumes_saved_action_then_releases_calendar() {
+    for extension in ["city", "sc2"] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-oakland-mode-{}.{extension}",
+            std::process::id()
+        ));
+        let mut city = blank_city_layout_fixture(&path, "Oakland fixture");
+        city.prepare_mac_fidelity_from_saved_city();
+        city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        city.set_mac_pending_action(12);
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_loop_scheduler.load_scenario_point(12, (36, 48));
+        state.city.save(&path).unwrap();
+        state.load_city(&path, (1280, 800), 1.0).unwrap();
+        assert_eq!(state.city.mac_pending_action(), 12);
+        assert_eq!(state.mac_loop_scheduler.pending_action_point, None);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (36, 48));
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.mac_process_rng = MacToolboxRng::new(0);
+        let clock = state.game_clock;
+
+        assert_eq!(state.advance_mac_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.game_clock, clock);
+        assert_eq!(state.mac_loop_scheduler.dispatch_counter, 0);
+        let mut fire_count = 0;
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                if state.city.text_overlay_at(x, y) == Some(0xff) {
+                    state.city.set_tile_bits(x, y, TileBits::new(4));
+                    fire_count += 1;
+                }
+            }
+        }
+        assert_eq!(fire_count, 65);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (39, 52));
+        // A service proxy must survive reopen and be recalled on completion.
+        state.city.set_text_overlay(0, 0, 0xca);
+        state.city.set_mac_object_slot_record(
+            1,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: 8,
+                ..Default::default()
+            },
+        );
+        state.city.save(&path).unwrap();
+        state.load_city(&path, (1280, 800), 1.0).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(2)
+        );
+        assert_eq!(state.city.traffic_overlays().unwrap()[1].kind, 8);
+
+        let clock = state.game_clock;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        state.mac_loop_scheduler.actor_deadline = u32::MAX;
+        let frame = Duration::from_secs(1);
+        assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        state.city.set_mac_object_slot_record(
+            39,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: 6,
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        state
+            .city
+            .set_mac_object_slot_record(39, Default::default());
+        assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.city.text_overlay_at(0, 0), Some(0));
+        assert_eq!(state.city.traffic_overlays().unwrap()[1].kind, 0);
+        assert_eq!(state.game_clock, clock);
+        assert_eq!(state.advance_mac_frame_simulation(frame).days, 1);
+    }
+}
+
+#[test]
+fn mac_oakland_selector_five_matches_seeded_native_damage_and_actor() {
+    let mut city = blank_city_layout_fixture("mac-oakland-selector-five.city", "Burning building");
+    let hit = (45, 40);
+    let footprint = [(44, 41, 3), (44, 40, 0), (45, 41, 2), (45, 40, 1)];
+    for (x, y, corner) in footprint {
+        city.set_terrain(x, y, 0);
+        city.set_building(x, y, 0x8c);
+        city.set_zone(x, y, (0x10 << corner) | 2);
+        city.set_tile_bits(x, y, TileBits::new(0));
+    }
+    city.set_text_overlay(hit.0, hit.1, 0xff);
+    city.set_mac_state_misc_u32_at(0x1044, 12);
+    city.set_mac_state_misc_u32_at(0x1048, 0xff);
+    let mut rng = MacToolboxRng::new(12);
+    assert!(!scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0).complete);
+    assert_eq!(rng.seed(), 314_341_360);
+    assert_eq!(city.misc_u32_at(0x1048), Some(0xff));
+    for ((x, y, _), rubble) in footprint.into_iter().zip([2, 2, 3, 1]) {
+        assert_eq!(city.building_at(x, y), rubble);
+        assert_eq!(city.zone_at(x, y).unwrap().raw_bits(), 2);
+        assert_eq!(
+            city.text_overlay_at(x, y),
+            Some(if (x, y) == hit { 0xca } else { 0xff })
+        );
+    }
+    assert_eq!(
+        city.traffic_overlays().unwrap()[1].to_bytes(),
+        [6, 0, 0, 45, 40, 0, 8, 8, 0, 0, 0, 1],
+    );
+}
+
+#[test]
+#[ignore = "requires the local Oakland data fork and CODE 10 replay checkpoint"]
+fn mac_oakland_spiral_matches_native_start_planes() {
+    let path = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_OAKLAND").unwrap());
+    let native =
+        std::fs::read(std::env::var_os("CITYGAME_MAC_OAKLAND_CHECKPOINT").unwrap()).unwrap();
+    let start = crate::mac_scenario::MacScenario::read(&path).unwrap().start;
+    assert_eq!(start.action, 12);
+    let mut city = City::load(path).unwrap();
+    // Seed the original Mac worker's linear row order. The shared CityGame
+    // 64x64 codec currently gives the saved XTRF plane a different order.
+    let encoded = &city
+        .chunks
+        .iter()
+        .find(|chunk| chunk.name == "XTRF")
+        .unwrap()
+        .data;
+    let saved_xtrf = crate::city::sc2_rle_decode(encoded).unwrap();
+    assert_eq!(saved_xtrf.len(), 64 * 64);
+    let mut native_density = Vec::with_capacity(128 * 128);
+    for x in 0..128 {
+        for y in 0..128 {
+            native_density.push(saved_xtrf[(x / 2) * 64 + y / 2]);
+        }
+    }
+    city.sync_traffic_from_slice(&native_density);
+    let mut quickdraw = MacToolboxRng::new(1);
+    let mut tick_count = 0;
+    let (x, y) = start.point;
+    let mut point = (i16::from(x), i16::from(y));
+    let accepted =
+        scenario_action::seed_oakland(&mut city, &mut point, &mut quickdraw, &mut tick_count);
+    assert_eq!(accepted, 65);
+    assert_eq!(point, (39, 52));
+    assert_eq!(quickdraw.seed(), 1);
+    assert_eq!(tick_count, 0);
+    let mut result = Vec::with_capacity(native.len());
+    for read_tile in [
+        (|city: &City, x, y| city.text_overlay_at(x, y).unwrap()) as fn(&City, usize, usize) -> u8,
+        City::building_at,
+        |city, x, y| city.tile_bits_at(x, y).unwrap().raw_bits(),
+    ] {
+        for x in 0..128 {
+            for y in 0..128 {
+                result.push(read_tile(&city, x, y));
+            }
+        }
+    }
+    for x in (0..128).step_by(2) {
+        for y in (0..128).step_by(2) {
+            result.push(city.traffic_density_at(x, y).unwrap());
+        }
+    }
+    assert_eq!(result.len(), native.len());
+    for (name, offset, side) in [
+        ("XTXT", 0, 128),
+        ("XBLD", 16_384, 128),
+        ("XBIT", 32_768, 128),
+        ("XTRF", 49_152, 64),
+    ] {
+        let end = offset + side * side;
+        let differences: Vec<_> = result[offset..end]
+            .iter()
+            .zip(&native[offset..end])
+            .enumerate()
+            .filter(|(_, (rust, mac))| rust != mac)
+            .collect();
+        assert!(
+            differences.is_empty(),
+            "Oakland {name}: {:?}",
+            &differences[..differences.len().min(8)]
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires locally owned Win95 Oakland scenario and Mac replay checkpoint"]
+fn win95_oakland_spiral_matches_mac_opening_map() {
+    let path = std::env::var_os("CITYGAME_WIN95_OAKLAND").unwrap();
+    let native =
+        std::fs::read(std::env::var_os("CITYGAME_MAC_OAKLAND_CHECKPOINT").unwrap()).unwrap();
+    let city = City::load(path).unwrap();
+    let goals = scenario_goals_for_city(&city).unwrap();
+    assert_eq!(goals.disaster_type, 12);
+    assert_eq!((goals.disaster_x, goals.disaster_y), (36, 48));
+    let mut state = test_state(city);
+    state.auto_goto_enabled = true;
+    assert_eq!(state.seed_pe_firestorm_spiral(36, 48), 65);
+    assert_eq!(state.take_pending_disaster_auto_goto(), Some((39, 52)));
+    for x in 0..128 {
+        for y in 0..128 {
+            let index = x * 128 + y;
+            assert_eq!(state.city.text_overlay_at(x, y), Some(native[index]));
+            assert_eq!(state.city.building_at(x, y), native[16_384 + index]);
+            assert_eq!(
+                state.city.tile_bits_at(x, y).unwrap().raw_bits(),
+                native[32_768 + index]
+            );
+        }
+    }
+}
+
+#[test]
 fn mac_kind_six_export247_object_class_preserves_cardinal_portal_tiles() {
     let mut city = City::new_blank(
         std::path::Path::new("/tmp/mac-kind-six-portal-object-candidate.sc2"),
@@ -4635,7 +5521,8 @@ fn mac_kind_six_export247_object_class_preserves_cardinal_portal_tiles() {
         y,
         false,
         &mut app_lfsr,
-        &mut quickdraw
+        &mut quickdraw,
+        &mut 0
     ));
 
     assert_eq!(city.building_at(x, y), 0x3f);
@@ -4665,7 +5552,8 @@ fn mac_kind_six_rubble_proxy_uses_app_lfsr_and_preserves_xtxt_and_density() {
         y,
         false,
         &mut app_lfsr,
-        &mut quickdraw
+        &mut quickdraw,
+        &mut 0
     ));
 
     assert_eq!(city.building_at(x, y), 1);
@@ -4696,7 +5584,8 @@ fn mac_export247_option_zero_requires_developed_xbld_on_both_layouts() {
             y,
             true,
             &mut app_lfsr,
-            &mut quickdraw
+            &mut quickdraw,
+            &mut 0
         ));
         assert_eq!(city.text_overlay_at(x, y), Some(0));
         assert_eq!(city.traffic_density_at(x, y), Some(19));
@@ -4708,7 +5597,8 @@ fn mac_export247_option_zero_requires_developed_xbld_on_both_layouts() {
             y,
             true,
             &mut app_lfsr,
-            &mut quickdraw
+            &mut quickdraw,
+            &mut 0
         ));
         assert_eq!(city.text_overlay_at(x, y), Some(0xff));
         assert_eq!(city.traffic_density_at(x, y), Some(0));
@@ -4742,7 +5632,8 @@ fn mac_kind_six_fa_proxy_decrements_class_counter_then_stamps_candidate() {
             y,
             false,
             &mut app_lfsr,
-            &mut quickdraw
+            &mut quickdraw,
+            &mut 0
         ));
 
         assert_eq!(city.mac_state_misc_u32_at(counter_offset), Some(6));
@@ -4778,7 +5669,8 @@ fn mac_kind_six_export247_rejects_actor_and_reserved_xtxt_classes_unchanged() {
             y,
             false,
             &mut app_lfsr,
-            &mut quickdraw
+            &mut quickdraw,
+            &mut 0
         ));
 
         assert_eq!(city.building_at(x, y), 0x06);
@@ -5319,4 +6211,3602 @@ fn mac_kind_three_with_xbit_power_stays_kind_three() {
     assert_eq!(city.traffic_overlays().unwrap()[slot].kind, 3);
     assert_eq!(city.mac_kind3_actor_counter, 1);
     assert_eq!(quickdraw.seed(), expected.seed());
+}
+
+#[test]
+#[ignore = "requires local Charleston and original CODE 10 checkpoints"]
+fn mac_charleston_matches_native_opening_and_first_pass() {
+    let source =
+        std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SCENARIO_FIXTURES").unwrap())
+            .join("Charleston");
+    let checkpoints =
+        std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_CHARLESTON_CHECKPOINTS").unwrap());
+    let mut city = City::load(&source).unwrap();
+    assert_eq!(city.saved_rotation(), 3);
+    city.initialize_mac_scenario(
+        crate::mac_scenario::MacScenario::read(&source)
+            .unwrap()
+            .start,
+    );
+
+    // Compare the Mac simulation plane in native row order. The shared
+    // saved XTRF codec's current layout differs from the Mac row table.
+    let encoded = &city
+        .chunks
+        .iter()
+        .find(|chunk| chunk.name == "XTRF")
+        .unwrap()
+        .data;
+    let saved_xtrf = crate::city::sc2_rle_decode(encoded).unwrap();
+    let mut density = Vec::with_capacity(128 * 128);
+    for x in 0..128 {
+        for y in 0..128 {
+            density.push(saved_xtrf[(x / 2) * 64 + y / 2]);
+        }
+    }
+    city.sync_traffic_from_slice(&density);
+
+    let compare = |city: &City, rotation: u8, checkpoint: &str| {
+        let bytes =
+            std::fs::read(checkpoints.join(format!("rotation-{rotation}-{checkpoint}.bin")))
+                .unwrap();
+        let mut base = 0;
+        let mut mismatches = Vec::new();
+        for (name, side, read) in [
+            (
+                "XTXT",
+                128,
+                (|city: &City, x, y| city.text_overlay_at(x, y).unwrap())
+                    as fn(&City, usize, usize) -> u8,
+            ),
+            ("XBLD", 128, City::building_at),
+            ("XBIT", 128, |city, x, y| {
+                city.tile_bits_at(x, y).unwrap().raw_bits()
+            }),
+            ("XTRF", 64, |city, x, y| {
+                city.traffic_density_at(2 * x, 2 * y).unwrap()
+            }),
+            ("XZON", 128, |city, x, y| {
+                city.zone_at(x, y).unwrap().raw_bits()
+            }),
+        ] {
+            let mut count = 0;
+            let mut first = Vec::new();
+            for x in 0..side {
+                for y in 0..side {
+                    let expected = bytes[base + x * side + y];
+                    let actual = read(city, x, y);
+                    if expected != actual {
+                        count += 1;
+                        if first.len() < 8 {
+                            first.push((x, y, expected, actual));
+                        }
+                    }
+                }
+            }
+            if count != 0 {
+                mismatches.push((name, count, first));
+            }
+            base += side * side;
+        }
+        assert!(
+            mismatches.is_empty(),
+            "rotation {rotation} {checkpoint} mismatches {mismatches:?}"
+        );
+    };
+    for (rotation, opening, first) in [
+        (2, (0xe6a9, 971_307_217), (0xd6a7, 685_428_651)),
+        (3, (0x188d, 832_633_821), (0xc468, 1_168_120_094)),
+    ] {
+        let mut city = city.clone();
+        city.saved_rotation = rotation;
+        let mut rng = MacToolboxRng::new(1);
+        let mut now = 0;
+        let mut lfsr = hurricane::start(&mut city, &mut rng, &mut now);
+        assert_eq!((lfsr, rng.seed()), opening, "rotation {rotation}");
+        compare(&city, rotation, "opening");
+
+        let pass = scenario_action::advance_action(&mut city, &mut rng, &mut now, &mut lfsr);
+        assert!(!pass.complete);
+        assert_eq!((lfsr, rng.seed()), first, "rotation {rotation}");
+        assert_eq!(city.misc_u32_at(hurricane::FLOOD_DURATION), Some(59));
+        assert_eq!(city.misc_u32_at(hurricane::WIND_DURATION), Some(49));
+        compare(&city, rotation, "first");
+    }
+}
+
+#[test]
+fn mac_hurricane_releases_calendar_on_the_pass_after_expiry() {
+    let mut city = blank_city_layout_fixture("mac-hurricane-expiry.city", "Flood");
+    city.set_mac_state_misc_low_word_at(hurricane::WIND_DURATION, 49);
+    city.set_text_overlay(0, 0, 0xfc);
+    scenario_action::begin_action(&mut city, scenario_action::HURRICANE_ACTION);
+
+    // Match the controlled native expiry fixture. Both RNG streams stay zero.
+    let mut rng = MacToolboxRng::new(0);
+    let mut now = 0;
+    let mut lfsr = 0;
+    let first = scenario_action::advance_action(&mut city, &mut rng, &mut now, &mut lfsr);
+    assert!(!first.complete);
+    assert_eq!(city.text_overlay_at(0, 0), Some(0));
+    assert_eq!(city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET), Some(2));
+
+    let second = scenario_action::advance_action(&mut city, &mut rng, &mut now, &mut lfsr);
+    assert!(second.complete);
+    assert_eq!(
+        city.mac_state_misc_u32_at(hurricane::WIND_DURATION),
+        Some(49)
+    );
+    assert_eq!(city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET), Some(1));
+}
+
+#[test]
+fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts() {
+    for path in ["manual-fire.city", "manual-fire.sc2"] {
+        let city = blank_city_layout_fixture(path, "Fire fixture");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.no_disasters_enabled = true;
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.city.set_mac_kind2_hotspot(64, 64);
+        state.city.set_building(51, 52, 0x70); // First cell north of the menu point.
+        state.city.set_building(53, 77, 0x70); // First cell north of the worker point.
+        state.city.set_traffic_density(53, 77, 91);
+
+        let effect = state
+            .apply_state_app_command(&AppCommand::StartDisaster(DisasterKind::Fire))
+            .unwrap();
+        assert_eq!(effect.disaster_log, Some((DisasterKind::Fire, true)));
+        assert!(effect.auto_goto_tile.is_none());
+        assert_eq!(state.mac_process_rng.seed(), 282475249);
+        assert_eq!(state.city.mac_pending_action(), 1);
+        assert_eq!(state.city.text_overlay_at(53, 77), Some(0));
+
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.mac_process_rng.seed(), 1144108930); // Includes one immediate marker visit.
+        assert_eq!(state.city.text_overlay_at(51, 52), Some(0));
+        assert_eq!(state.city.text_overlay_at(53, 77), Some(0xff));
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (53, 77));
+        assert_eq!(state.city.traffic_density_at(53, 77), Some(0));
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.city.pe_w_trigger_disaster, 0);
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_DISASTER)
+        );
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        let reopened = state.load_city(&saved, (1280, 800), 1.0);
+        std::fs::remove_file(saved).unwrap();
+        reopened.unwrap();
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.city.text_overlay_at(53, 77), Some(0xff));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_DISASTER)
+        );
+
+        state.city.set_text_overlay(53, 77, 0);
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(100))
+                .days,
+            0
+        );
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_GAMEPLAY)
+        );
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(100))
+                .days,
+            1
+        );
+    }
+
+    for building in [5, 6] {
+        let city = blank_city_layout_fixture("manual-fire-fallback.city", "Fire fallback");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.city.set_building(0, 0, building);
+        assert!(state.start_disaster(DisasterKind::Fire));
+        let menu_point = state.mac_loop_scheduler.disaster_point;
+        state.advance_frame_simulation(Duration::ZERO);
+        let expected_point = if building == 6 { (0, 0) } else { menu_point };
+        assert_eq!(state.mac_loop_scheduler.disaster_point, expected_point);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(
+            scenario_action::mac_scenario_action_active(&state.city),
+            building == 6
+        );
+        assert_eq!(
+            state.city.text_overlay_at(0, 0),
+            Some(if building == 6 { 0xff } else { 0 })
+        );
+        assert_eq!(
+            state.mac_process_rng.seed(),
+            if building == 6 { 1144108930 } else { 984943658 }
+        );
+    }
+}
+
+#[test]
+fn mac_manual_monster_clamps_the_signed_menu_point_and_prevents_overlapping_actions() {
+    for path in ["manual-monster.city", "manual-monster.sc2"] {
+        let city = blank_city_layout_fixture(path, "Monster fixture");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.no_disasters_enabled = true;
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.city.set_mac_kind2_hotspot(3, 126);
+        state.hover_tile = Some((42, 42));
+
+        assert!(state.start_disaster(DisasterKind::Monster));
+        assert_eq!(
+            state.mac_loop_scheduler.pending_action_point,
+            Some((-5, 128))
+        );
+        state.advance_frame_simulation(Duration::ZERO);
+
+        let actor = state.city.traffic_overlays().unwrap()[1];
+        assert_eq!(
+            (actor.kind, actor.lane, actor.tile_x, actor.tile_y),
+            (5, 2, 0, 127)
+        );
+        assert_eq!((actor.target_x, actor.target_y, actor.saved_b), (89, 42, 2));
+        assert_eq!(state.city.text_overlay_at(0, 127), Some(0xca));
+        assert_eq!(state.city.text_overlay_at(42, 42), Some(0));
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_process_rng.seed(), 470211272);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+
+        assert!(!state.start_disaster(DisasterKind::Fire));
+        assert_eq!(state.mac_process_rng.seed(), 470211272);
+    }
+}
+
+#[test]
+fn mac_manual_hurricane_dispatches_without_a_scenario_point() {
+    let city = blank_city_layout_fixture("manual-hurricane.sc2", "Hurricane fixture");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_process_rng = MacToolboxRng::new(1);
+    for y in 0..128 {
+        state.city.set_building(64, y, 6);
+    }
+
+    assert!(state.start_disaster(DisasterKind::Hurricane));
+    assert_eq!(state.mac_process_rng.seed(), 1);
+    assert!(state.mac_loop_scheduler.pending_action_point.is_none());
+    state.advance_frame_simulation(Duration::ZERO);
+
+    assert_eq!(state.city.mac_pending_action(), 0);
+    assert!(scenario_action::mac_scenario_action_active(&state.city));
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(hurricane::WIND_DURATION),
+        Some(49)
+    );
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+        Some(59)
+    );
+}
+
+#[test]
+fn mac_manual_flood_opener_matches_shoreline_order_and_bounds_map_edges() {
+    let surrounding = [(40, 41), (41, 40), (42, 41), (41, 42)];
+    for wet in [&surrounding[2..], &surrounding[..2]] {
+        let mut city = blank_city_layout_fixture("manual-flood-shore.city", "Flood shoreline");
+        city.set_terrain(41, 41, 0x20);
+        city.set_terrain(42, 40, 0x2f);
+        for (x, y) in surrounding {
+            city.set_traffic_density(x, y, 91);
+        }
+        for &(x, y) in wet {
+            city.set_tile_bits(x, y, TileBits::new(4));
+        }
+        let mut point = (40, 40);
+        assert!(hurricane::start_flood(&mut city, &mut point));
+        assert_eq!(point, (41, 41));
+        assert_eq!(city.text_overlay_at(41, 41), Some(0));
+        for (x, y) in surrounding {
+            let marker = if wet == &surrounding[2..] { 0xfc } else { 0 };
+            assert_eq!(city.text_overlay_at(x, y), Some(marker));
+            assert_eq!(city.traffic_density_at(x, y), Some(91));
+        }
+        assert_eq!(
+            city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(60)
+        );
+    }
+
+    let mut city = blank_city_layout_fixture("manual-flood-edge.city", "Flood edge");
+    city.set_terrain(127, 41, 0x20);
+    city.set_tile_bits(127, 40, TileBits::new(4));
+    let mut point = (127, 41);
+    assert!(hurricane::start_flood(&mut city, &mut point));
+    assert_eq!(point, (127, 41));
+    assert!(
+        (0..CITY_WIDTH).all(|x| (0..CITY_HEIGHT).all(|y| city.text_overlay_at(x, y) == Some(0)))
+    );
+
+    // Radius ties select the lower X, then lower Y. A candidate 128 cells
+    // from the signed origin lies beyond the original search.
+    let mut city = blank_city_layout_fixture("manual-flood-order.city", "Flood ordering");
+    city.set_terrain(35, 37, 0x20);
+    city.set_terrain(35, 43, 0x20);
+    city.set_terrain(36, 35, 0x20);
+    let mut point = (40, 40);
+    assert!(hurricane::start_flood(&mut city, &mut point));
+    assert_eq!(point, (35, 37));
+    assert_eq!(city.text_overlay_at(36, 37), Some(0xfc));
+    assert_eq!(city.text_overlay_at(36, 43), Some(0));
+    assert_eq!(city.text_overlay_at(37, 35), Some(0));
+
+    city.set_terrain(0, 0, 0x10);
+    for origin in [(164, 40), (i16::MIN, i16::MIN)] {
+        let mut point = origin;
+        assert!(!hurricane::start_flood(&mut city, &mut point));
+        assert_eq!(point, origin);
+    }
+}
+
+#[test]
+fn mac_manual_flood_runs_fallback_action_and_reopens_in_both_layouts() {
+    for path in ["manual-flood.city", "manual-flood.sc2"] {
+        let city = blank_city_layout_fixture(path, "Flood fixture");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.no_disasters_enabled = true;
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.city.set_mac_kind2_hotspot(64, 64);
+        state.hover_tile = Some((12, 34));
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                state.city.set_terrain(x, y, 0x10);
+            }
+        }
+        assert!(state.start_disaster(DisasterKind::Flood));
+        assert_eq!(state.city.mac_pending_action(), 2);
+        assert_eq!(
+            state.mac_loop_scheduler.pending_action_point,
+            Some((64, 64))
+        );
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (64, 64));
+        assert_eq!(state.mac_process_rng.seed(), 1);
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+        assert!(state.take_pending_disaster_extra_sounds().is_empty());
+
+        state.city.set_terrain(0, 0, 0);
+        state.city.set_terrain(0, 1, 0);
+        state.city.set_tile_bits(0, 0, TileBits::new(4));
+        state.city.set_building(0, 0, 6);
+        state.city.set_traffic_density(0, 1, 91);
+        let effect = state
+            .apply_state_app_command(&AppCommand::StartDisaster(DisasterKind::Flood))
+            .unwrap();
+        assert_eq!(effect.disaster_log, Some((DisasterKind::Flood, true)));
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.city.pe_w_trigger_disaster, 0);
+        assert_eq!(state.city.text_overlay_at(0, 0), Some(0xfc));
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (0, 0));
+        assert_eq!(state.city.text_overlay_at(0, 1), Some(0xfc));
+        assert_eq!(state.city.traffic_density_at(0, 1), Some(0));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(59)
+        );
+        assert_eq!(state.mac_process_rng.seed(), 1_622_650_073);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            vec![PlacementSound::Flood]
+        );
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_DISASTER)
+        );
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(59)
+        );
+        assert_eq!(state.mac_process_rng.seed(), 1_622_650_073);
+
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        let frame = Duration::from_millis(17);
+        // Original CODE 10 returns to mode 1 after 56 passes, including
+        // the first pass immediately after opening.
+        for _ in 1..56 {
+            assert!(scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(state.advance_frame_simulation(frame).days, 0);
+        }
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.city.text_overlay_at(0, 0), Some(0));
+        assert_eq!(state.city.text_overlay_at(0, 1), Some(0));
+        assert_eq!(state.mac_process_rng.seed(), 281_725_226);
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(4)
+        );
+        assert_eq!(state.advance_frame_simulation(frame).days, 1);
+    }
+}
+
+#[test]
+fn mac_manual_tornado_preserves_actor_until_ordinary_sweep_on_both_layouts() {
+    let opener = [15, 1, 0, 50, 96, 11, 8, 8, 42, 2, 0x22, 0x5a];
+    let first_visit = [15, 1, 0, 51, 95, 11, 8, 8, 42, 2, 0, 0x5a];
+    for path in ["manual-tornado.city", "manual-tornado.sc2"] {
+        let city = blank_city_layout_fixture(path, "Tornado fixture");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.no_disasters_enabled = true;
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.mac_loop_scheduler.actor_deadline = 31;
+        state.hover_tile = Some((12, 34));
+        state.city.set_altm_word(50, 96, 0x02ab);
+        state.city.set_text_overlay(50, 96, 0x22);
+        state.city.mac_object_slot_records_mut()[1].saved_b = 0x5a;
+        let pe_crt = state.pe_process_crt_seed();
+        let pe_lfsr = state.pe_process_lfsr_state();
+
+        let effect = state
+            .apply_state_app_command(&AppCommand::StartDisaster(DisasterKind::Tornado))
+            .unwrap();
+        assert_eq!(effect.disaster_log, Some((DisasterKind::Tornado, true)));
+        assert_eq!(state.city.mac_pending_action(), 7);
+        assert_eq!(
+            state.mac_loop_scheduler.pending_action_point,
+            Some((50, 96))
+        );
+        assert_eq!(state.mac_process_rng.seed(), 282_475_249);
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.city.pe_w_trigger_disaster, 0);
+        assert_eq!(state.pe_process_crt_seed(), pe_crt);
+        assert_eq!(state.pe_process_lfsr_state(), pe_lfsr);
+        assert_eq!(state.city.traffic_overlays().unwrap()[1].to_bytes(), opener);
+        assert_eq!(state.city.text_overlay_at(50, 96), Some(0xca));
+        assert_eq!(state.city.mac_tornado_actor_counter, 1);
+        assert_eq!(state.mac_process_rng.seed(), 1_144_108_930);
+        assert_eq!(state.mac_loop_scheduler.actor_deadline, 31);
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.city.traffic_overlays().unwrap()[1].to_bytes(), opener);
+
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(517))
+                .days,
+            0
+        );
+        assert_eq!(state.city.traffic_overlays().unwrap()[1].to_bytes(), opener);
+        assert_eq!(state.mac_process_rng.seed(), 1_144_108_930);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            0
+        );
+        assert_eq!(
+            state.city.traffic_overlays().unwrap()[1].to_bytes(),
+            first_visit
+        );
+        assert_eq!(state.city.text_overlay_at(50, 96), Some(0x22));
+        assert_eq!(state.city.text_overlay_at(51, 95), Some(0xca));
+        assert_eq!(state.mac_process_rng.seed(), 823_564_440);
+
+        let frame = Duration::from_millis(517);
+        for _ in 1..122 {
+            assert!(scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(state.advance_frame_simulation(frame).days, 0);
+        }
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(
+            state.city.traffic_overlays().unwrap()[1].to_bytes(),
+            [0, 1, 0, 127, 16, 11, 8, 8, 42, 2, 0, 0x5a]
+        );
+        assert_eq!(state.mac_process_rng.seed(), 2_014_885_176);
+        assert_eq!(state.city.text_overlay_at(127, 16), Some(0xca));
+        assert_eq!(state.advance_frame_simulation(frame).days, 1);
+    }
+}
+
+#[test]
+fn mac_tornado_constructor_checks_counter_and_slot_then_clears_collision() {
+    let mut city = blank_city_layout_fixture("manual-tornado-gates.city", "Tornado gates");
+    let mut rng = MacToolboxRng::new(282_475_249);
+    city.set_altm_word(50, 96, 0x02ab);
+    city.set_text_overlay(50, 96, 0xcb);
+    city.mac_object_slot_records_mut()[1].saved_b = 0x5a;
+    city.set_mac_object_slot_record(
+        2,
+        crate::win95_overlay::Win95OverlayRecord {
+            kind: 8,
+            tile_x: 50,
+            tile_y: 96,
+            saved_a: 0x22,
+            ..Default::default()
+        },
+    );
+
+    city.mac_tornado_actor_counter = 1;
+    assert!(!scenario_action::seed_tornado(
+        &mut city,
+        (50, 96),
+        &mut rng
+    ));
+    assert_eq!(rng.seed(), 282_475_249);
+    assert_eq!(city.text_overlay_at(50, 96), Some(0xcb));
+
+    city.mac_tornado_actor_counter = 0;
+    let mut full = city.clone();
+    for record in &mut full.mac_object_slot_records_mut()[1..] {
+        record.kind = 2;
+    }
+    assert!(!scenario_action::seed_tornado(
+        &mut full,
+        (50, 96),
+        &mut rng
+    ));
+    assert_eq!(rng.seed(), 282_475_249);
+    assert_eq!(full.text_overlay_at(50, 96), Some(0xcb));
+
+    assert!(scenario_action::seed_tornado(&mut city, (50, 96), &mut rng));
+    let records = city.traffic_overlays().unwrap();
+    assert_eq!(records[2].kind, 0);
+    assert_eq!(
+        records[1].to_bytes(),
+        [15, 1, 0, 50, 96, 11, 8, 8, 42, 2, 0, 0x5a]
+    );
+    assert_eq!(city.text_overlay_at(50, 96), Some(0xca));
+}
+
+#[test]
+fn mac_phase24_tornado_replaces_pending_and_starts_in_the_same_frame() {
+    for path in ["mac-monthly-tornado.city", "mac-monthly-tornado.sc2"] {
+        for (trend, seed, point, terminal_seed, record) in [
+            (
+                WEATHER_TREND_TORNADO,
+                1,
+                (96, 24),
+                470_211_272,
+                [15, 2, 0, 96, 24, 11, 8, 8, 2, 72, 0x22, 0x5a],
+            ),
+            (
+                WEATHER_TREND_WINDY,
+                69,
+                (20, 15),
+                1_807_462_820,
+                [15, 7, 0, 20, 15, 11, 8, 8, 59, 36, 0x22, 0x5a],
+            ),
+        ] {
+            let mut state = mac_phase24_fixture(path, trend, seed);
+            let (x, y) = point;
+            state.city.set_altm_word(x, y, 0x02ab);
+            state.city.set_text_overlay(x, y, 0x22);
+            state.city.mac_object_slot_records_mut()[1].saved_b = 0x5a;
+
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                1
+            );
+
+            assert_eq!(state.game_clock.day(), 24);
+            assert_eq!(state.city.mac_pending_action(), 0, "{path}, seed {seed}");
+            assert_eq!(state.city.traffic_overlays().unwrap()[1].to_bytes(), record);
+            assert_eq!(state.city.text_overlay_at(x, y), Some(0xca));
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                terminal_seed,
+                "{path}, seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mac_phase24_miss_preserves_pending_and_disabled_recreation_still_draws() {
+    for path in ["mac-monthly-miss.city", "mac-monthly-miss.sc2"] {
+        for (trend, seed, disabled, terminal_seed) in [
+            (WEATHER_TREND_TORNADO, 3, false, 50_421),
+            (WEATHER_TREND_WINDY, 69, true, 1_159_683),
+        ] {
+            let mut state = mac_phase24_fixture(path, trend, seed);
+            state.no_disasters_enabled = disabled;
+
+            state.handle_simulation_day_advanced(1910, 1, 24);
+
+            assert_eq!(state.city.mac_pending_action(), 11);
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point,
+                Some((13, 14))
+            );
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                terminal_seed,
+                "{path}, seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mac_phase24_toxic_spill_matches_native_scan_and_miss_point_write() {
+    for path in ["mac-monthly-toxic.city", "mac-monthly-toxic.sc2"] {
+        for populated in [false, true] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 20);
+            // A previous action has left a Point without a queued point write.
+            state.mac_loop_scheduler.disaster_point = (13, 14);
+            state.mac_loop_scheduler.pending_action_point = None;
+            if populated {
+                let mut pollution = vec![0; CITY_TILES];
+                pollution[density_map_index(26, 38)] = 0xb4;
+                pollution[density_map_index(38, 26)] = 0xb4;
+                state.city.sync_pollution_density_from_slice(&pollution);
+            }
+
+            state.handle_simulation_day_advanced(1910, 1, 24);
+
+            let (selector, point) = if populated {
+                (4, (21, 33))
+            } else {
+                (11, (-1, 14))
+            };
+            assert_eq!(state.city.mac_pending_action(), selector);
+            assert_eq!(state.mac_loop_scheduler.pending_action_point, Some(point));
+            assert_eq!(state.mac_loop_scheduler.disaster_point, point);
+            assert_eq!(state.mac_process_rng.seed(), 1_354_537_686);
+        }
+    }
+}
+
+fn mac_phase24_fixture(path: &str, trend: u8, seed: u32) -> ViewerState {
+    let city = blank_city_layout_fixture(path, "Mac phase 24");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.no_disasters_enabled = false;
+    state.game_clock = GameClock::new_with_day(1910, 1, 23);
+    state.traffic.set_speed(GameSpeed::Cheetah);
+    state.mac_loop_scheduler.actor_deadline = 31;
+    state.mac_process_rng = MacToolboxRng::new(seed);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_YEAR_FOUNDED_OFFSET, 1900);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, CITY_DIFFICULTY_HARD);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, u32::from(trend));
+    // Keep an unrelated terrain action queued when the monthly proposal misses.
+    state.city.set_mac_pending_action(11);
+    state.mac_loop_scheduler.pending_action_point = Some((13, 14));
+    if trend == WEATHER_TREND_WINDY {
+        state
+            .city
+            .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 8000);
+        for tile in [0xd2, 0xd3, 0xd1, 0xd6] {
+            state.city.set_mac_state_misc_u32_at(0x01f0 + tile * 4, 9);
+        }
+        state.city.prepare_mac_fidelity_from_saved_city();
+        state.city.set_mac_power_service_summary(0);
+        state.city.set_mac_water_service_summary(0);
+        state.city.set_mac_arcology_resident_total(0);
+        for (row, current) in [(0, 1000), (1, 0), (2, 0), (10, 81)] {
+            let offset =
+                budget_row_misc_offset_for_city(&state.city, row, BUDGET_SERVICE_CURRENT_FIELD)
+                    .unwrap();
+            state.city.set_budget_misc_u32_values(offset, &[current]);
+        }
+    }
+    state
+}
+
+#[test]
+fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
+    for path in ["mac-empty-earthquake.city", "mac-empty-earthquake.sc2"] {
+        let city = blank_city_layout_fixture(path, "Empty earthquake");
+        let mut manual = test_state(city);
+        manual.engine_fidelity = EngineFidelity::Mac68k;
+        manual
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        manual.traffic.set_speed(GameSpeed::Paused);
+        manual.mac_process_rng = MacToolboxRng::new(1);
+        manual.hover_tile = Some((12, 34));
+        let crt = manual.pe_process_crt_seed();
+
+        assert!(manual.start_disaster(DisasterKind::Earthquake));
+        assert_eq!(manual.city.mac_pending_action(), 6);
+        assert_eq!(
+            manual.mac_loop_scheduler.pending_action_point,
+            Some((50, 96))
+        );
+        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
+        assert_eq!(manual.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(manual.city.mac_pending_action(), 0);
+        assert_eq!(
+            manual.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_GAMEPLAY)
+        );
+        assert_eq!(manual.mac_process_rng.seed(), 1_017_324_090);
+        assert_eq!(manual.pe_process_crt_seed(), crt);
+
+        let mut monthly = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1864);
+        assert_eq!(monthly.city.mac_pending_action(), 11);
+        assert_eq!(
+            monthly
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            1
+        );
+        assert_eq!(monthly.game_clock.day(), 24);
+        assert_eq!(monthly.city.mac_pending_action(), 0);
+        assert_eq!(
+            monthly.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_GAMEPLAY)
+        );
+        assert_eq!(monthly.mac_process_rng.seed(), 2_022_709_593);
+    }
+}
+
+#[test]
+fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts() {
+    for path in ["mac-mixed-earthquake.city", "mac-mixed-earthquake.sc2"] {
+        let city = blank_city_layout_fixture(path, "Mixed earthquake");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.city.prepare_mac_fidelity_from_saved_city();
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.city.set_mac_pending_action(6);
+        state.mac_loop_scheduler.pending_action_point = Some((2, 3));
+        for (x, y) in [(0, 14), (1, 32)] {
+            state.city.set_building(x, y, 0x70);
+            state.city.set_zone(x, y, 0x12);
+            state.city.set_traffic_density(x, y, 91);
+        }
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.mac_process_rng.seed(), 1_338_654_090);
+        assert_eq!(state.city.building_at(0, 14), 2);
+        assert_eq!(state.city.zone_at(0, 14).unwrap().raw_bits(), 2);
+        assert_eq!(state.city.text_overlay_at(0, 14), Some(0));
+        assert_eq!(state.city.traffic_density_at(0, 14), Some(91));
+        assert_eq!(state.city.building_at(1, 32), 0x70);
+        assert_eq!(state.city.text_overlay_at(1, 32), Some(0xff));
+        assert_eq!(state.city.traffic_density_at(1, 32), Some(0));
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.city.text_overlay_at(1, 32), Some(0xff));
+        state.mac_loop_scheduler.actor_deadline = 31;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            0
+        );
+        assert_eq!(state.mac_process_rng.seed(), 1_720_604_658);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.city.text_overlay_at(1, 32), Some(0xff));
+    }
+}
+
+#[test]
+fn mac_monthly_toxic_spill_releases_calendar_after_the_clearing_pass() {
+    for path in ["mac-toxic-action.city", "mac-toxic-action.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 20);
+        let mut pollution = vec![0; CITY_TILES];
+        pollution[density_map_index(26, 38)] = 0xb4;
+        pollution[density_map_index(38, 26)] = 0xb4;
+        state.city.sync_pollution_density_from_slice(&pollution);
+        state.city.set_traffic_density(21, 33, 91);
+
+        for (days, seed, marker, active) in [
+            (1, 240_746_755, 0xfb, true),
+            (0, 371_520_337, 0xfb, true),
+            (0, 1_407_342_130, 0, true),
+            (0, 1_407_342_130, 0, false),
+        ] {
+            let advance = state.advance_frame_simulation(Duration::from_millis(17));
+            assert_eq!(advance.days, days);
+            assert_eq!(state.city.mac_pending_action(), 0);
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert_eq!(state.city.text_overlay_at(21, 33), Some(marker));
+            assert_eq!(state.city.traffic_density_at(21, 33), Some(91));
+            assert_eq!(
+                scenario_action::mac_scenario_action_active(&state.city),
+                active
+            );
+        }
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .months,
+            1
+        );
+    }
+}
+
+fn mac_repeated_flood_fixture(path: &str, growth: u32) -> ViewerState {
+    let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 8210);
+    state
+        .city
+        .set_mac_state_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET, 1);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, growth);
+    state.sound_effects_enabled = true;
+    state
+}
+
+fn mac_cloud_scatter_fixture(path: &str, hotspot_x: u16, growth: u32, funding: u32) -> ViewerState {
+    let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 3114);
+    state.city.set_mac_kind2_hotspot(hotspot_x, 73);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, growth);
+    let current =
+        budget_row_misc_offset_for_city(&state.city, 2, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
+    state.city.set_budget_misc_u32_values(current, &[funding]);
+    state.city.set_text_overlay(3, 79, 7);
+    state.city.set_traffic_density(3, 79, 91);
+    state.city.set_traffic_density(0, 85, 91);
+    state.sound_effects_enabled = true;
+    state
+}
+
+#[test]
+fn mac_scenario_loader_replaces_point_with_or_without_opening_action() {
+    let mut scheduler = MacLoopScheduler::default();
+    scheduler.load_scenario_point(8, (80, 52));
+    assert_eq!(scheduler.disaster_point, (80, 52));
+    assert_eq!(scheduler.pending_action_point, Some((80, 52)));
+
+    scheduler.load_scenario_point(0, (0, 0));
+    assert_eq!(scheduler.disaster_point, (0, 0));
+    assert_eq!(scheduler.pending_action_point, None);
+}
+
+#[test]
+fn mac_due_action_dispatch_consumes_reopened_pending_selector_before_one_marker_pass() {
+    for path in ["mac-due-pending.city", "mac-due-pending.sc2"] {
+        for (selector, active_flag, marker, expected_selector, expected_seed) in [
+            (4, 1, 0xff, 4, 282_475_249),
+            (15, 1, 0xff, 12, 16_807),
+            (19, 1, 0xff, 12, 16_807),
+            (19, 0, 0xff, 12, 1),
+            // Completion calls the opinion poll before the next frame.
+            (19, 1, 0, 12, 892_053_144),
+        ] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+            state.city.prepare_mac_fidelity_from_saved_city();
+            state
+                .city
+                .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_DISASTER);
+            state.city.set_mac_state_misc_u32_at(0x1044, 12);
+            state.city.set_mac_state_misc_u32_at(0x1048, active_flag);
+            state
+                .city
+                .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 327_630_000);
+            state.city.set_mac_pending_action(selector);
+            state.city.set_text_overlay(20, 30, marker);
+            state.mac_loop_scheduler.disaster_point = (40, 42);
+            state.mac_loop_scheduler.pending_action_point = None;
+
+            // Reopen valid active saves. Exercise the inactive mode-2 edge
+            // directly because the session loader normalizes it to mode 1.
+            if active_flag != 0 {
+                let saved =
+                    std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+                state.city.save(&saved).unwrap();
+                reopen_with_actor_fixture_seed(&mut state, &saved);
+            }
+            state.traffic.set_speed(GameSpeed::Paused);
+            state.mac_loop_scheduler.actor_deadline = u32::MAX;
+            state.mac_loop_scheduler.deadline = 2;
+            let clock = state.game_clock;
+            let frame = Duration::from_millis(17);
+
+            assert_eq!(state.advance_frame_simulation(frame).days, 0);
+            state.traffic.set_speed(GameSpeed::Turtle);
+            assert_eq!(state.advance_frame_simulation(frame).days, 0);
+            assert_eq!(state.city.mac_pending_action(), selector);
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(12));
+            assert_eq!(state.mac_process_rng.seed(), 1);
+
+            assert_eq!(state.advance_frame_simulation(frame).days, 0);
+            assert_eq!(state.city.mac_pending_action(), 0);
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x1044),
+                Some(expected_selector)
+            );
+            let expected_flag = if marker == 0 { 0 } else { active_flag };
+            let expected_mode = if marker == 0 {
+                CITY_MODE_GAMEPLAY
+            } else {
+                CITY_MODE_DISASTER
+            };
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x1048),
+                Some(expected_flag)
+            );
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(expected_mode)
+            );
+            assert_eq!(state.city.text_overlay_at(20, 30), Some(marker));
+            assert_eq!(
+                state.city.text_overlay_at(40, 42),
+                Some(if selector == 4 { 0xfb } else { 0 })
+            );
+            assert_eq!(state.mac_loop_scheduler.disaster_point, (40, 42));
+            assert_eq!(state.mac_process_rng.seed(), expected_seed);
+            assert_eq!(state.mac_loop_scheduler.dispatch_counter, 1);
+            assert_eq!(state.mac_loop_scheduler.deadline, 39);
+            assert_eq!(state.game_clock, clock);
+        }
+    }
+}
+
+#[test]
+fn mac_kind6_terminal_sweep_queues_only_successful_ignition_outside_action_mode() {
+    for path in ["mac-kind6-terminal.city", "mac-kind6-terminal.sc2"] {
+        for (phase, mode, wet, pending, point) in [
+            (5, CITY_MODE_GAMEPLAY, false, 5, Some((32, 31))),
+            (17, CITY_MODE_GAMEPLAY, false, 17, Some((32, 31))),
+            (0, CITY_MODE_GAMEPLAY, false, 1, Some((32, 31))),
+            (5, CITY_MODE_DISASTER, false, 14, None),
+            (17, CITY_MODE_GAMEPLAY, true, 14, None),
+        ] {
+            let mut city = blank_city_layout_fixture(path, "Kind-6 terminal fixture");
+            city.prepare_mac_fidelity_from_saved_city();
+            city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, mode);
+            city.set_mac_pending_action(14);
+            city.set_mac_object_slot_record(
+                1,
+                Win95OverlayRecord {
+                    kind: 6,
+                    lane: 2,
+                    state: phase,
+                    tile_x: 32,
+                    tile_y: 31,
+                    sub_x: 8,
+                    sub_y: 8,
+                    saved_b: 1,
+                    ..Win95OverlayRecord::default()
+                },
+            );
+            city.set_text_overlay(32, 31, 0xca);
+            city.set_tile_bits(30, 29, TileBits::new(if wet { 4 } else { 0 }));
+            let mut quickdraw = MacToolboxRng::new(1);
+            let mut action_point = None;
+
+            let sounds = tick_mac_actors_with_rng_and_clock(
+                &mut city,
+                &mut quickdraw,
+                &mut MacGameLcgRng::new(1),
+                &mut 0,
+                2,
+                &mut 0,
+                &mut action_point,
+            );
+            assert_eq!(city.traffic_overlays().unwrap()[1].kind, 0);
+            assert_eq!(city.text_overlay_at(32, 31), Some(0));
+            assert_eq!(
+                city.text_overlay_at(30, 29),
+                Some(if wet { 0 } else { 0xff })
+            );
+            assert_eq!(city.mac_pending_action(), pending);
+            assert_eq!(action_point, point);
+            assert_eq!(quickdraw.seed(), 1);
+            assert!(sounds.is_empty());
+        }
+    }
+}
+
+#[test]
+fn mac_kind6_terminal_actor_enters_shared_disaster_pass_in_the_same_frame() {
+    for path in ["mac-kind6-admission.city", "mac-kind6-admission.sc2"] {
+        for phase in [5, 17] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+            state.city.prepare_mac_fidelity_from_saved_city();
+            if state.city.kind.is_win95() {
+                state
+                    .city
+                    .initialize_mac_scenario(crate::mac_scenario::MacScenarioStart {
+                        action: 8,
+                        point: (80, 52),
+                        goals: [0; 16],
+                    });
+            } else {
+                state.city.set_mac_pending_action(14);
+            }
+            state.mac_loop_scheduler.actor_deadline = 0;
+            state.mac_loop_scheduler.deadline = u32::MAX;
+            state.mac_loop_scheduler.disaster_point = (13, 14);
+            state.mac_loop_scheduler.pending_action_point = None;
+            state.city.set_mac_object_slot_record(
+                1,
+                Win95OverlayRecord {
+                    kind: 6,
+                    lane: 2,
+                    state: phase,
+                    tile_x: 32,
+                    tile_y: 31,
+                    sub_x: 8,
+                    sub_y: 8,
+                    saved_b: 1,
+                    ..Win95OverlayRecord::default()
+                },
+            );
+            state.city.set_text_overlay(32, 31, 0xca);
+
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                0
+            );
+            assert_eq!(state.city.mac_pending_action(), 0);
+            assert_eq!(state.city.take_mac_scenario_pending_point(), None);
+            assert_eq!(state.mac_loop_scheduler.disaster_point, (32, 31));
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(CITY_MODE_DISASTER)
+            );
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x1044),
+                Some(u32::from(phase))
+            );
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(1));
+            assert!(scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(state.city.text_overlay_at(30, 29), Some(0xff));
+            assert_eq!(state.mac_process_rng.seed(), 16_807);
+        }
+    }
+}
+
+#[test]
+fn mac_air_crash_matches_native_actor_lifecycle_on_both_layouts() {
+    let frame = Duration::from_millis(534);
+    let opening = [1, 3, 7, 32, 32, 16, 8, 8, 0x51, 0x52, 0, 0x5a];
+    for path in ["mac-air-crash.city", "mac-air-crash.sc2"] {
+        for (monthly, disabled, seed, ignition_seed, terminal_visit, terminal_seed) in [
+            (false, false, 1, 16_807, 26, 470_211_272),
+            (true, false, 712_393_418, 974_844_301, 22, 1_055_423_944),
+            (false, true, 1, 1, 20, 1),
+        ] {
+            let mut state =
+                mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, if monthly { 258 } else { 1 });
+            state.mac_loop_scheduler.disaster_point = (13, 14);
+            state.sound_effects_enabled = true;
+            state.no_disasters_enabled = disabled;
+            set_no_disasters_enabled_for_engine(&mut state.city, EngineFidelity::Mac68k, disabled);
+            set_sound_effects_enabled_for_engine(&mut state.city, EngineFidelity::Mac68k, true);
+            let record = &mut state.city.mac_object_slot_records_mut()[1];
+            record.lane = 3;
+            record.target_x = 0x51;
+            record.target_y = 0x52;
+            record.saved_a = 0x53;
+            record.saved_b = 0x5a;
+            state.city.set_traffic_density(30, 30, 91);
+            let opening_frame = if monthly {
+                state.city.prepare_mac_fidelity_from_saved_city();
+                state.city.set_building(90, 90, 0xdd);
+                assert_ne!(state.city.mac_xbld_tile_count(0xdd), 0);
+                Duration::from_millis(17)
+            } else {
+                state.traffic.set_speed(GameSpeed::Paused);
+                state.city.set_mac_pending_action(0);
+                assert!(state.start_disaster_at(DisasterKind::AirCrash, (13, 14)));
+                assert_eq!(state.city.mac_pending_action(), 18);
+                assert_eq!(state.mac_process_rng.seed(), 1);
+                Duration::ZERO
+            };
+            assert_eq!(
+                state.advance_frame_simulation(opening_frame).days,
+                u32::from(monthly)
+            );
+            assert_eq!(state.city.mac_pending_action(), 0);
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(18));
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(255));
+            assert_eq!(
+                state.city.traffic_overlays().unwrap()[1].to_bytes(),
+                opening
+            );
+            assert_eq!(state.city.text_overlay_at(32, 32), Some(0xca));
+            assert_eq!(state.mac_loop_scheduler.disaster_point, (32, 32));
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert!(state.take_pending_disaster_extra_sounds().is_empty());
+            state.traffic.set_speed(GameSpeed::Cheetah);
+
+            for visit in 1..=terminal_visit {
+                assert_eq!(state.advance_frame_simulation(frame).days, 0);
+                let actor = state.city.traffic_overlays().unwrap()[1];
+                assert_eq!(
+                    state.take_pending_disaster_extra_sounds(),
+                    match visit {
+                        8 => &[PlacementSound::Mayday][..],
+                        18 => &[PlacementSound::Explode][..],
+                        _ => &[],
+                    }
+                );
+                if visit <= 19 {
+                    assert_eq!(state.mac_process_rng.seed(), seed);
+                    assert_eq!(
+                        state
+                            .city
+                            .text_overlay_at(actor.tile_x as usize, actor.tile_y as usize),
+                        Some(0xca)
+                    );
+                }
+                match visit {
+                    1 => assert_eq!(
+                        actor.to_bytes(),
+                        [1, 4, 7, 33, 33, 15, 8, 8, 0x51, 0x52, 0, 0x5a]
+                    ),
+                    8 => {
+                        assert_eq!(
+                            actor.to_bytes(),
+                            [1, 3, 7, 32, 32, 8, 8, 8, 0x51, 0x52, 0, 0x5a]
+                        );
+                        if monthly {
+                            let saved = std::env::temp_dir()
+                                .join(format!("citygame-{}-{path}", std::process::id()));
+                            state.city.save(&saved).unwrap();
+                            reopen_with_actor_fixture_seed(&mut state, &saved);
+                            state.mac_loop_scheduler.actor_deadline = 31;
+                            state.traffic.set_speed(GameSpeed::Cheetah);
+                            assert_eq!(state.city.traffic_overlays().unwrap()[1], actor);
+                            assert!(scenario_action::mac_scenario_action_active(&state.city));
+                        }
+                    }
+                    17..=19 => assert_eq!(
+                        actor.to_bytes(),
+                        [6, visit as u8 - 17, 5, 32, 32, 0, 8, 8, 0x51, 0x52, 0, 1,]
+                    ),
+                    20 => {
+                        assert_eq!(
+                            actor.to_bytes(),
+                            [0, 2, 5, 32, 32, 0, 8, 8, 0x51, 0x52, 0, 1]
+                        );
+                        assert_eq!(state.city.text_overlay_at(32, 32), Some(0));
+                        assert_eq!(
+                            state.city.text_overlay_at(30, 30),
+                            Some(if disabled { 0 } else { 0xff })
+                        );
+                        assert_eq!(
+                            state.city.traffic_density_at(30, 30),
+                            Some(if disabled { 91 } else { 0 })
+                        );
+                        assert_eq!(state.mac_process_rng.seed(), ignition_seed);
+                        if !disabled {
+                            state.city.set_tile_bits(30, 30, TileBits::new(4));
+                        }
+                    }
+                    _ => {}
+                }
+                assert_eq!(
+                    scenario_action::mac_scenario_action_active(&state.city),
+                    visit < terminal_visit
+                );
+            }
+            assert_eq!(state.city.text_overlay_at(30, 30), Some(0));
+            assert_eq!(state.mac_process_rng.seed(), terminal_seed);
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(CITY_MODE_GAMEPLAY)
+            );
+            assert_eq!(state.advance_frame_simulation(frame).days, 1);
+        }
+    }
+}
+
+#[test]
+fn mac_air_crash_rejects_intersection_only_full_table_and_fixed_occupied_cell() {
+    for path in ["mac-air-crash-gates.city", "mac-air-crash-gates.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 258);
+        state.city.prepare_mac_fidelity_from_saved_city();
+        state.city.set_building(90, 90, 0xde);
+        assert_ne!(state.city.mac_xbld_tile_count(0xde), 0);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            1
+        );
+        assert_eq!(state.city.mac_pending_action(), 11);
+        assert_eq!(state.mac_process_rng.seed(), 2_011_653_891);
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+
+        for full in [false, true] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+            state.traffic.set_speed(GameSpeed::Paused);
+            state.city.set_mac_pending_action(0);
+            state.mac_loop_scheduler.disaster_point = (13, 14);
+            if full {
+                for actor in state.city.mac_object_slot_records_mut().iter_mut().skip(1) {
+                    actor.kind = 2;
+                }
+            } else {
+                state.city.set_text_overlay(32, 32, 0x22);
+            }
+            assert!(state.start_disaster_at(DisasterKind::AirCrash, (13, 14)));
+            state.advance_frame_simulation(Duration::ZERO);
+            assert_eq!(state.mac_loop_scheduler.disaster_point, (13, 14));
+            assert_eq!(state.city.mac_pending_action(), 0);
+            assert_eq!(state.mac_process_rng.seed(), 1);
+            assert!(!scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(
+                state.city.text_overlay_at(32, 32).unwrap_or(0),
+                if full { 0 } else { 0x22 }
+            );
+        }
+    }
+}
+
+fn check_mac_marker_traffic_planes(
+    city: &City,
+    markers: &[(usize, usize, u8)],
+    cleared: &[(usize, usize)],
+) {
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            let marker = markers
+                .iter()
+                .find(|&&(mx, my, _)| (x, y) == (mx, my))
+                .map_or(0, |&(_, _, marker)| marker);
+            assert_eq!(
+                city.text_overlay_at(x, y).unwrap_or(0),
+                marker,
+                "({x}, {y})"
+            );
+            assert_eq!(
+                city.traffic_density_at(x, y),
+                Some(if cleared.contains(&(x / 2, y / 2)) {
+                    0
+                } else {
+                    91
+                }),
+                "({x}, {y})"
+            );
+        }
+    }
+}
+
+fn fill_mac_traffic_plane(city: &mut City) {
+    for x in (0..CITY_WIDTH).step_by(2) {
+        for y in (0..CITY_HEIGHT).step_by(2) {
+            city.set_traffic_density(x, y, 91);
+        }
+    }
+}
+
+#[test]
+fn mac_facility_scatter_matches_native_damage_and_retained_point_on_both_layouts() {
+    let digest = |bytes: &mut dyn Iterator<Item = u8>| {
+        bytes.fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+    };
+    let planes = |city: &City| {
+        let cells = || (0..CITY_WIDTH).flat_map(|x| (0..CITY_HEIGHT).map(move |y| (x, y)));
+        [
+            digest(&mut cells().map(|(x, y)| city.building_at(x, y))),
+            digest(&mut cells().map(|(x, y)| city.text_overlay_at(x, y).unwrap_or(0))),
+            digest(
+                &mut cells()
+                    .filter(|&(x, y)| x % 2 == 0 && y % 2 == 0)
+                    .map(|(x, y)| city.traffic_density_at(x, y).unwrap()),
+            ),
+            digest(
+                &mut cells().map(|(x, y)| city.tile_bits_at(x, y).unwrap_or_default().raw_bits()),
+            ),
+            digest(&mut cells().map(|(x, y)| city.zone_at(x, y).unwrap_or_default().raw_bits())),
+            digest(&mut (0..=255).flat_map(|tile| city.mac_xbld_tile_count(tile).to_be_bytes())),
+        ]
+    };
+    for path in ["mac-facility-scatter.city", "mac-facility-scatter.sc2"] {
+        for priority in [false, true] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 714);
+            state.city.prepare_mac_fidelity_from_saved_city();
+            state.city.initialize_mac_fidelity_blank_xbld_census();
+            if state.city.kind == CityFileKind::MacCity {
+                state
+                    .city
+                    .set_mac_state_misc_u32_at(0x01f0, CITY_TILES as u32);
+            }
+            assert_eq!(state.city.mac_xbld_tile_count(0), CITY_TILES as u16);
+            for (ax, ay) in [(50, 60), (97, 105)] {
+                for dx in 0..4 {
+                    for dy in 0..4 {
+                        state.city.set_building(ax + dx, ay - dy, 0xcb);
+                        let zone = match (dx, dy) {
+                            (0, 3) => 0x10,
+                            (3, 3) => 0x20,
+                            (3, 0) => 0x40,
+                            (0, 0) => 0x80,
+                            _ => 0,
+                        };
+                        state.city.set_zone(ax + dx, ay - dy, zone);
+                    }
+                }
+            }
+            state.city.set_text_overlay(13, 14, 0xcb);
+            fill_mac_traffic_plane(&mut state.city);
+            if priority {
+                state.mac_loop_scheduler.pending_action_point = None;
+                state.mac_loop_scheduler.disaster_point = (98, 104);
+            } else {
+                for x in 26..42 {
+                    for y in 41..56 {
+                        state.city.set_building(x, y, 0x70);
+                    }
+                }
+                for y in 40..49 {
+                    state.city.set_tile_bits(43, y, TileBits::new(4));
+                }
+            }
+            let frame = Duration::from_millis(17);
+            assert_eq!(state.advance_frame_simulation(frame).days, 1);
+            assert_eq!(state.city.mac_pending_action(), 0);
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(9));
+            let mut expected = if priority {
+                [
+                    0xb4aaf1bbb199911f,
+                    0xa9d2394cf46037cd,
+                    0x3b8f1a3fe9b094c2,
+                    0x9c1bda7f8c872325,
+                    0xb999844d3df6fd55,
+                    0x5bd55f67ddcebdba,
+                ]
+            } else {
+                [
+                    0xe26c5034f111fae6,
+                    0xcb0a69314c35afad,
+                    0xc5c72d5c3368bd54,
+                    0xad3ecbfb0a4dfc41,
+                    0x80c3850fcccc62b5,
+                    0x07896cc5fca332d3,
+                ]
+            };
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                if priority { 655_604_670 } else { 271_558_597 },
+                "{path}, priority={priority}"
+            );
+            assert_eq!(planes(&state.city), expected, "{path}, priority={priority}");
+
+            let saved =
+                std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+            state.city.save(&saved).unwrap();
+            reopen_with_actor_fixture_seed(&mut state, &saved);
+            state.mac_loop_scheduler.actor_deadline = 1000;
+            state.traffic.set_speed(GameSpeed::Cheetah);
+            assert_eq!(state.advance_frame_simulation(frame).days, 0);
+            assert!(scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                if priority {
+                    1_229_508_459
+                } else {
+                    1_571_192_825
+                }
+            );
+            if !priority {
+                expected[1] = 0xbe16342e9b1126a4;
+                expected[2] = 0x989fcb063e6619ff;
+            }
+            assert_eq!(planes(&state.city), expected, "{path}, priority={priority}");
+        }
+    }
+}
+
+#[test]
+fn mac_facility_scatter_rejects_zero_census_or_missing_building() {
+    for path in [
+        "mac-facility-scatter-gates.city",
+        "mac-facility-scatter-gates.sc2",
+    ] {
+        for census in [false, true] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 714);
+            state.city.prepare_mac_fidelity_from_saved_city();
+            if census {
+                state.city.set_building(13, 14, 0xcb);
+                state.city.set_building_without_mac_census(13, 14, 0);
+            }
+            state.city.set_text_overlay(13, 14, 0xcb);
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                1
+            );
+            assert_eq!(state.city.mac_pending_action(), if census { 0 } else { 11 });
+            assert_eq!(state.mac_process_rng.seed(), 1_971_348_615);
+            assert!(!scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(state.city.text_overlay_at(13, 14), Some(0xcb));
+        }
+    }
+}
+
+#[test]
+fn mac_facility_walk_matches_native_opening_and_resumes_in_both_layouts() {
+    let mut markers = vec![(1, 1, 0xcd), (21, 92, 0xfb)];
+    markers.extend(
+        [
+            (21, 91),
+            (21, 94),
+            (21, 95),
+            (22, 93),
+            (22, 94),
+            (22, 95),
+            (23, 91),
+            (23, 92),
+            (23, 93),
+            (23, 94),
+            (24, 92),
+            (24, 93),
+            (24, 94),
+            (25, 91),
+            (25, 92),
+            (25, 93),
+            (26, 92),
+            (26, 93),
+            (26, 94),
+            (27, 93),
+        ]
+        .map(|(x, y)| (x, y, 0xff)),
+    );
+    let cleared = [
+        (10, 45),
+        (10, 47),
+        (11, 45),
+        (11, 46),
+        (11, 47),
+        (12, 45),
+        (12, 46),
+        (12, 47),
+        (13, 46),
+        (13, 47),
+    ];
+    for path in ["mac-facility-walk.city", "mac-facility-walk.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1884);
+        state.city.prepare_mac_fidelity_from_saved_city();
+        state.sound_effects_enabled = true;
+        for (x, y) in [(20, 91), (22, 92), (45, 45)] {
+            state.city.set_building(x, y, 0xcd);
+        }
+        state.city.set_text_overlay(1, 1, 0xcd);
+        state.city.set_tile_bits(21, 92, TileBits::new(4));
+        fill_mac_traffic_plane(&mut state.city);
+        let frame = Duration::from_millis(17);
+        assert_eq!(state.advance_frame_simulation(frame).days, 1);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(10));
+        assert_eq!(state.mac_process_rng.seed(), 2_025_630_486);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            [PlacementSound::PowerLine; 36]
+        );
+        check_mac_marker_traffic_planes(&state.city, &markers, &cleared);
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        state.mac_loop_scheduler.actor_deadline = 31;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        assert_eq!(state.advance_frame_simulation(frame).days, 0);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.mac_process_rng.seed(), 16_439_039);
+        check_mac_marker_traffic_planes(&state.city, &markers, &cleared);
+    }
+}
+
+#[test]
+fn mac_facility_walk_checks_saved_census_source_plane_and_edges() {
+    for path in [
+        "mac-facility-walk-gates.city",
+        "mac-facility-walk-gates.sc2",
+    ] {
+        for (source, stale, pending, seed, active_selector) in [
+            (None, false, 11, 1_754_908_307, 0),
+            (Some((1, 0)), true, 0, 1_754_908_307, 0),
+            (Some((1, 0)), false, 0, 1_203_507_851, 10),
+            (Some((127, 127)), false, 0, 207_980_664, 10),
+        ] {
+            let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1884);
+            state.city.prepare_mac_fidelity_from_saved_city();
+            state.sound_effects_enabled = true;
+            if let Some((x, y)) = source {
+                state.city.set_building(x, y, 0xcd);
+                if stale {
+                    // A stale census admits the proposal while the search
+                    // sees only the decoy in the separate XTXT plane.
+                    state.city.set_building_without_mac_census(x, y, 0);
+                }
+            }
+            state.city.set_text_overlay(1, 1, 0xcd);
+            fill_mac_traffic_plane(&mut state.city);
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                1
+            );
+            assert_eq!(state.city.mac_pending_action(), pending);
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x1044).unwrap_or(0),
+                active_selector
+            );
+            assert!(!scenario_action::mac_scenario_action_active(&state.city));
+            assert!(state.take_pending_disaster_extra_sounds().is_empty());
+            check_mac_marker_traffic_planes(&state.city, &[(1, 1, 0xcd)], &[]);
+        }
+    }
+}
+
+#[test]
+fn mac_rioters_follow_native_three_searches_and_continue_after_reopen() {
+    for path in ["mac-rioters.city", "mac-rioters.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.sound_effects_enabled = true;
+        state.city.set_mac_pending_action(3);
+        state.mac_loop_scheduler.pending_action_point = Some((64, 64));
+        for (x, y) in [
+            (64, 61),
+            (64, 62),
+            (64, 63),
+            (63, 62),
+            (65, 62),
+            (65, 63),
+            (65, 64),
+        ] {
+            state.city.set_building(x, y, 0x1d);
+        }
+        state.city.set_tile_bits(64, 63, TileBits::new(4));
+        state.city.set_text_overlay(65, 63, 0x32);
+        fill_mac_traffic_plane(&mut state.city);
+
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (64, 61));
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(3));
+        assert_eq!(state.mac_process_rng.seed(), 2_007_237_709);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            [PlacementSound::Riot; 3]
+        );
+        check_mac_marker_traffic_planes(
+            &state.city,
+            &[(64, 61, 0xfe), (64, 62, 0xfe), (65, 63, 0xfe)],
+            &[(32, 32)],
+        );
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        state.mac_loop_scheduler.actor_deadline = 31;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            0
+        );
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        assert_eq!(state.mac_process_rng.seed(), 1_137_522_503);
+        assert!(state.take_pending_disaster_extra_sounds().is_empty());
+        check_mac_marker_traffic_planes(
+            &state.city,
+            &[(64, 61, 0xfd), (64, 62, 0xfe), (65, 63, 0xfe)],
+            &[(32, 30), (32, 32)],
+        );
+    }
+}
+
+#[test]
+fn mac_rioters_monthly_scatter_matches_native_edge_searches() {
+    for path in ["mac-mass-rioters.city", "mac-mass-rioters.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1310);
+        state.sound_effects_enabled = true;
+        state.city.set_mac_kind2_hotspot(5, 94);
+        for (offset, value) in [
+            (MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 30_000),
+            (MAC_RIOT_UNEMPLOYMENT_STATE_OFFSET, 10),
+            (MAC_RIOT_WEATHER_HEAT_STATE_OFFSET, 0xaa),
+        ] {
+            state.city.set_mac_state_misc_u32_at(offset, value);
+        }
+        for x in 0..3 {
+            for y in 78..87 {
+                state.city.set_building(x, y, 0x1d);
+            }
+        }
+        fill_mac_traffic_plane(&mut state.city);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            1
+        );
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (2, 79));
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(13));
+        assert_eq!(state.mac_process_rng.seed(), 725_359_301);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            [PlacementSound::Riot; 8]
+        );
+        check_mac_marker_traffic_planes(
+            &state.city,
+            &[
+                (0, 86, 0xfd),
+                (1, 78, 0xfe),
+                (1, 79, 0xfd),
+                (1, 83, 0xfd),
+                (2, 79, 0xfd),
+                (2, 83, 0xfe),
+                (2, 86, 0xfe),
+            ],
+            &[(0, 39), (0, 41), (1, 39), (1, 43)],
+        );
+    }
+}
+
+#[test]
+fn mac_rioters_can_ignite_a_road_during_the_shared_marker_pass() {
+    for path in ["mac-riot-ignition.city", "mac-riot-ignition.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.sound_effects_enabled = true;
+        state.city.set_mac_pending_action(13);
+        state.mac_loop_scheduler.pending_action_point = Some((0, 82));
+        state
+            .city
+            .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 30_000);
+        for x in 0..3 {
+            for y in 78..87 {
+                state.city.set_building(x, y, 0x1d);
+            }
+        }
+        fill_mac_traffic_plane(&mut state.city);
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(state.mac_process_rng.seed(), 530_511_967);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            [PlacementSound::Riot; 8]
+        );
+
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            0
+        );
+        assert_eq!(state.mac_process_rng.seed(), 685_118_024);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            [PlacementSound::Riot]
+        );
+        assert_eq!(state.city.building_at(1, 79), 0x1d);
+        check_mac_marker_traffic_planes(
+            &state.city,
+            &[
+                (0, 80, 0xfe),
+                (0, 84, 0xfe),
+                (1, 79, 0xff),
+                (1, 86, 0xfe),
+                (2, 78, 0xfd),
+                (2, 79, 0xfe),
+                (2, 86, 0xfe),
+            ],
+            &[(0, 39), (0, 42), (0, 43)],
+        );
+    }
+}
+
+#[test]
+fn mac_rioters_failed_start_and_wet_marker_release_match_native() {
+    for path in ["mac-riot-release.city", "mac-riot-release.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.sound_effects_enabled = true;
+        state.city.set_mac_pending_action(0);
+        state.city.set_mac_kind2_hotspot(72, 62);
+        assert!(state.start_disaster_at(DisasterKind::Rioters, (1, 2)));
+        assert_eq!(state.city.mac_pending_action(), 3);
+        assert_eq!(
+            state.mac_loop_scheduler.pending_action_point,
+            Some((64, 64))
+        );
+        fill_mac_traffic_plane(&mut state.city);
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_process_rng.seed(), 282_475_249);
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+        assert!(state.take_pending_disaster_extra_sounds().is_empty());
+        check_mac_marker_traffic_planes(&state.city, &[], &[]);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (64, 64));
+
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state
+            .city
+            .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 30_000);
+        state.city.set_mac_pending_action(13);
+        state.mac_loop_scheduler.pending_action_point = Some((0, 82));
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (3, 73));
+        assert_eq!(state.mac_process_rng.seed(), 1_137_522_503);
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+        assert!(state.take_pending_disaster_extra_sounds().is_empty());
+        check_mac_marker_traffic_planes(&state.city, &[], &[]);
+
+        state.mac_process_rng = MacToolboxRng::new(470_211_272);
+        state.city.set_tile_bits(64, 62, TileBits::new(4));
+        state.city.set_text_overlay(64, 62, 0xfd);
+        scenario_action::begin_action(&mut state.city, 3);
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        for (mode, flag, seed) in [
+            (CITY_MODE_DISASTER, 1, 1_458_777_923),
+            (CITY_MODE_GAMEPLAY, 0, 1_147_722_294),
+        ] {
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                0
+            );
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(mode)
+            );
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(flag));
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert!(state.take_pending_disaster_extra_sounds().is_empty());
+            check_mac_marker_traffic_planes(&state.city, &[], &[]);
+        }
+    }
+}
+
+#[test]
+fn mac_cloud_scatter_matches_native_lifecycle_after_reopen_in_both_layouts() {
+    let check_planes = |city: &City, remaining: u8| {
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                assert_eq!(
+                    city.text_overlay_at(x, y).unwrap_or(0),
+                    if (x, y) == (0, 85) { remaining } else { 0 },
+                    "({x}, {y})"
+                );
+            }
+        }
+        for (x, y) in [(0, 85), (3, 79)] {
+            assert_eq!(city.traffic_density_at(x, y), Some(91));
+        }
+    };
+    for path in ["mac-cloud-scatter.city", "mac-cloud-scatter.sc2"] {
+        let mut state = mac_cloud_scatter_fixture(path, 5, 20_000, 10_000);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            1
+        );
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(15));
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(1));
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (3, 79));
+        assert_eq!(state.mac_process_rng.seed(), 315_095_192);
+        assert!(state.take_pending_disaster_extra_sounds().is_empty());
+        check_planes(&state.city, 0xfb);
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        state.mac_loop_scheduler.actor_deadline = 31;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+
+        for (mode, flag, seed) in [
+            (CITY_MODE_DISASTER, 1, 110_218_442),
+            (CITY_MODE_GAMEPLAY, 0, 738_537_539),
+        ] {
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                0
+            );
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(mode)
+            );
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(15));
+            assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(flag));
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            check_planes(&state.city, 0);
+        }
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            1
+        );
+    }
+}
+
+#[test]
+fn mac_cloud_scatter_matches_native_proposal_and_attempt_boundaries() {
+    for path in ["mac-cloud-boundary.city", "mac-cloud-boundary.sc2"] {
+        for (x, growth, funding, pending, seed, marker, active) in [
+            (5, 20_000, 9_999, 11, 1_307_113_763, 7, false),
+            (0, 20_000, 10_000, 0, 2_087_680_225, 7, false),
+            (5, 327_630_000, 10_000, 0, 507_903_096, 7, false),
+            (5, 2_621_400_000, 10_000, 0, 1_067_159_554, 0, true),
+        ] {
+            let mut state = mac_cloud_scatter_fixture(path, x, growth, funding);
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                1
+            );
+            assert_eq!(state.city.mac_pending_action(), pending);
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert_eq!(state.city.text_overlay_at(3, 79), Some(marker));
+            assert_eq!(state.city.text_overlay_at(0, 85), Some(0));
+            assert_eq!(
+                scenario_action::mac_scenario_action_active(&state.city),
+                active
+            );
+            assert!(state.take_pending_disaster_extra_sounds().is_empty());
+        }
+    }
+}
+
+#[test]
+fn mac_repeated_flood_monthly_shore_matches_native_through_reopen() {
+    let opening = [
+        (6, 67),
+        (6, 69),
+        (12, 88),
+        (13, 87),
+        (16, 97),
+        (16, 99),
+        (17, 98),
+    ];
+    let first = [
+        (5, 68),
+        (6, 68),
+        (11, 88),
+        (13, 86),
+        (15, 97),
+        (15, 100),
+        (16, 100),
+        (17, 97),
+    ];
+    let second = [
+        (5, 69),
+        (6, 71),
+        (7, 69),
+        (7, 70),
+        (7, 71),
+        (10, 89),
+        (11, 89),
+        (13, 85),
+        (13, 88),
+        (14, 87),
+        (14, 88),
+        (16, 96),
+        (16, 98),
+        (17, 100),
+        (18, 98),
+    ];
+    let check_planes = |city: &City, spread: &[(usize, usize)]| {
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                let flooded = opening.contains(&(x, y)) || spread.contains(&(x, y));
+                assert_eq!(
+                    city.text_overlay_at(x, y),
+                    Some(if flooded { 0xfc } else { 0 }),
+                    "({x}, {y})"
+                );
+                let cleared = spread
+                    .iter()
+                    .any(|&(sx, sy)| (sx / 2, sy / 2) == (x / 2, y / 2));
+                assert_eq!(
+                    city.traffic_density_at(x, y),
+                    Some(if cleared { 0 } else { 91 }),
+                    "({x}, {y})"
+                );
+            }
+        }
+    };
+    for path in ["mac-repeated-flood.city", "mac-repeated-flood.sc2"] {
+        let mut state = mac_repeated_flood_fixture(path, 20_000);
+        for (x, y) in [(12, 87), (6, 68), (16, 98)] {
+            state.city.set_terrain(x, y, 0x20);
+        }
+        state.city.set_tile_bits(5, 68, TileBits::new(4));
+        for x in (0..CITY_WIDTH).step_by(2) {
+            for y in (0..CITY_HEIGHT).step_by(2) {
+                state.city.set_traffic_density(x, y, 91);
+            }
+        }
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            1
+        );
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (16, 98));
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(14));
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(1));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_DISASTER)
+        );
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(59)
+        );
+        assert_eq!(state.mac_process_rng.seed(), 1_448_865_284);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            vec![PlacementSound::Flood; 5]
+        );
+        check_planes(&state.city, &first);
+
+        let saved = std::env::temp_dir().join(format!("citygame-{}-{path}", std::process::id()));
+        state.city.save(&saved).unwrap();
+        reopen_with_actor_fixture_seed(&mut state, &saved);
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+        state.mac_loop_scheduler.actor_deadline = 31;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(17))
+                .days,
+            0
+        );
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(14));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(58)
+        );
+        assert_eq!(state.mac_process_rng.seed(), 2_115_612_608);
+        assert_eq!(
+            state.take_pending_disaster_extra_sounds(),
+            [PlacementSound::Flood]
+        );
+        check_planes(&state.city, &[first.as_slice(), second.as_slice()].concat());
+    }
+}
+
+#[test]
+fn mac_repeated_flood_monthly_failures_do_not_enter_action_mode() {
+    for path in ["mac-failed-flood.city", "mac-failed-flood.sc2"] {
+        for (growth, seed) in [(20_000, 434_025_329), (327_630_000, 1_111_501_225)] {
+            let mut state = mac_repeated_flood_fixture(path, growth);
+            if growth == 20_000 {
+                for x in 0..CITY_WIDTH {
+                    for y in 0..CITY_HEIGHT {
+                        state.city.set_terrain(x, y, 0x10);
+                    }
+                }
+            }
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(17))
+                    .days,
+                1
+            );
+            assert_eq!(state.city.mac_pending_action(), 0);
+            let expected_point = if growth == 20_000 { (16, 97) } else { (2, 82) };
+            assert_eq!(state.mac_loop_scheduler.disaster_point, expected_point);
+            assert!(!scenario_action::mac_scenario_action_active(&state.city));
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(CITY_MODE_GAMEPLAY)
+            );
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+                Some(0)
+            );
+            assert_eq!(state.mac_process_rng.seed(), seed);
+            assert!(state.take_pending_disaster_extra_sounds().is_empty());
+            for x in 0..CITY_WIDTH {
+                for y in 0..CITY_HEIGHT {
+                    assert_eq!(state.city.text_overlay_at(x, y), Some(0));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mac_speed_changes_between_actor_and_calendar_admission() {
+    let mut state = mac_phase24_fixture("mac-speed-event.city", WEATHER_TREND_BLIZZARD, 1);
+    state.city.set_mac_pending_action(0);
+    state.game_clock = GameClock::new_with_day(1910, 1, 2);
+    state.mac_loop_scheduler.actor_deadline = 0;
+    state.traffic.set_speed(GameSpeed::Turtle);
+    let frame = Duration::from_millis(200);
+
+    let waits = state.begin_mac_frame_actor_phase(frame);
+    assert_eq!(state.mac_loop_scheduler.actor_deadline, 57);
+    state
+        .apply_state_app_command(&AppCommand::SetSpeed(GameSpeed::Paused))
+        .unwrap();
+    assert_eq!(
+        state
+            .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+            .days,
+        0
+    );
+
+    // Pass the actor deadline while still paused, then resume at the event.
+    let waits = state.begin_mac_frame_actor_phase(Duration::from_secs(1));
+    assert_eq!(state.mac_loop_scheduler.actor_deadline, 57);
+    state
+        .apply_state_app_command(&AppCommand::SetSpeed(GameSpeed::Turtle))
+        .unwrap();
+    assert_eq!(
+        state
+            .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+            .days,
+        1
+    );
+    assert_eq!(state.game_clock.day(), 3);
+}
+
+#[test]
+fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
+    for path in ["mac-annual-currents.city", "mac-annual-currents.sc2"] {
+        let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
+        state.city.set_saved_date_and_day(
+            crate::city::CityDate {
+                year: 1910,
+                month: 12,
+            },
+            24,
+        );
+        state.city.set_mac_state_misc_u32_at(0x18, 2);
+        let tax = budget_row_misc_offset_for_city(&state.city, 0, 0).unwrap();
+        let bonds = budget_row_misc_offset_for_city(&state.city, 4, 0).unwrap();
+        state.city.set_budget_misc_u32_values(tax, &[4_380, 5, 900]);
+        state.city.set_budget_misc_u32_values(bonds, &[1, 4, 0]);
+        state.city.set_microsim_tile_id(18, 0xf3);
+        state.city.set_microsim_stat0(18, u8::MAX);
+        state.city.set_microsim_stat1(18, 1910);
+        state.city.set_microsim_stat2(18, 12);
+        state.city.set_microsim_stat3(18, 1);
+
+        state.sim_calendar_day0_budget_and_date_at(1911, 1, 0);
+
+        assert_eq!(
+            state.city.budget_misc_u32_values(tax, 5),
+            [4_380, 5, 21_900, 4_380, 5]
+        );
+        assert_eq!(state.city.budget_misc_u32_values(bonds, 5), [2, 4, 4, 1, 4]);
+        let mayor = state.city.microsim_at(18).unwrap();
+        assert_eq!(
+            (mayor.stat0, mayor.stat1, mayor.stat2, mayor.stat3),
+            (0, 1910, 0, 0)
+        );
+    }
+}
+
+#[test]
+fn mac_road_bridge_modal_holds_simulation_and_cancel_keeps_the_road() {
+    let mut city = City::new_blank("/tmp/citygame-mac-road-bridge.sc2", "Bridge").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_city_funds(500);
+    city.set_terrain(11, 10, 0x21);
+    city.set_tile_bits(11, 10, TileBits::new(0).with_water_tile(true));
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Road;
+    state.traffic.set_speed(GameSpeed::Turtle);
+    state.begin_network_drag(10, 10, NetworkKind::Road);
+    state.update_network_drag_to((11, 10));
+
+    assert_eq!(
+        state.release_left_mouse_drag(false).network,
+        Some((NetworkKind::Road, 1))
+    );
+    assert!(matches!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::RoadBridge { .. })
+    ));
+    let clock = state.game_clock;
+    let calendar_deadline = state.mac_loop_scheduler.deadline;
+    let actor_deadline = state.mac_loop_scheduler.actor_deadline;
+    assert_eq!(
+        state.advance_mac_frame_simulation(Duration::from_secs(2)),
+        GameClockAdvance::default()
+    );
+    assert_eq!(state.game_clock, clock);
+    assert_eq!(state.mac_loop_scheduler.deadline, calendar_deadline);
+    assert_eq!(state.mac_loop_scheduler.actor_deadline, actor_deadline);
+
+    state.close_city_info_dialog();
+    assert_eq!(state.city.city_funds(), 490);
+    assert!(NetworkKind::Road.contains(state.city.building_at(10, 10)));
+    assert_eq!(state.city.building_at(11, 10), 0);
+    assert!(state.city.tile_bits_at(11, 10).unwrap().water_tile());
+    assert_eq!(state.advance_mac_frame_simulation(Duration::ZERO).days, 1);
+}
+
+#[test]
+fn mac_rail_upkeep_first_enters_history_after_the_current_rebuild() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/citygame-mac-rail-budget.sc2", "Rail").unwrap();
+        city.kind = kind;
+        if kind.is_win95() {
+            city.prepare_mac_fidelity_from_saved_city();
+        }
+        city.set_city_funds(500);
+        let row = budget_row_misc_offset_for_city(&city, 13, 0).unwrap();
+        city.set_budget_misc_u32_values(row, &[0, 100, 0]);
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.tool = EditTool::Rail;
+        state.begin_network_drag(10, 10, NetworkKind::Rail);
+        state.update_network_drag_to((11, 10));
+
+        assert_eq!(
+            state.release_left_mouse_drag(false).network,
+            Some((NetworkKind::Rail, 2))
+        );
+        assert_eq!(state.city.city_funds(), 450);
+        state.sim_calendar_day21_demand_and_graphs();
+        assert_eq!(state.city.budget_misc_u32_values(row, 3), [0, 100, 0]);
+
+        state.sim_calendar_day0_budget_and_date_at(1900, 2, 0);
+        assert_eq!(state.city.budget_misc_u32_values(row, 3), [2, 100, 0]);
+        assert_eq!(state.city.budget_misc_u32_values(row, 7)[5..], [0, 100]);
+
+        state.sim_calendar_day0_budget_and_date_at(1900, 3, 0);
+        assert_eq!(state.city.budget_misc_u32_values(row, 3), [2, 100, 200]);
+        assert_eq!(state.city.budget_misc_u32_values(row, 9)[7..], [2, 100]);
+    }
+}
+
+#[test]
+fn mac_power_wire_connects_to_powerable_lot_through_open_terrain_axis() {
+    for (neighbor, slope, expected) in [
+        ((11, 10), 0, 0x0f),
+        ((11, 10), 2, 0x0e),
+        ((10, 11), 0, 0x0e),
+    ] {
+        let mut city = City::new_blank("/tmp/citygame-mac-wire.sc2", "Power").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_city_funds(500);
+        city.set_terrain(neighbor.0, neighbor.1, slope);
+        city.set_building(neighbor.0, neighbor.1, 0xcf);
+        city.set_tile_bits(neighbor.0, neighbor.1, TileBits::new(0x80));
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.tool = EditTool::Power;
+        state.begin_network_drag(10, 10, NetworkKind::Power);
+        assert_eq!(
+            state.release_left_mouse_drag(false).network,
+            Some((NetworkKind::Power, 1))
+        );
+        assert_eq!(state.city.building_at(10, 10), expected);
+        assert!(state.city.tile_bits_at(10, 10).unwrap().powerable());
+        assert_eq!(state.city.city_funds(), 498);
+    }
+}
+
+#[test]
+fn mac_pipe_stroke_reshapes_each_axis_and_preserves_existing_pipe_flags() {
+    let mut city = City::new_blank("/tmp/citygame-mac-pipe.sc2", "Pipe").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(500);
+    // Skip the post-route water scan to isolate the coordinate writer.
+    city.set_mac_state_misc_u32_at(0x102c, 50_000);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Pipes;
+    let pipes = UndergroundKind::Pipes;
+    for (start, end, expected) in [((10, 10), (11, 10), 0x11), ((20, 20), (20, 21), 0x10)] {
+        state.begin_underground_drag(start.0, start.1, pipes);
+        state.update_underground_drag_to(end);
+        assert_eq!(
+            state.release_left_mouse_drag(false).underground,
+            Some((pipes, 2))
+        );
+        assert_eq!(state.city.underground_at(start.0, start.1), expected);
+        assert_eq!(state.city.underground_at(end.0, end.1), expected);
+    }
+    state.city.set_tile_bits(10, 10, TileBits::new(0));
+    state.begin_underground_drag(10, 10, pipes);
+    assert_eq!(
+        state.release_left_mouse_drag(false).underground,
+        Some((pipes, 0))
+    );
+    assert_eq!(state.city.tile_bits_at(10, 10).unwrap().raw_bits(), 0);
+    assert_eq!(state.city.city_funds(), 485);
+}
+
+#[test]
+fn mac_subway_stops_at_blocked_tile_and_preserves_pipe_crossover_flags() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/citygame-mac-subway.sc2", "Subway").unwrap();
+        city.kind = kind;
+        if kind.is_win95() {
+            city.prepare_mac_fidelity_from_saved_city();
+        }
+        city.set_city_funds(500);
+        city.set_underground(11, 10, 0x10);
+        city.set_tile_bits(11, 10, TileBits::new(0x20));
+        city.set_underground(12, 10, 0x22);
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.tool = EditTool::Subway;
+        let subway = UndergroundKind::Subway;
+        state.begin_underground_drag(10, 10, subway);
+        state.update_underground_drag_to((12, 10));
+
+        assert_eq!(state.underground_drag_cost(), Some((subway, 200)));
+        assert_eq!(
+            state.release_left_mouse_drag(false).underground,
+            Some((subway, 2))
+        );
+        assert_eq!(state.city.underground_at(10, 10), 2);
+        assert_eq!(state.city.underground_at(11, 10), 0x20);
+        assert_eq!(state.city.underground_at(12, 10), 0x22);
+        assert_eq!(state.city.tile_bits_at(11, 10).unwrap().raw_bits(), 0x20);
+        assert_eq!(state.city.city_funds(), 300);
+    }
+}
+
+#[test]
+fn mac_tunnel_quote_holds_the_map_and_charges_only_after_confirmation() {
+    let mut city = City::new_blank("/tmp/citygame-mac-tunnel.sc2", "Tunnel").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(450);
+    for y in [10, 20] {
+        for (x, terrain, word) in [(10, 3, 0x800c), (11, 0, 0x800d), (12, 1, 0x800b)] {
+            city.set_terrain(x, y, terrain);
+            city.set_altm_word(x, y, word);
+        }
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.tool = EditTool::Tunnel;
+    assert!(!state.apply_tool_at_tile(10, 10));
+    assert!(!state.apply_tool_at_tile(10, 20));
+    let quote = CityInfoDialog::TunnelQuote {
+        entrance: (10, 10),
+        exit: (12, 10),
+        cost: 450,
+    };
+    assert_eq!(state.city_info_dialog, Some(quote));
+    assert_eq!(state.city.city_funds(), 450);
+    assert_eq!(state.city.building_at(10, 10), 0);
+    let window_size = (800, 600);
+    let rect = super::super::dialog_layout::city_info_dialog_rect_for(quote, window_size);
+    let button = super::super::dialog_layout::road_bridge_choice_rect(rect, 0);
+    assert_eq!(
+        super::super::dialog_input::city_info_dialog_hit_test(
+            glam::Vec2::new(button.x + button.w * 0.5, button.y + button.h * 0.5),
+            window_size,
+            quote,
+        ),
+        Some(super::super::CityInfoDialogAction::ConfirmTunnel)
+    );
+    assert_eq!(state.accept_mac_tunnel_quote(), 3);
+    assert_eq!(state.city.city_funds(), 0);
+    assert_eq!(state.city.building_at(10, 10), 0x41);
+    assert_eq!(state.city.building_at(12, 10), 0x3f);
+    assert_eq!(state.city.altm_at(10, 10).tunnel_levels, 1);
+    assert_eq!(state.city.altm_at(11, 10).tunnel_levels, 2);
+    assert_eq!(state.city.altm_at(12, 10).tunnel_levels, 1);
+    assert_eq!(state.accept_mac_tunnel_quote(), 0);
+}
+
+/// Compare original-instruction captures from the controlled TickCount
+/// runner with the production frame entry. The original data stays local.
+#[test]
+fn mac_seven_spires_live_frame_differential() {
+    let (Ok(input), Ok(planes)) = (
+        std::env::var("CITYGAME_MAC_FRAME_CGMS"),
+        std::env::var("CITYGAME_MAC_FRAME_PLANES"),
+    ) else {
+        return;
+    };
+    let input = std::fs::read(input).expect("read source CGMS");
+    let root = std::path::Path::new(&planes);
+    let native_actors = root.with_file_name("actors");
+    let speed_events_path = root.join("speed_events.json");
+    let speed_events: std::collections::BTreeMap<u64, u16> = if speed_events_path.is_file() {
+        serde_json::from_slice(&std::fs::read(speed_events_path).unwrap()).unwrap()
+    } else {
+        Default::default()
+    };
+    let review_path = root.join("budget_review.json");
+    let budget_review: Option<serde_json::Value> = review_path
+        .is_file()
+        .then(|| serde_json::from_slice(&std::fs::read(review_path).unwrap()).unwrap());
+    let surface_event = [
+        (NetworkKind::Road, "road_event.json"),
+        (NetworkKind::Rail, "rail_event.json"),
+        (NetworkKind::Power, "power_event.json"),
+    ]
+    .into_iter()
+    .find_map(|(network, name)| {
+        let path = root.join(name);
+        path.is_file().then(|| {
+            let event: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            (network, event)
+        })
+    });
+    let underground_event = [
+        (UndergroundKind::Pipes, "pipe_event.json"),
+        (UndergroundKind::Subway, "subway_event.json"),
+    ]
+    .into_iter()
+    .find_map(|(underground, name)| {
+        let path = root.join(name);
+        path.is_file().then(|| {
+            let event: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            (underground, event)
+        })
+    });
+    let zone_path = root.join("zone_event.json");
+    let zone_event: Option<serde_json::Value> = zone_path
+        .is_file()
+        .then(|| serde_json::from_slice(&std::fs::read(zone_path).unwrap()).unwrap());
+    let tunnel_path = root.join("tunnel_event.json");
+    let tunnel_event: Option<serde_json::Value> = tunnel_path
+        .is_file()
+        .then(|| serde_json::from_slice(&std::fs::read(tunnel_path).unwrap()).unwrap());
+    let single_tile_event = [
+        (EditTool::SubToRail, "sub-to-rail_event.json"),
+        (EditTool::Onramp, "onramp_event.json"),
+        (EditTool::Bulldoze, "bulldoze_event.json"),
+        (EditTool::BusDepot, "bus-depot_event.json"),
+        (EditTool::RailDepot, "rail-depot_event.json"),
+        (EditTool::SubStation, "subway-station_event.json"),
+        (EditTool::Marina, "marina_event.json"),
+        (EditTool::WaterPump, "water-pump_event.json"),
+        (EditTool::WaterTower, "water-tower_event.json"),
+        (EditTool::WaterTreatment, "water-treatment_event.json"),
+        (EditTool::Desalinization, "desalination_event.json"),
+        (EditTool::PowerPlantCoal, "power-coal_event.json"),
+        (EditTool::PowerPlantHydro, "power-hydro_event.json"),
+        (EditTool::PowerPlantOil, "power-oil_event.json"),
+        (EditTool::PowerPlantGas, "power-gas_event.json"),
+        (EditTool::PowerPlantNuclear, "power-nuclear_event.json"),
+        (EditTool::PowerPlantWind, "power-wind_event.json"),
+        (EditTool::PowerPlantSolar, "power-solar_event.json"),
+        (EditTool::PowerPlantMicrowave, "power-microwave_event.json"),
+        (EditTool::PowerPlantFusion, "power-fusion_event.json"),
+        (EditTool::School, "school_event.json"),
+        (EditTool::College, "college_event.json"),
+        (EditTool::Library, "library_event.json"),
+        (EditTool::Museum, "museum_event.json"),
+        (EditTool::Police, "police_event.json"),
+        (EditTool::FireStation, "fire-station_event.json"),
+        (EditTool::Hospital, "hospital_event.json"),
+        (EditTool::Prison, "prison_event.json"),
+        (EditTool::SmallPark, "small-park_event.json"),
+        (EditTool::BigPark, "big-park_event.json"),
+        (EditTool::Zoo, "zoo_event.json"),
+        (EditTool::Stadium, "stadium_event.json"),
+        (EditTool::MayorHouse, "mayor-house_event.json"),
+        (EditTool::CityHall, "city-hall_event.json"),
+        (EditTool::Statue, "statue_event.json"),
+        (EditTool::BraunLlamaDome, "braun-dome_event.json"),
+        (EditTool::ArcologyPlymouth, "arcology-plymouth_event.json"),
+        (EditTool::ArcologyForest, "arcology-forest_event.json"),
+        (EditTool::ArcologyDarco, "arcology-darco_event.json"),
+        (EditTool::ArcologyLaunch, "arcology-launch_event.json"),
+    ]
+    .into_iter()
+    .find_map(|(tool, name)| {
+        let path = root.join(name);
+        path.is_file().then(|| {
+            let event: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            (tool, event)
+        })
+    });
+    let building_event = single_tile_event
+        .as_ref()
+        .is_some_and(|(tool, _)| !matches!(tool, EditTool::Onramp | EditTool::SubToRail));
+    let highway_path = root.join("highway_event.json");
+    let highway_event: Option<serde_json::Value> = highway_path
+        .is_file()
+        .then(|| serde_json::from_slice(&std::fs::read(highway_path).unwrap()).unwrap());
+    let has_map_event = zone_event.is_some()
+        || surface_event.is_some()
+        || underground_event.is_some()
+        || tunnel_event.is_some()
+        || single_tile_event.is_some()
+        || highway_event.is_some();
+    let last_scan_phase = if has_map_event {
+        (3..=24)
+            .rev()
+            .find(|phase| root.join(format!("phase-{phase:02}/frame.json")).is_file())
+            .unwrap()
+    } else {
+        24
+    };
+    let annual_only = !root.join("phase-03/frame.json").is_file();
+    let last_phase = if root.join("phase-02/frame.json").is_file() {
+        2
+    } else if root.join("phase-01/frame.json").is_file() {
+        1
+    } else {
+        24
+    };
+    let phase_frames = (3..=last_scan_phase)
+        .filter(|_| !annual_only)
+        .chain(
+            (last_phase < 3)
+                .then_some(0..=last_phase)
+                .into_iter()
+                .flatten(),
+        )
+        .map(|phase| {
+            let dir = root.join(format!("phase-{phase:02}"));
+            let frame: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.join("frame.json")).unwrap()).unwrap();
+            (frame["iteration"].as_u64().unwrap(), (phase, dir, frame))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let (_, (first_phase, _, first_frame)) = phase_frames.first_key_value().unwrap();
+    let tick_duration = |ticks: u64| Duration::from_nanos((ticks * 1_000_000_000).div_ceil(60));
+    let frame_duration = tick_duration(first_frame["tick_stride"].as_u64().unwrap());
+    let initial_duration = tick_duration(first_frame["tick_start"].as_u64().unwrap());
+    let last_frame = *phase_frames.last_key_value().unwrap().0;
+    let mut saw_independent_frames = false;
+    let cgms_budget_start =
+        20 + 9 * CITY_TILES + 2 * CITY_TILES + CITY_TILES + 1_200 * 4 + 0x077c;
+    let has_saved_budget_book = input
+        .get(cgms_budget_start..cgms_budget_start + 16 * 27 * 4)
+        .is_some_and(|rows| rows.iter().any(|&value| value != 0));
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = crate::city::city_from_cgms_v4_for_test(&input).unwrap();
+        let developed = city.mac_developed_cells().unwrap();
+        city.kind = kind;
+        if kind.is_win95() {
+            city.prepare_mac_fidelity_from_saved_city();
+        }
+        for slot in 0..8 {
+            city.set_mac_rci_counter(slot, 0);
+        }
+        city.set_mac_developed_cells(developed);
+        for offset in [MISC_CITY_FUNDS_OFFSET, 0x1c, 0x50, 0x54, 0x58, 0x5c] {
+            let saved = city.mac_state_misc_u32_at(offset).unwrap();
+            city.set_mac_state_misc_u32_at(offset, saved);
+        }
+        city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        let founded_year = city.mac_state_misc_u32_at(0x0c).unwrap() as u16;
+        let elapsed = city.mac_state_misc_u32_at(0x10).unwrap();
+        let initial_phase = (first_phase + 24) % 25;
+        let clock = GameClock::from_city_age(founded_year, elapsed / 25 * 25 + initial_phase);
+        let xmic_path = root.with_file_name("xmic.bin");
+        if xmic_path.is_file() {
+            let xmic = std::fs::read(xmic_path).unwrap();
+            for (slot, record) in xmic.chunks_exact(8).enumerate() {
+                city.set_microsim_tile_id(slot, record[0]);
+                city.set_microsim_stat0(slot, record[1]);
+                city.set_microsim_stat1(slot, u16::from_be_bytes([record[2], record[3]]));
+                city.set_microsim_stat2(slot, u16::from_be_bytes([record[4], record[5]]));
+                city.set_microsim_stat3(slot, u16::from_be_bytes([record[6], record[7]]));
+            }
+        }
+        city.set_saved_date_and_day(
+            crate::city::CityDate {
+                year: clock.year(),
+                month: clock.month(),
+            },
+            clock.day(),
+        );
+        if highway_event.is_some() || building_event {
+            // The native harness restores CODE 13's placement compass from MISC.
+            city.set_view_rotation(city.saved_rotation());
+        }
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.traffic.set_speed(GameSpeed::Turtle);
+        state.game_clock = clock;
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.mac_game_rng = MacGameLcgRng::new(1_103_527_590);
+        let initial_tick = state.mac_loop_scheduler.advance_elapsed(initial_duration);
+        state.mac_loop_scheduler.deadline = initial_tick;
+        state.mac_loop_scheduler.actor_deadline = initial_tick;
+        let n = CITY_TILES;
+        let planes = [
+            ("xter", 20, n),
+            ("xbld", 20 + n, n),
+            ("xzon", 20 + 2 * n, n),
+            ("xbit", 20 + 3 * n, n),
+            ("xund", 20 + 4 * n, n),
+            ("xtxt", 20 + 5 * n, n),
+            ("altm", 20 + 9 * n, 2 * n),
+            ("xthg", 20 + 12 * n + 1_200 * 4, 480),
+        ];
+        for frame in 1..=last_frame {
+            let actor_deadline = state.mac_loop_scheduler.actor_deadline;
+            let mut advance = if speed_events.is_empty() && !has_map_event {
+                state.advance_frame_simulation(frame_duration)
+            } else {
+                let waits = state.begin_mac_frame_actor_phase(frame_duration);
+                if let Some(speed) = speed_events.get(&frame) {
+                    let speed = match speed {
+                        1 => GameSpeed::Paused,
+                        2 => GameSpeed::Turtle,
+                        3 => GameSpeed::Llama,
+                        4 => GameSpeed::Cheetah,
+                        _ => panic!("invalid native speed selector {speed}"),
+                    };
+                    state
+                        .apply_state_app_command(&AppCommand::SetSpeed(speed))
+                        .unwrap();
+                }
+                if let Some(event) = zone_event.as_ref()
+                    && event["frame"].as_u64() == Some(frame)
+                {
+                    let x = event["x"].as_u64().unwrap() as usize;
+                    let y = event["y"].as_u64().unwrap() as usize;
+                    let zone_before = state.city.zone_at(x, y).unwrap().raw_bits();
+                    assert_eq!(
+                        u64::from(state.game_clock.day()),
+                        event["phase_before"].as_u64().unwrap()
+                    );
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_before"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(zone_before),
+                        event["zone_before"].as_u64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_before"].as_u64().unwrap()
+                    );
+                    let zone_id = event["zone_id"].as_u64().unwrap_or(1) as u8;
+                    state.begin_zone_drag(x, y, zone_id);
+                    assert_eq!(
+                        state.zone_drag_cost(),
+                        event["price"].as_u64().map(|price| price as u32)
+                    );
+                    assert_eq!(
+                        state.release_left_mouse_drag(false).placed_zones,
+                        event["written_cells"].as_array().unwrap().len()
+                    );
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_after"].as_i64().unwrap()
+                    );
+                    let zone_after = state.city.zone_at(x, y).unwrap().raw_bits();
+                    assert_eq!(
+                        u64::from(zone_after),
+                        event["zone_after"].as_u64().unwrap(),
+                        "{kind:?} committed XZON"
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_after"].as_u64().unwrap()
+                    );
+                }
+                if let Some(event) = highway_event.as_ref()
+                    && event["frame"].as_u64() == Some(frame)
+                {
+                    let x = event["x"].as_u64().unwrap() as usize;
+                    let y = event["y"].as_u64().unwrap() as usize;
+                    let end: (usize, usize) = serde_json::from_value(event["end"].clone()).unwrap();
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_before"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_before"].as_u64().unwrap()
+                    );
+                    state.tool = EditTool::Highway;
+                    state.begin_highway_drag(x, y);
+                    state.update_highway_drag_to(end);
+                    let cost = event["price"].as_u64().unwrap();
+                    assert_eq!(state.highway_drag_cost().map(u64::from).unwrap_or(0), cost);
+                    let written: Vec<(usize, usize)> =
+                        serde_json::from_value(event["written_cells"].clone()).unwrap();
+                    if !written.is_empty() {
+                        assert_eq!(state.highway_drag_path_for_city((x, y), end), written);
+                    }
+                    let outcome = state.release_left_mouse_drag(false);
+                    assert_eq!(outcome.highway_segments, written.len());
+                    let link = outcome
+                        .highway_neighbor_link
+                        .filter(|&candidate| highway_neighbor_link_is_available(&state, candidate));
+                    if let Some(native) = event.get("neighbor_link") {
+                        let candidate = link.expect("Mac highway edge-link offer");
+                        let endpoint: (usize, usize) =
+                            serde_json::from_value(native["endpoint"].clone()).unwrap();
+                        assert_eq!(candidate.endpoint, endpoint);
+                        assert_eq!(
+                            state.city.mac_rci_overlay_cap_counts()[1],
+                            native["count_before"].as_u64().unwrap() as u16
+                        );
+                        let accepted = native["accepted"].as_bool().unwrap();
+                        assert_eq!(
+                            apply_highway_neighbor_link_confirmation(
+                                &mut state, candidate, accepted
+                            ),
+                            accepted
+                        );
+                        assert_eq!(
+                            state.city.mac_rci_overlay_cap_counts()[1],
+                            native["count_after"].as_u64().unwrap() as u16
+                        );
+                        assert_eq!(
+                            state.city.text_overlay_at(endpoint.0, endpoint.1),
+                            Some(native["xtxt_after"].as_u64().unwrap() as u8)
+                        );
+                    } else {
+                        assert!(link.is_none());
+                    }
+                    if let Some(choice) = event.get("highway_bridge_choice") {
+                        let entry = &event["bridge_entry"];
+                        let candidate = HighwayWaterBridgeCandidate {
+                            seed: serde_json::from_value(entry["seed"].clone()).unwrap(),
+                            direction: choice["direction"].as_u64().unwrap() as u8,
+                            span_count: choice["span_count"].as_u64().unwrap() as usize,
+                            selector_mask: choice["selector_mask"].as_u64().unwrap() as u8,
+                            mode: u8::from(entry["water_origin"].as_bool().unwrap()),
+                        };
+                        assert_eq!(
+                            state.city_info_dialog,
+                            Some(CityInfoDialog::HighwayWaterBridge { candidate })
+                        );
+                        assert_eq!(
+                            state.finish_mac_frame_calendar_phase(Duration::ZERO, waits),
+                            GameClockAdvance::default()
+                        );
+                        if let Some(selector) = choice["selector"].as_u64() {
+                            let expected = if event["highway_bridge_notice"].is_null() {
+                                candidate.span_count
+                            } else {
+                                0
+                            };
+                            assert_eq!(
+                                state.finish_highway_water_bridge(candidate, selector as u8),
+                                expected
+                            );
+                        }
+                        state.close_city_info_dialog();
+                    } else {
+                        assert!(state.city_info_dialog.is_none());
+                    }
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_after"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_after"].as_u64().unwrap()
+                    );
+                }
+                if let Some((tool, event)) = single_tile_event.as_ref()
+                    && event["frame"].as_u64() == Some(frame)
+                {
+                    let x = event["x"].as_u64().unwrap() as usize;
+                    let y = event["y"].as_u64().unwrap() as usize;
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_before"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_before"].as_u64().unwrap()
+                    );
+                    state.tool = *tool;
+                    let budget_offset = match tool {
+                        EditTool::Police => Some(5),
+                        EditTool::FireStation => Some(6),
+                        EditTool::Hospital => Some(7),
+                        EditTool::School => Some(8),
+                        EditTool::College => Some(9),
+                        _ => None,
+                    }
+                    .and_then(|row| budget_row_misc_offset_for_city(&state.city, row, 0));
+                    let budget_current = |state: &ViewerState, offset| {
+                        state.city.budget_misc_u32_values(offset, 1)[0] as u64
+                    };
+                    if let Some(offset) = budget_offset
+                        && let Some(before) = event["budget_current_before"].as_u64()
+                    {
+                        assert_eq!(budget_current(&state, offset), before, "{kind:?} {tool:?}");
+                    }
+                    if let Some(before) = event["reward_latch_before"].as_u64() {
+                        assert_eq!(
+                            u64::from(state.city.mac_civic_latch()),
+                            before,
+                            "{kind:?} {tool:?}"
+                        );
+                    }
+                    let expected = event["accepted"]
+                        .as_bool()
+                        .unwrap_or_else(|| !event["written_cells"].as_array().unwrap().is_empty());
+                    assert_eq!(
+                        state.apply_tool_at_tile(x, y),
+                        expected,
+                        "{kind:?} {tool:?}"
+                    );
+                    if *tool == EditTool::Bulldoze {
+                        assert_eq!(
+                            state.city.mac_state_misc_u32_at(0x1028).map(u64::from),
+                            event["team_mask_after"].as_u64()
+                        );
+                        let final_stamps: std::collections::BTreeMap<_, _> = event["written_cells"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|stamp| {
+                                let tx = stamp[0].as_u64().unwrap() as usize;
+                                let ty = stamp[1].as_u64().unwrap() as usize;
+                                let tile = stamp[2].as_u64().unwrap() as u8;
+                                ((tx, ty), tile)
+                            })
+                            .collect();
+                        for ((tx, ty), tile) in final_stamps {
+                            assert_eq!(
+                                state.city.building_at(tx, ty),
+                                tile,
+                                "{kind:?} ({tx},{ty})"
+                            );
+                        }
+                    }
+                    if let Some(after) = event["reward_latch_after"].as_u64() {
+                        assert_eq!(
+                            u64::from(state.city.mac_civic_latch()),
+                            after,
+                            "{kind:?} {tool:?}"
+                        );
+                    }
+                    if *tool == EditTool::Stadium
+                        && let Some(choices) = event["team_choices"].as_array()
+                    {
+                        assert_eq!(
+                            state.city.mac_state_misc_u32_at(0x1028).map(u64::from),
+                            event["team_mask_before"].as_u64()
+                        );
+                        for (i, choice) in choices.iter().enumerate() {
+                            assert!(matches!(
+                                state.city_info_dialog,
+                                Some(CityInfoDialog::StadiumTeam { .. })
+                            ));
+                            assert_eq!(
+                                state.finish_mac_stadium_team(choice.as_i64().unwrap() as u8),
+                                i + 1 == choices.len()
+                            );
+                        }
+                        assert!(state.city_info_dialog.is_none());
+                        assert_eq!(
+                            state.city.mac_state_misc_u32_at(0x1028).map(u64::from),
+                            event["team_mask_after"].as_u64()
+                        );
+                    } else if *tool == EditTool::Stadium && event["team_chooser_reached"].is_null()
+                    {
+                        assert!(state.city_info_dialog.is_none());
+                    }
+                    if let Some(offset) = budget_offset
+                        && let Some(after) = event["budget_current_after"].as_u64()
+                    {
+                        assert_eq!(budget_current(&state, offset), after, "{kind:?} {tool:?}");
+                    }
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_after"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.city.zone_at(x, y).unwrap().raw_bits()),
+                        event["zone_after"].as_u64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_after"].as_u64().unwrap()
+                    );
+                }
+                if let Some(event) = tunnel_event.as_ref()
+                    && event["frame"].as_u64() == Some(frame)
+                {
+                    let entrance = (
+                        event["x"].as_u64().unwrap() as usize,
+                        event["y"].as_u64().unwrap() as usize,
+                    );
+                    let before = state.city.city_funds();
+                    assert_eq!(i64::from(before), event["funds_before"].as_i64().unwrap());
+                    state.tool = EditTool::Tunnel;
+                    assert!(!state.apply_tool_at_tile(entrance.0, entrance.1));
+                    assert_eq!(state.city.city_funds(), before);
+                    if let Some(quote) = event.get("tunnel_quote") {
+                        let exit: (usize, usize) =
+                            serde_json::from_value(quote["exit"].clone()).unwrap();
+                        let cost = event["price"].as_u64().unwrap() as u32;
+                        assert_eq!(
+                            state.city_info_dialog,
+                            Some(CityInfoDialog::TunnelQuote {
+                                entrance,
+                                exit,
+                                cost
+                            })
+                        );
+                        assert_eq!(
+                            state.finish_mac_frame_calendar_phase(Duration::ZERO, waits),
+                            GameClockAdvance::default()
+                        );
+                        if quote["accepted"].as_bool().unwrap() {
+                            let written = event["written_cells"].as_array().unwrap();
+                            let distinct = written
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, tile)| !written[..*index].contains(tile))
+                                .count();
+                            assert_eq!(state.accept_mac_tunnel_quote(), distinct);
+                        } else {
+                            state.close_city_info_dialog();
+                        }
+                    }
+                    assert!(state.city_info_dialog.is_none());
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_after"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_after"].as_u64().unwrap()
+                    );
+                }
+                if let Some((underground, event)) = underground_event.as_ref()
+                    && event["frame"].as_u64() == Some(frame)
+                {
+                    let start = (
+                        event["x"].as_u64().unwrap() as usize,
+                        event["y"].as_u64().unwrap() as usize,
+                    );
+                    let end: (usize, usize) = serde_json::from_value(event["end"].clone()).unwrap();
+                    let expected: Vec<(usize, usize)> =
+                        serde_json::from_value(event["preview_cells"].clone()).unwrap();
+                    let underground = *underground;
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_before"].as_i64().unwrap()
+                    );
+                    state.tool = match underground {
+                        UndergroundKind::Pipes => EditTool::Pipes,
+                        UndergroundKind::Subway => EditTool::Subway,
+                    };
+                    assert_eq!(
+                        state.underground_drag_path_for_kind(start, end, underground, true),
+                        expected,
+                        "{kind:?} {underground:?} preview route"
+                    );
+                    state.begin_underground_drag(start.0, start.1, underground);
+                    state.update_underground_drag_to(end);
+                    assert_eq!(
+                        state
+                            .underground_drag_cost()
+                            .map(|(_, cost)| u64::from(cost)),
+                        event["price"].as_u64()
+                    );
+                    let outcome = state.release_left_mouse_drag(false);
+                    assert_eq!(
+                        outcome.underground,
+                        Some((
+                            underground,
+                            event["written_cells"].as_array().unwrap().len()
+                        ))
+                    );
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_after"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_after"].as_u64().unwrap()
+                    );
+                }
+                if let Some(&(network, ref event)) = surface_event.as_ref()
+                    && event["frame"].as_u64() == Some(frame)
+                {
+                    let x = event["x"].as_u64().unwrap() as usize;
+                    let y = event["y"].as_u64().unwrap() as usize;
+                    let end = (
+                        event["end"][0].as_u64().unwrap() as usize,
+                        event["end"][1].as_u64().unwrap() as usize,
+                    );
+                    assert_eq!(
+                        u64::from(state.game_clock.day()),
+                        event["phase_before"].as_u64().unwrap()
+                    );
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_before"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_before"].as_u64().unwrap()
+                    );
+                    let rail = network == NetworkKind::Rail;
+                    state.tool = match network {
+                        NetworkKind::Road => EditTool::Road,
+                        NetworkKind::Rail => EditTool::Rail,
+                        NetworkKind::Power => EditTool::Power,
+                    };
+                    state.begin_network_drag(x, y, network);
+                    state.update_network_drag_to(end);
+                    if let Some(native_path) = event.get("preview_cells") {
+                        let expected: Vec<(usize, usize)> =
+                            serde_json::from_value(native_path.clone()).unwrap();
+                        assert_eq!(
+                            state.network_drag_preview_path(state.network_drag.unwrap()),
+                            expected,
+                            "{kind:?} {network:?} preview route"
+                        );
+                    }
+                    assert_eq!(
+                        state.network_drag_cost().map(|(_, cost)| u64::from(cost)),
+                        event["price"].as_u64(),
+                        "{kind:?} {network:?} preview cost"
+                    );
+                    let outcome = state.release_left_mouse_drag(false);
+                    let writes = event["written_cells"].as_array().unwrap();
+                    let surface_writes = if event.get("bridge_entry").is_some() {
+                        let visited = event["visited_cells"].as_array().unwrap();
+                        writes.iter().filter(|tile| visited.contains(tile)).count()
+                    } else {
+                        writes.len()
+                    };
+                    assert_eq!(outcome.network, Some((network, surface_writes)));
+
+                    let mut road_link = outcome.road_neighbor_link;
+                    let mut rail_link = outcome.rail_neighbor_link;
+                    if let Some(choice) = event.get("bridge_choice") {
+                        let (seed_x, seed_y, direction, span_count, selector_mask) = match state
+                            .city_info_dialog
+                        {
+                            Some(CityInfoDialog::RoadBridge {
+                                seed_x,
+                                seed_y,
+                                direction,
+                                span_count,
+                                selector_mask,
+                                mac_neighbor_link,
+                            }) if network == NetworkKind::Road => {
+                                road_link = mac_neighbor_link;
+                                (seed_x, seed_y, direction, span_count, selector_mask)
+                            }
+                            Some(CityInfoDialog::RailBridge {
+                                seed_x,
+                                seed_y,
+                                direction,
+                                span_count,
+                                neighbor_link,
+                            }) if rail => {
+                                rail_link = neighbor_link;
+                                (seed_x, seed_y, direction, span_count, 2)
+                            }
+                            Some(CityInfoDialog::PowerBridge {
+                                seed_x,
+                                seed_y,
+                                direction,
+                                span_count,
+                                ..
+                            }) if network == NetworkKind::Power => {
+                                (seed_x, seed_y, direction, span_count, 1)
+                            }
+                            _ => panic!("{kind:?} expected the native bridge chooser: {choice}"),
+                        };
+                        let seed: (usize, usize) =
+                            serde_json::from_value(event["bridge_entry"]["seed"].clone()).unwrap();
+                        assert_eq!((seed_x, seed_y), seed);
+                        assert_eq!(u64::from(direction), choice["direction"].as_u64().unwrap());
+                        assert_eq!(span_count as u64, choice["span_count"].as_u64().unwrap());
+                        assert_eq!(
+                            u64::from(selector_mask),
+                            choice["selector_mask"].as_u64().unwrap()
+                        );
+                        assert_eq!(
+                            i64::from(state.city.city_funds()),
+                            choice["funds_before"].as_i64().unwrap()
+                        );
+                        assert_eq!(
+                            state.finish_mac_frame_calendar_phase(Duration::ZERO, waits),
+                            GameClockAdvance::default()
+                        );
+
+                        if let Ok(selector) = u8::try_from(choice["selector"].as_i64().unwrap()) {
+                            let placed = match network {
+                                NetworkKind::Road => {
+                                    state.finish_road_bridge(seed, direction, span_count, selector)
+                                }
+                                NetworkKind::Rail => {
+                                    state.finish_rail_bridge(seed, direction, span_count)
+                                }
+                                NetworkKind::Power => {
+                                    state.finish_power_bridge(seed, direction, span_count)
+                                }
+                            };
+                            let link_charge =
+                                if event["neighbor_link"]["accepted"].as_bool() == Some(true) {
+                                    if rail { 1_500 } else { 1_000 }
+                                } else {
+                                    0
+                                };
+                            let bridge_funds = event["funds_after"].as_i64().unwrap() + link_charge;
+                            assert_eq!(i64::from(state.city.city_funds()), bridge_funds);
+                            assert_eq!(
+                                placed,
+                                if choice["funds_before"].as_i64() == Some(bridge_funds) {
+                                    0
+                                } else {
+                                    span_count.max(2)
+                                }
+                            );
+                        }
+                        state.close_city_info_dialog();
+                    } else {
+                        assert!(!matches!(
+                            state.city_info_dialog,
+                            Some(
+                                CityInfoDialog::RoadBridge { .. }
+                                    | CityInfoDialog::RailBridge { .. }
+                                    | CityInfoDialog::PowerBridge { .. }
+                            )
+                        ));
+                    }
+                    if let Some(link) = event.get("neighbor_link") {
+                        let endpoint: (usize, usize) =
+                            serde_json::from_value(link["endpoint"].clone()).unwrap();
+                        let offered = if rail {
+                            rail_link.map(|candidate| candidate.endpoint)
+                        } else {
+                            road_link.map(|candidate| candidate.endpoint)
+                        };
+                        assert_eq!(offered, Some(endpoint));
+                        let bucket = usize::from(rail);
+                        let (x, y) = endpoint;
+                        assert_eq!(
+                            u64::from(state.city.text_overlay_at(x, y).unwrap_or(0)),
+                            link["xtxt_before"].as_u64().unwrap()
+                        );
+                        assert_eq!(
+                            u64::from(state.city.mac_rci_overlay_cap_counts()[bucket]),
+                            link["count_before"].as_u64().unwrap()
+                        );
+                        let accepted = link["accepted"].as_bool().unwrap();
+                        let paid = if rail {
+                            apply_rail_neighbor_link_confirmation(
+                                &mut state,
+                                rail_link.unwrap(),
+                                accepted,
+                            )
+                        } else {
+                            apply_road_neighbor_link_confirmation(
+                                &mut state,
+                                road_link.unwrap(),
+                                accepted,
+                            )
+                        };
+                        assert_eq!(paid, accepted);
+                        assert_eq!(
+                            u64::from(state.city.text_overlay_at(x, y).unwrap_or(0)),
+                            link["xtxt_after"].as_u64().unwrap()
+                        );
+                        assert_eq!(
+                            u64::from(state.city.mac_rci_overlay_cap_counts()[bucket]),
+                            link["count_after"].as_u64().unwrap()
+                        );
+                    } else {
+                        assert!(road_link.is_none_or(|candidate| {
+                            !road_neighbor_link_is_available(&state, candidate)
+                        }));
+                        assert!(rail_link.is_none_or(|candidate| {
+                            !rail_neighbor_link_is_available(&state, candidate)
+                        }));
+                    }
+                    assert_eq!(
+                        i64::from(state.city.city_funds()),
+                        event["funds_after"].as_i64().unwrap()
+                    );
+                    assert_eq!(
+                        u64::from(state.mac_process_rng.seed()),
+                        event["quickdraw_after"].as_u64().unwrap()
+                    );
+                }
+                state.finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+            };
+            if let Some(review) = budget_review.as_ref()
+                && phase_frames.get(&frame).is_some_and(|entry| entry.0 == 0)
+            {
+                assert_eq!(advance, GameClockAdvance::default());
+                assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+                assert_eq!(
+                    state.game_clock,
+                    GameClock::from_city_age(founded_year, review["age"].as_u64().unwrap() as u32)
+                );
+                assert_eq!(
+                    i64::from(state.city.city_funds()),
+                    review["funds"].as_i64().unwrap()
+                );
+                assert_eq!(
+                    u64::from(state.mac_process_rng.seed()),
+                    review["quickdraw_seed"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    u64::from(budget_service_funding_raw_for_city(&state.city, 0)),
+                    review["funding_before"].as_u64().unwrap()
+                );
+                assert!(state.adjust_budget_service_funding(0, -5));
+                assert_eq!(
+                    u64::from(budget_service_funding_raw_for_city(&state.city, 0)),
+                    review["funding_after"].as_u64().unwrap()
+                );
+                state.close_city_info_dialog();
+                advance = state.advance_frame_simulation(Duration::ZERO);
+            }
+            let actor_snapshot = native_actors.join(format!("iteration-{frame:02}.json"));
+            let actor_due = state.mac_loop_scheduler.actor_deadline != actor_deadline;
+            let calendar = phase_frames.get(&frame);
+            assert_eq!(
+                advance.days,
+                u32::from(calendar.is_some()),
+                "{kind:?} frame {frame}"
+            );
+            saw_independent_frames |= actor_due && calendar.is_none();
+            assert_eq!(
+                actor_due,
+                actor_snapshot.is_file(),
+                "{kind:?} frame {frame}"
+            );
+            if actor_due {
+                let native: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&actor_snapshot).unwrap()).unwrap();
+                assert_eq!(
+                    native["actor_entries"][0]["actor_deadline"].as_u64(),
+                    Some(u64::from(state.mac_loop_scheduler.actor_deadline)),
+                    "{kind:?} frame {frame} actor deadline"
+                );
+                if calendar.is_none() {
+                    assert_eq!(
+                        native["quickdraw_seed_after"].as_u64(),
+                        Some(u64::from(state.mac_process_rng.seed())),
+                        "{kind:?} actor-only frame {frame} QuickDraw"
+                    );
+                    let data = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+                    let xthg_start = 20 + 12 * n + 1_200 * 4;
+                    assert!(
+                        &data[xthg_start..]
+                            == std::fs::read(
+                                actor_snapshot
+                                    .with_file_name(format!("iteration-{frame:02}-xthg.bin"))
+                            )
+                            .unwrap(),
+                        "{kind:?} actor-only frame {frame} XTHG"
+                    );
+                    assert!(
+                        &data[20 + 5 * n..20 + 6 * n]
+                            == std::fs::read(
+                                actor_snapshot
+                                    .with_file_name(format!("iteration-{frame:02}-xtxt.bin"))
+                            )
+                            .unwrap(),
+                        "{kind:?} actor-only frame {frame} XTXT"
+                    );
+                }
+            }
+            let Some((phase, phase_dir, native_frame)) = calendar else {
+                continue;
+            };
+            assert_eq!(u32::from(state.game_clock.day()), *phase);
+            assert_eq!(advance.months, u32::from(*phase == 0));
+            for (name, actual) in [
+                ("calendar_deadline", state.mac_loop_scheduler.deadline),
+                ("quickdraw_seed", state.mac_process_rng.seed()),
+                ("game_lcg_seed", state.mac_game_rng.state()),
+            ] {
+                assert_eq!(
+                    native_frame[name].as_u64(),
+                    Some(u64::from(actual)),
+                    "{kind:?} phase {phase} {name}"
+                );
+            }
+            let data = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+            for (name, offset, len) in planes {
+                let plane_path = phase_dir.join(format!("{name}.bin"));
+                if name == "xter" && !plane_path.is_file() {
+                    continue;
+                }
+                let native = std::fs::read(plane_path).unwrap();
+                let actual = &data[offset..offset + len];
+                let diff =
+                    actual
+                        .iter()
+                        .zip(&native)
+                        .enumerate()
+                        .find_map(|(i, (actual, expected))| {
+                            (actual != expected).then_some((i, *actual, *expected))
+                        });
+                assert_eq!(actual.len(), native.len(), "{name} plane length");
+                assert_eq!(
+                    diff,
+                    None,
+                    "{kind:?} phase {phase} {name} first differing offset (QuickDraw {})",
+                    state.mac_process_rng.seed()
+                );
+            }
+            let native = std::fs::read(phase_dir.join("xtrf.bin")).unwrap();
+            let traffic = &data[20 + 11 * n..20 + 12 * n];
+            let diff = traffic.iter().enumerate().position(|(i, &value)| {
+                value != native[(i / CITY_HEIGHT / 2) * 64 + (i % CITY_HEIGHT) / 2]
+            });
+            assert_eq!(diff, None, "{kind:?} phase {phase} XTRF");
+            if building_event && matches!(*phase, 1 | 3) {
+                let globals = std::fs::read(phase_dir.join("app_globals.bin")).unwrap();
+                for (offset, actual) in [
+                    (0xf00a, state.city.mac_power_service_summary()),
+                    (0xf00e, state.city.mac_water_service_summary()),
+                ] {
+                    let expected =
+                        u32::from_be_bytes(globals[offset..offset + 4].try_into().unwrap());
+                    assert_eq!(
+                        actual, expected,
+                        "{kind:?} phase {phase} service {offset:#x}"
+                    );
+                }
+            }
+            let xmic_path = phase_dir.join(if building_event {
+                "live_xmic.bin"
+            } else {
+                "budget_xmic.bin"
+            });
+            if building_event || (*phase == 0 && xmic_path.is_file()) {
+                let xmic = std::fs::read(xmic_path).unwrap();
+                assert_eq!(xmic.len(), crate::city::MICROSIM_COUNT * 8);
+                for (slot, record) in xmic.chunks_exact(8).enumerate() {
+                    let actual = state.city.microsim_at(slot).unwrap();
+                    let [tile_id, stat0, s1_hi, s1_lo, s2_hi, s2_lo, s3_hi, s3_lo] =
+                        <[u8; 8]>::try_from(record).unwrap();
+                    assert_eq!(
+                        (
+                            actual.tile_id,
+                            actual.stat0,
+                            actual.stat1,
+                            actual.stat2,
+                            actual.stat3,
+                        ),
+                        (
+                            tile_id,
+                            stat0,
+                            u16::from_be_bytes([s1_hi, s1_lo]),
+                            u16::from_be_bytes([s2_hi, s2_lo]),
+                            u16::from_be_bytes([s3_hi, s3_lo]),
+                        ),
+                        "{kind:?} phase {phase} XMIC slot {slot}"
+                    );
+                }
+            }
+            if *phase == 2 {
+                for (name, source, scale) in [
+                    ("xval", state.city.land_value_slice(), 2),
+                    ("xcrm", state.city.crime_density_slice(), 2),
+                    ("xplt", state.city.pollution_density_slice(), 2),
+                    ("xplc", state.city.police_coverage_slice(), 4),
+                    ("xfir", state.city.fire_coverage_slice(), 4),
+                    ("xpop", state.city.population_density_slice(), 4),
+                ] {
+                    let source = source.unwrap();
+                    let native = std::fs::read(phase_dir.join(format!("{name}.bin"))).unwrap();
+                    let side = CITY_WIDTH / scale;
+                    assert_eq!(native.len(), side * side);
+                    let diff = native.iter().enumerate().find_map(|(i, &expected)| {
+                        let x = (i / side) * scale;
+                        let y = (i % side) * scale;
+                        let actual = source[x * CITY_HEIGHT + y];
+                        (actual != expected).then_some((x, y, actual, expected))
+                    });
+                    assert_eq!(diff, None, "{kind:?} phase 2 {name} (x, y, Rust, native)");
+                }
+            }
+            let event_tool = single_tile_event.as_ref().map(|(tool, _)| *tool);
+            if *phase == 3
+                && (underground_event.is_some()
+                    || matches!(event_tool, Some(EditTool::SubStation | EditTool::WaterPump)))
+            {
+                let globals = std::fs::read(phase_dir.join("app_globals.bin")).unwrap();
+                assert_eq!(
+                    state.city.mac_xund_class_count(),
+                    u16::from_be_bytes(globals[0xf082..0xf084].try_into().unwrap()),
+                    "{kind:?} XUND census after the underground tool"
+                );
+            }
+            if *phase == 3 && event_tool == Some(EditTool::RailDepot) {
+                let globals = std::fs::read(phase_dir.join("app_globals.bin")).unwrap();
+                assert_eq!(
+                    state.city.mac_rail_actor_counter,
+                    u16::from_be_bytes(globals[0xa09e..0xa0a0].try_into().unwrap()),
+                    "{kind:?} rail actor census after depot placement"
+                );
+            }
+            if has_map_event && (3..=19).contains(phase) {
+                let counters = std::fs::read(phase_dir.join("counters.bin")).unwrap();
+                for (slot, expected) in counters.chunks_exact(4).enumerate() {
+                    assert_eq!(
+                        state.city.mac_rci_counter(slot),
+                        u32::from_be_bytes(expected.try_into().unwrap()),
+                        "{kind:?} phase {phase} counter {slot}"
+                    );
+                }
+            }
+            if matches!(*phase, 0 | 21) {
+                let globals = std::fs::read(phase_dir.join("app_globals.bin")).unwrap();
+                let read_long =
+                    |offset| u32::from_be_bytes(globals[offset..offset + 4].try_into().unwrap());
+                assert_eq!(state.city.city_age_days(), Some(read_long(0xefa4)));
+                if *phase == 0 {
+                    assert_eq!(state.city.city_funds(), read_long(0xefac) as i32);
+                    assert_eq!(
+                        mac_auto_budget_enabled_for_city(&state.city),
+                        globals[0xd606] != 0,
+                        "{kind:?} phase 0 Auto-Budget"
+                    );
+                    assert_eq!(
+                        state.city.ordinance_flags_for_saved_layout(),
+                        read_long(0xeff2)
+                    );
+                    let counters = std::fs::read(phase_dir.join("counters.bin")).unwrap();
+                    for (slot, expected) in counters.chunks_exact(4).enumerate() {
+                        assert_eq!(
+                            state.city.mac_rci_counter(slot),
+                            u32::from_be_bytes(expected.try_into().unwrap()),
+                            "{kind:?} phase 0 counter {slot}"
+                        );
+                    }
+                    if has_saved_budget_book {
+                        let budget = std::fs::read(phase_dir.join("budget_book.bin")).unwrap();
+                        for (index, row) in budget.chunks_exact(0x70).enumerate() {
+                            let offset =
+                                budget_row_misc_offset_for_city(&state.city, index, 0).unwrap();
+                            let actual = state.city.budget_misc_u32_values(offset, 27);
+                            let row_long = |offset| {
+                                u32::from_be_bytes(row[offset..offset + 4].try_into().unwrap())
+                            };
+                            assert_eq!(
+                                &actual[..3],
+                                &[row_long(0x60), row_long(0x64), row_long(0x68)],
+                                "{kind:?} phase 0 budget row {index} current/funding/accrual"
+                            );
+                            for month in 0..12 {
+                                assert_eq!(
+                                    &actual[3 + month * 2..5 + month * 2],
+                                    &[row_long(month * 4), row_long(0x30 + month * 4)],
+                                    "{kind:?} phase 0 budget row {index}, history month {month}"
+                                );
+                            }
+                        }
+                    }
+                    continue;
+                }
+                let demand = std::array::from_fn::<_, 3, _>(|i| {
+                    let offset = 0xefc0 + i * 2;
+                    i32::from(i16::from_be_bytes(
+                        globals[offset..offset + 2].try_into().unwrap(),
+                    ))
+                });
+                assert_eq!(state.city.misc_i32_values(0x718, 3), demand);
+                let native = std::fs::read(phase_dir.join("cohort_lanes.bin")).unwrap();
+                for (i, actual) in state.city.misc_u32_values(0x7c, 60).into_iter().enumerate() {
+                    let offset = (i % 3) * 0x1000 + (i / 3) * 4;
+                    let expected =
+                        u32::from_be_bytes(native[offset..offset + 4].try_into().unwrap());
+                    assert_eq!(actual, expected, "{kind:?} cohort dword {i}");
+                }
+            }
+        }
+        assert_eq!(
+            u32::from(state.game_clock.day()),
+            if annual_only {
+                last_phase
+            } else {
+                last_scan_phase
+            }
+        );
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert!(!scenario_action::mac_scenario_action_active(&state.city));
+    }
+    if !annual_only && last_scan_phase == 24 && first_frame["tick_stride"].as_u64() == Some(10) {
+        assert!(
+            saw_independent_frames,
+            "the ten-tick schedule must include actor-only frames"
+        );
+    }
+}
+
+#[test]
+fn mac_dispatch_response_matches_native_action_lifetime_on_both_layouts() {
+    use crate::win95_overlay::{DispatchKind, Win95OverlayRecord};
+
+    for path in ["mac-service-response.city", "mac-service-response.sc2"] {
+        let mut base = blank_city_layout_fixture(path, "Dispatch response");
+        base.prepare_mac_fidelity_from_saved_city();
+        for x in 100..116 {
+            base.set_building(x, 100, 210);
+            base.set_building(x, 101, 211);
+        }
+        base.set_mac_state_misc_u32_at(915 * 4, 3);
+        let stale = Win95OverlayRecord::from_bytes(&[
+            0, 0x93, 0x99, 0x77, 0x78, 0x77, 0x79, 0x7a, 0x51, 0x52, 0x53, 0x5a,
+        ]);
+        base.set_mac_object_slot_record(1, stale);
+
+        // Native CODE 3 placement joined to CODE 10 export 246. Each row
+        // gives the ending QuickDraw seed for the first and (if needed) last pass.
+        for (kind, kind_byte, riot, seed_pairs) in [
+            (
+                DispatchKind::Police,
+                7,
+                0xfe,
+                [
+                    (677_268_843, 0),
+                    (669_281_627, 1_847_779_995),
+                    (677_268_843, 1_259_501_992),
+                ],
+            ),
+            (
+                DispatchKind::Firefighters,
+                8,
+                0,
+                [
+                    (168_070, 0),
+                    (959_744_092, 669_281_627),
+                    (168_070, 677_268_843),
+                ],
+            ),
+            (
+                DispatchKind::Military,
+                14,
+                0xfd,
+                [
+                    (677_268_843, 0),
+                    (669_281_627, 1_847_779_995),
+                    (677_268_843, 1_259_501_992),
+                ],
+            ),
+        ] {
+            for (case, (first_seed, last_seed)) in seed_pairs.into_iter().enumerate() {
+                let mut city = base.clone();
+                let fidelity = EngineFidelity::Mac68k;
+                city.reset_emergency_dispatch_for_engine(fidelity);
+                assert!(city.place_dispatch_actor_for_engine(45, 40, kind, fidelity));
+
+                let fire_x = if case == 1 { 44 } else { 46 };
+                let mut rng = MacToolboxRng::new(if case == 1 { 11 } else { 10 });
+                city.set_text_overlay(fire_x, 40, 0xff);
+                city.set_text_overlay(45, 41, riot);
+                if case == 2 {
+                    city.mac_object_slot_records_mut()[39].kind = 6;
+                }
+                scenario_action::begin_action(&mut city, scenario_action::OAKLAND_ACTION);
+
+                let mut check_pass = |city: &mut City, active, seed| {
+                    let pass = scenario_action::advance_action(city, &mut rng, &mut 0, &mut 0);
+                    assert_eq!(rng.seed(), seed, "{path} {kind:?} case {case}");
+                    assert_eq!(pass.complete, active == 0);
+                    assert!(!pass.riot_sound);
+                    assert_eq!(city.mac_state_misc_u32_at(0x1044), Some(12));
+                    assert_eq!(city.mac_state_misc_u32_at(0x1048), Some(active));
+                    assert_eq!(
+                        city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                        Some(if active == 0 {
+                            CITY_MODE_GAMEPLAY
+                        } else {
+                            CITY_MODE_DISASTER
+                        })
+                    );
+                    assert_eq!(
+                        city.text_overlay_at(45, 40),
+                        Some(if active == 0 { 0 } else { 0xca })
+                    );
+                    assert_eq!(city.text_overlay_at(fire_x, 40), Some(0));
+                    assert_eq!(city.text_overlay_at(45, 41), Some(0));
+                    assert_eq!(city.building_at(fire_x, 40), 1);
+                    assert_eq!(
+                        city.traffic_overlays().unwrap()[1].to_bytes(),
+                        [
+                            if active == 0 { 0 } else { kind_byte },
+                            0,
+                            0x99,
+                            45,
+                            40,
+                            0,
+                            0,
+                            0,
+                            0x51,
+                            0x52,
+                            0,
+                            0x5a,
+                        ],
+                    );
+                };
+                check_pass(&mut city, [0, 1, 0xff][case], first_seed);
+                if last_seed != 0 {
+                    city.mac_object_slot_records_mut()[39].kind = 0;
+                    check_pass(&mut city, 0, last_seed);
+                }
+            }
+        }
+    }
 }

@@ -27,8 +27,10 @@ impl City {
         if self.traffic_overlays.is_none() {
             self.traffic_overlays = Some(empty_overlay_table());
         }
-        let slot = pe_overlay_spawn_slot(self.traffic_overlays.as_ref()?)?;
-        self.traffic_overlays.as_mut().unwrap()[slot] = Win95OverlayRecord {
+        let table = self.traffic_overlays.as_mut()?;
+        let slot = pe_overlay_spawn_slot(table)?;
+        // The native constructor leaves target bytes +8/+9 intact.
+        table[slot] = Win95OverlayRecord {
             kind: XTHG_EXPLOSION,
             lane: 0,
             state,
@@ -37,10 +39,9 @@ impl City {
             height,
             sub_x: XTHG_EXPLOSION_SUBTILE,
             sub_y: XTHG_EXPLOSION_SUBTILE,
-            target_x: 0,
-            target_y: 0,
             saved_a: prior_xtxt,
             saved_b,
+            ..table[slot]
         };
         if let Some(proxy) = xthg_proxy_for_slot(slot) {
             self.set_text_overlay(x, y, proxy);
@@ -118,23 +119,26 @@ impl City {
         })
     }
 
-    /// PE tornado/monster start: if tile XTXT is in the actor proxy band
-    /// `0xC9..0xF1`, call `FUN_00401528(xtxt-0xC9)` → clear that slot's kind and
-    /// zero XTXT before re-reading `+A` / painting the new `slot-0x37`.
+    /// PE tornado/monster start calls 0x4507d0 for a proxy-band origin.
+    /// The old slot's coordinates select the XTXT cell to clear.
     pub(super) fn pe_clear_xtxt_proxy_band_occupant(&mut self, x: usize, y: usize) {
-        let xtxt = self.text_overlay_at(x, y).unwrap_or(0);
-        if !(0xc9..0xf1).contains(&xtxt) {
+        let Some(proxy @ 0xc9..=0xf0) = self.text_overlay_at(x, y) else {
             return;
+        };
+        let slot = usize::from(proxy - 0xc9);
+        let Some(record) = self
+            .traffic_overlays
+            .as_mut()
+            .and_then(|table| table.get_mut(slot))
+        else {
+            return;
+        };
+        record.kind = 0;
+        let (old_x, old_y) = (usize::from(record.tile_x), usize::from(record.tile_y));
+        if old_x < CITY_WIDTH && old_y < CITY_HEIGHT {
+            self.set_text_overlay(old_x, old_y, 0);
+            self.mark_dirty(old_x, old_y);
         }
-        if let Some(slot) = xthg_slot_for_proxy(xtxt)
-            && let Some(table) = self.traffic_overlays.as_mut()
-            && let Some(record) = table.get_mut(slot)
-        {
-            // `FUN_004507D0`: clear kind only.
-            record.kind = 0;
-        }
-        self.set_text_overlay(x, y, 0);
-        self.mark_dirty(x, y);
     }
 
     /// Win95 monster start `0x45ee10`: XTHG kind 5, dir east, height `0x0f`, sub 8/8.
@@ -154,9 +158,7 @@ impl City {
         if self.traffic_overlays.is_none() {
             self.traffic_overlays = Some(empty_overlay_table());
         }
-        // PE `0x45eea2`–`0x45eeb8`: clear proxy-band occupant, then re-read XTXT into `+A`.
-        self.pe_clear_xtxt_proxy_band_occupant(x, y);
-        let saved_a = self.text_overlay_at(x, y).unwrap_or(0);
+        // The allocator runs before proxy cleanup, so cleanup cannot supply the slot.
         let slot = self
             .traffic_overlays
             .as_ref()
@@ -165,6 +167,9 @@ impl City {
             .enumerate()
             .skip(XTHG_FIRST_USABLE_SLOT)
             .find_map(|(slot, record)| (record.kind == 0).then_some(slot))?;
+        // PE `0x45eea2`–`0x45eeb8`: clear proxy-band occupant, then re-read XTXT into `+A`.
+        self.pe_clear_xtxt_proxy_band_occupant(x, y);
+        let saved_a = self.text_overlay_at(x, y).unwrap_or(0);
         self.traffic_overlays.as_mut().unwrap()[slot] = Win95OverlayRecord {
             kind: XTHG_MONSTER,
             lane: XTHG_DIRECTION_EAST,
@@ -218,23 +223,23 @@ impl City {
         target_y: u8,
         _saved_a: u8,
     ) -> Option<usize> {
-        if x >= CITY_WIDTH || y >= CITY_HEIGHT || self.pe_tornado_actor().is_some() {
+        if x >= CITY_WIDTH || y >= CITY_HEIGHT || self.pe_tornado_actor_counter as i16 >= 1 {
             return None;
         }
         if self.traffic_overlays.is_none() {
             self.traffic_overlays = Some(empty_overlay_table());
         }
-        // PE `0x45f121`–`0x45f137`: clear proxy-band occupant, then re-read XTXT into `+A`.
-        self.pe_clear_xtxt_proxy_band_occupant(x, y);
-        let saved_a = self.text_overlay_at(x, y).unwrap_or(0);
+        // Native 0x45f0ab reserves a free slot before clearing a proxy.
         let slot = self
             .traffic_overlays
-            .as_ref()
-            .unwrap()
+            .as_ref()?
             .iter()
             .enumerate()
             .skip(XTHG_FIRST_USABLE_SLOT)
             .find_map(|(slot, record)| (record.kind == 0).then_some(slot))?;
+        self.pe_clear_xtxt_proxy_band_occupant(x, y);
+        let saved_a = self.text_overlay_at(x, y).unwrap_or(0);
+        let saved_b = self.traffic_overlays.as_ref().unwrap()[slot].saved_b;
         self.traffic_overlays.as_mut().unwrap()[slot] = Win95OverlayRecord {
             kind: XTHG_TORNADO,
             lane,
@@ -247,11 +252,14 @@ impl City {
             target_x,
             target_y,
             saved_a,
-            saved_b: 0,
+            saved_b,
         };
         if let Some(proxy) = xthg_proxy_for_slot(slot) {
             self.set_text_overlay(x, y, proxy);
         }
+        self.pe_tornado_actor_counter = self.pe_tornado_actor_counter.wrapping_add(1);
+        // 0x45f207 publishes the slot to the shared active-actor index.
+        self.pe_w_monster_xthg_index = slot as u16;
         self.mark_dirty(x, y);
         Some(slot)
     }

@@ -76,21 +76,21 @@ pub(super) fn pe_maxis_man_spawn_tile_jitter(
 
 /// Win95 `0x402dbf` / `0x4515e0`: 8-way direction from `(x,y)` toward `(tx,ty)`.
 pub(super) fn pe_xthg_direction_toward(x: i16, y: i16, tx: i16, ty: i16) -> u8 {
-    let dx = tx - x;
-    let dy = ty - y;
-    let abs_dx = dx.unsigned_abs();
-    let abs_dy = dy.unsigned_abs();
-    if (u32::from(abs_dy) + 1) / 2 > u32::from(abs_dx) {
+    let dx = tx.wrapping_sub(x);
+    let dy = ty.wrapping_sub(y);
+    let abs_dx = i32::from(dx.wrapping_abs());
+    let abs_dy = i32::from(dy.wrapping_abs());
+    if (abs_dy + 1) / 2 > abs_dx {
         if dy < 0 { 0 } else { 4 }
     } else if dx < 0 {
-        if (u32::from(abs_dx) + 1) / 2 > u32::from(abs_dy) {
+        if (abs_dx + 1) / 2 > abs_dy {
             6
         } else if dy < 0 {
             7
         } else {
             5
         }
-    } else if (u32::from(abs_dx) + 1) / 2 > u32::from(abs_dy) {
+    } else if (abs_dx + 1) / 2 > abs_dy {
         2
     } else if dy < 0 {
         1
@@ -261,7 +261,7 @@ pub(super) struct PeExplosionTickStats {
     /// PE `0x401096(0x1f8)` when XTHG `+1` (lane) is 0 before aging.
     pub(super) explode_sounds: usize,
     /// PE `0x40174e(0x4CAA58, tile)` when scatter lands at least one ignite.
-    pub(super) auto_goto_tile: Option<(usize, usize)>,
+    pub(super) trigger_point: Option<(usize, usize)>,
 }
 
 impl PeExplosionTickStats {
@@ -386,8 +386,6 @@ pub(super) fn pe_aircrash_tick_city(city: &mut City) -> PeAircraftTickStats {
 pub(super) fn pe_disaster_xthg_tick_slots_in_order(
     overlay_sim: &mut Win95OverlaySim,
     city: &mut City,
-    view_x: u8,
-    view_y: u8,
     crt: &mut Win95CrtRand,
     lfsr: &mut Win95Lfsr,
     game_rand: &mut Win95GameRand,
@@ -408,8 +406,9 @@ pub(super) fn pe_disaster_xthg_tick_slots_in_order(
     let mut airplane_prefix = false;
     let mut helicopter_prefix = false;
     let mut monster_dispatched = false;
-    // PE `FUN_00450890` resets `0x4E99D0` before the ascending slot sweep.
+    // PE `FUN_00450890` resets visit counters before the ascending slot sweep.
     city.pe_sailboat_budget = 0;
+    city.pe_tornado_actor_counter = 0;
     for slot in XTHG_FIRST_USABLE_SLOT..XTHG_RECORD_COUNT {
         let Some(record) = city
             .traffic_overlays()
@@ -439,10 +438,11 @@ pub(super) fn pe_disaster_xthg_tick_slots_in_order(
                 aircraft.mayday_sounds += one.mayday_sounds;
             }
             XTHG_MONSTER if !monster_dispatched => {
+                let (center_x, center_y) = city.pe_city_center();
                 let one = pe_monster_tick_city_with_prefix(
                     city,
-                    view_x,
-                    view_y,
+                    center_x,
+                    center_y,
                     crt,
                     lfsr,
                     Some((airplane_prefix, helicopter_prefix)),
@@ -465,8 +465,8 @@ pub(super) fn pe_disaster_xthg_tick_slots_in_order(
                 explosion.cleared += one.cleared;
                 explosion.ignited += one.ignited;
                 explosion.explode_sounds += one.explode_sounds;
-                if one.auto_goto_tile.is_some() {
-                    explosion.auto_goto_tile = one.auto_goto_tile;
+                if one.trigger_point.is_some() {
+                    explosion.trigger_point = one.trigger_point;
                 }
             }
             XTHG_MAXIS_MAN => {
@@ -653,8 +653,8 @@ pub(super) fn pe_explosion_tick_city_with_lfsr(
         stats.cleared += one.cleared;
         stats.ignited += one.ignited;
         stats.explode_sounds += one.explode_sounds;
-        if one.auto_goto_tile.is_some() {
-            stats.auto_goto_tile = one.auto_goto_tile;
+        if one.trigger_point.is_some() {
+            stats.trigger_point = one.trigger_point;
         }
     }
     stats
@@ -729,10 +729,10 @@ pub(super) fn pe_explosion_tick_slot_with_lfsr(
         }
     }
     // PE `0x4547f3`–`0x454838`: any ignite → `0x40174e` on the explosion tile
-    // when auto-goto mode `word[0x4CA42C] ≠ 2`.
+    // when wCityMode != 2, independently of the Auto-Goto preference.
     // Then `wSetTriggerDisasterType` (`0x4CA420`) = XTHG state, or 1 if state is 0.
-    if scatter_hit {
-        stats.auto_goto_tile = Some((x, y));
+    if scatter_hit && city.pe_w_city_mode != CITY_MODE_DISASTER as u16 {
+        stats.trigger_point = Some((x, y));
         let trigger = if record.state != 0 {
             u32::from(record.state)
         } else {
@@ -759,6 +759,7 @@ pub(super) fn pe_tornado_tick_city_with_rng(
     crt: &mut Win95CrtRand,
 ) -> PeTornadoTickStats {
     let mut stats = PeTornadoTickStats::default();
+    city.pe_tornado_actor_counter = 0;
     let slots: Vec<usize> = city
         .traffic_overlays()
         .map(|table| {
@@ -794,6 +795,8 @@ pub(super) fn pe_tornado_tick_slot_with_rng(
     if !record.is_pe_tornado_actor() {
         return stats;
     }
+    // PE 0x454ec2 increments on entry, before either retirement branch.
+    city.pe_tornado_actor_counter = city.pe_tornado_actor_counter.wrapping_add(1);
     let x = usize::from(record.tile_x);
     let y = usize::from(record.tile_y);
     let building = city.building_at(x, y);
@@ -802,11 +805,7 @@ pub(super) fn pe_tornado_tick_slot_with_rng(
         // PE @ `0x454f08`: DestroyBuilding mode 1 (`0x402211` → `0x458d40`), not
         // DestroyStructure. Elevated `0x3f..=0x42` take the elevated arm then still
         // count as a destroy; `heavy` is pre-destroy XBLD `>= 0x0d` (`0x454f0f`).
-        if matches!(building, 0x3f..=0x42) {
-            pe_destroy_building_elevated_arm_45994e(city, x, y);
-        } else {
-            let _ = pe_flood_destroy_tile_with_crt(city, crt, x, y);
-        }
+        pe_destroy_building_mode1_optional_crt(city, Some(crt), x, y);
         stats.destroyed += 1;
         heavy = building >= 0x0d;
     }
@@ -954,17 +953,11 @@ pub(super) fn pe_monster_attack_tile(
     }
     // Win95 `0x454bc7`: DestroyBuilding mode 1 (`0x402211` → `0x458d40`), then
     // mode follow-up (`0x40178f` / `0x401884` / `0x4027f2`) and always OR `target_x|0x80`
-    // @ `0x454c20`. Not DestroyStructure — elevated `0x3f..=0x42` take the
-    // DestroyBuilding elevated arm (`0x45994e` PlaceTile 0 / XZON `&=0x0f` / ALTM
-    // `&=0x3ff`), then still run follow-ups.
-    if matches!(building, 0x3f..=0x42) {
-        pe_destroy_building_elevated_arm_45994e(city, ax, ay);
-    } else {
-        let _ = pe_flood_destroy_tile_with_crt(city, rng, ax, ay);
-    }
+    // @ `0x454c20`. Tunnel portal hits use the paired-portal worker.
+    pe_destroy_building_mode1_optional_crt(city, Some(rng), ax, ay);
     match saved_b {
         1 => {
-            // PE @ `0x454bb0`: CRT `&3+9` then `0x40178f` → PlaceTile `0x441f00`.
+            // PE @ `0x454be9`: CRT `&3+9` then `0x40178f` → PlaceTile `0x441f00`.
             let rubble = (rng.random_u16() & 3) as u8 + 9;
             pe_place_tile_441f00(city, ax, ay, rubble);
         }
@@ -984,18 +977,18 @@ pub(super) fn pe_monster_attack_tile(
 /// Win95 `0x4548c0` XTHG monster: height/state AI, SE attack, steer/move, 1-in-100 flee despawn.
 pub(super) fn pe_monster_tick_city_with_rng(
     city: &mut City,
-    view_x: u8,
-    view_y: u8,
+    center_x: i16,
+    center_y: i16,
     crt: &mut Win95CrtRand,
     lfsr: &mut Win95Lfsr,
 ) -> PeMonsterTickStats {
-    pe_monster_tick_city_with_prefix(city, view_x, view_y, crt, lfsr, None)
+    pe_monster_tick_city_with_prefix(city, center_x, center_y, crt, lfsr, None)
 }
 
 pub(super) fn pe_monster_tick_city_with_prefix(
     city: &mut City,
-    view_x: u8,
-    view_y: u8,
+    center_x: i16,
+    center_y: i16,
     crt: &mut Win95CrtRand,
     lfsr: &mut Win95Lfsr,
     dispatch_prefix: Option<(bool, bool)>,
@@ -1075,8 +1068,8 @@ pub(super) fn pe_monster_tick_city_with_prefix(
                 dir = pe_xthg_direction_toward(
                     i16::from(record.tile_x),
                     i16::from(record.tile_y),
-                    i16::from(view_x),
-                    i16::from(view_y),
+                    center_x,
+                    center_y,
                 );
                 if let Some(overlays) = city.traffic_overlays_mut()
                     && let Some(slot_rec) = overlays.get_mut(slot)
@@ -1091,13 +1084,13 @@ pub(super) fn pe_monster_tick_city_with_prefix(
                 record.target_x = (crt.random_u16() & 0x7f) as u8;
                 record.target_y = (crt.random_u16() & 0x7f) as u8;
                 // PE `0x4549ea`→`0x454a03`: choose the direction toward the
-                // current view, then check the next tile's XTXT actor proxy
+                // developed-city center, then check the next tile's XTXT actor proxy
                 // before attack side effects (`0x454a4a`..`0x454a99`).
                 dir = pe_xthg_direction_toward(
                     i16::from(record.tile_x),
                     i16::from(record.tile_y),
-                    i16::from(view_x),
-                    i16::from(view_y),
+                    center_x,
+                    center_y,
                 );
                 let (dx, dy) = xthg_direction_delta(dir);
                 let candidate_x = i16::from(record.tile_x) + dx;
@@ -1234,14 +1227,18 @@ pub(super) fn pe_monster_tick_city_with_prefix(
     stats
 }
 
-pub(super) fn pe_monster_tick_city(city: &mut City, view_x: u8, view_y: u8) -> PeMonsterTickStats {
+pub(super) fn pe_monster_tick_city(
+    city: &mut City,
+    center_x: i16,
+    center_y: i16,
+) -> PeMonsterTickStats {
     // PE monster tick `0x4548c0`: CRT `0x48cdd8` for AI rolls; LFSR `0x401cad` for flee despawn.
     let mut rng = Win95CrtRand::new(pe_monster_tick_seed(city));
     let mut lfsr = Win95Lfsr::from_u32_seed(pe_monster_tick_seed(city));
-    pe_monster_tick_city_with_rng(city, view_x, view_y, &mut rng, &mut lfsr)
+    pe_monster_tick_city_with_rng(city, center_x, center_y, &mut rng, &mut lfsr)
 }
 
-/// Win95 monster start @ `0x45ee10`: `target=rand&0x7f`, `saved_b` 0 or `rand%3+1`.
+/// Win95 monster start @ `0x45ee10`: two target draws, then an optional behavior roll.
 pub(super) fn pe_monster_xthg_fields_with_rng(
     city: &City,
     x: usize,
@@ -1251,7 +1248,9 @@ pub(super) fn pe_monster_xthg_fields_with_rng(
     let target_x = (rng.random_u15() & 0x7f) as u8;
     let target_y = (rng.random_u15() & 0x7f) as u8;
     let saved_a = city.text_overlay_at(x, y).unwrap_or(0);
-    let saved_b = if rng.random_u15() & 1 == 0 {
+    // The scenario-active arm writes zero without drawing. The ordinary arm
+    // draws the variant only when the parity roll is even.
+    let saved_b = if city.pe_scenario_active() || rng.random_u15() & 1 != 0 {
         0
     } else {
         (rng.random_u15() % 3) as u8 + 1

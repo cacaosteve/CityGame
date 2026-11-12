@@ -130,7 +130,7 @@ fn mac_and_pe_military_tile_classes_match_for_every_xbld_value() {
     }
 }
 
-fn mac_xund_counted_value(value: u8) -> bool {
+fn mac_xund_counted_value(value: u16) -> bool {
     (1..0x10).contains(&value) || matches!(value, 0x1f | 0x20 | 0x22 | 0x23)
 }
 
@@ -257,7 +257,7 @@ impl City {
                 .as_deref()
                 .unwrap_or(&[])
                 .iter()
-                .filter(|&&value| mac_xund_counted_value(value))
+                .filter(|&&value| mac_xund_counted_value(u16::from(value)))
                 .count() as u16
         }
     }
@@ -277,15 +277,10 @@ impl City {
         }
     }
 
-    /// Mac `FUN_00026f88`'s ordinary 8×8 military-zone marker write. This
-    /// bypasses PlaceTile: the XBLD byte stays in place, its general saved
-    /// census count decreases, XZON's low nibble becomes 7, and zone-7 class
-    /// zero increases. It accepts any non-military low XZON nibble because the
-    /// six-patch fallback excludes only existing type-7 cells; the ordinary
-    /// 8×8 caller separately requires low nibble zero. The caller must
-    /// establish the remaining native gates (empty XTXT, dry XBIT, matching
-    /// altitude, and selected plot bounds). Native write order: XZON, general
-    /// XBLD census, then zone-7 class-zero census.
+    /// Write a selected inland military cell from Mac CODE 14.
+    /// The caller checks XTER, XBIT, and the zone category while selecting
+    /// the plot. The 3×3 fallback selects all six patches before stamping,
+    /// so an overlapping cell changes both censuses on every visit.
     pub(crate) fn mac_mark_military_zone_candidate(&mut self, x: usize, y: usize) -> bool {
         if (self.kind != CityFileKind::MacCity && !self.mac_cross_layout_active)
             || x >= CITY_WIDTH
@@ -297,23 +292,37 @@ impl City {
             return false;
         };
         let building = self.building_at(x, y);
-        if zone.raw_bits() & 0x0f == 7 || building >= 0x0d {
+        if building >= 0x0d {
             return false;
         }
 
         let xbld_count = self.mac_xbld_tile_count(building);
-        self.set_zone(x, y, (zone.raw_bits() & 0xf0) | 7);
         self.set_mac_xbld_census_count(building, xbld_count.wrapping_sub(1));
         if self.mac_cross_layout_active {
             let count = &mut self.pe_dw_tile_count[usize::from(building)];
             *count = count.wrapping_sub(1);
         }
+        self.set_zone(x, y, (zone.raw_bits() & 0xf0) | 7);
         let zone7_count = self.mac_zone7_census_count(0);
         self.set_mac_state_misc_u32_at(
             MAC_ZONE7_CENSUS_MISC_OFFSET,
             u32::from(zone7_count.wrapping_add(1)),
         );
         true
+    }
+
+    /// Export 105 accepts a WORD but writes its low byte to XBLD. A
+    /// connector retile can pass an index outside the saved ordinary census.
+    pub(crate) fn mac_connector_place_tile(&mut self, x: usize, y: usize, value: u16) {
+        if value <= u16::from(u8::MAX) || self.zone_at(x, y).is_some_and(|zone| zone.zone_id() == 7)
+        {
+            self.set_building(x, y, value as u8);
+            return;
+        }
+        let old = self.building_at(x, y);
+        let old_count = self.mac_xbld_tile_count(old);
+        self.set_mac_xbld_census_count(old, old_count.wrapping_sub(1));
+        self.write_building(value as u8, x, y);
     }
 
     fn adjust_mac_zone7_census(&mut self, old: u8, new: u8) {
@@ -354,7 +363,7 @@ impl City {
     /// Mac CODE 5 `export_106` updates `fffff082` when replacing XUND bytes in
     /// its recovered class set. This is independent of Win95's occupancy
     /// mirror and has no XZON gate.
-    fn adjust_mac_xund_class_count(&mut self, old: u8, new: u8) {
+    fn adjust_mac_xund_class_count(&mut self, old: u16, new: u16) {
         if mac_xund_counted_value(old) == mac_xund_counted_value(new) {
             return;
         }
@@ -407,17 +416,24 @@ impl City {
         self.traffic_overlays = Some(empty_overlay_table());
         self.traffic_overlays_from_file = false;
         self.dispatch_cursors = [0; 3];
+        self.mac_dispatch = Default::default();
         self.rebuild_corner_metadata();
         self.modified = true;
         self.mark_all_dirty();
     }
 
     pub fn set_underground(&mut self, x: usize, y: usize, value: u8) {
+        self.mac_place_xund_word(x, y, u16::from(value));
+    }
+
+    /// CODE 5 export 106 compares the full WORD for census accounting,
+    /// then stores only the low byte in XUND.
+    pub(crate) fn mac_place_xund_word(&mut self, x: usize, y: usize, value: u16) {
         if self.kind == CityFileKind::MacCity && x < CITY_WIDTH && y < CITY_HEIGHT {
-            self.adjust_mac_xund_class_count(self.underground_at(x, y), value);
+            self.adjust_mac_xund_class_count(u16::from(self.underground_at(x, y)), value);
         } else if self.mac_cross_layout_active && x < CITY_WIDTH && y < CITY_HEIGHT {
             let old = self.underground_at(x, y);
-            let was_counted = mac_xund_counted_value(old);
+            let was_counted = mac_xund_counted_value(u16::from(old));
             let is_counted = mac_xund_counted_value(value);
             if was_counted != is_counted {
                 self.pe_xund_occupancy = if is_counted {
@@ -432,7 +448,7 @@ impl City {
             self.underground = Some(vec![0u8; CITY_TILES]);
         }
         if let Some(data) = self.underground.as_mut() {
-            data[city_index(x, y)] = value;
+            data[city_index(x, y)] = value as u8;
             self.mark_dirty(x, y);
         }
     }

@@ -8,14 +8,13 @@ use super::{
     auto_budget_enabled_for_engine, bootstrap_window, city_info_dialog_rect_for,
     configure_linux_video_driver, ensure_first_run_assets, fit_window_to_usable_display,
     handle_modal_pointer_down, handle_modal_pointer_up, hide_window, input_pixel_scale,
-    load_profile_sound, menu_callback, military_base_dialog_hit_test,
-    newspaper_extra_enabled_for_city, newspaper_subscription_enabled_for_city,
-    open_asset_folder_dialog, open_city_dialog, open_scenario_dialog, open_tile_set_dialog,
-    pixel_scale, play_placement_sound, point_in_float_rect, pop_command,
-    power_plant_dialog_hit_test, push_command, raise_window, reload_asset_profile,
-    run_title_screen, save_city_dialog, show_asset_error, show_window, sync_renderer_to_window,
-    sync_sign_text_input, sync_window, tool_allows_touch_paint_stroke, viewport_center,
-    wait_for_window_pixels, wheel_zoom_factor, windows_menu_shortcut,
+    load_profile_sound, menu_callback, military_base_dialog_hit_test, open_asset_folder_dialog,
+    open_city_dialog, open_scenario_dialog, open_tile_set_dialog, pixel_scale,
+    play_placement_sound, point_in_float_rect, pop_command, power_plant_dialog_hit_test,
+    push_command, raise_window, reload_asset_profile, run_title_screen, save_city_dialog,
+    show_asset_error, show_window, sync_renderer_to_window, sync_sign_text_input, sync_window,
+    tool_allows_touch_paint_stroke, viewport_center, wait_for_window_pixels, wheel_zoom_factor,
+    windows_menu_shortcut,
 };
 use crate::asset_profile::{AssetProfile, OriginalMedia, TitleMusicPreference};
 use crate::city::AppMode;
@@ -87,12 +86,14 @@ pub fn run() -> Result<()> {
         log::warn!("could not enable mouse input on the first window-focus click");
     }
     let sdl = sdl3::init().map_err(|err| anyhow::anyhow!(err))?;
-    // PE startup `FUN_00479610` seeds CRT rand with the low word of
-    // GetTickCount before showing title UI. SDL ticks are the portable
-    // monotonic-millisecond analogue available to CityGame at this boundary.
-    let startup_process_crt = EngineFidelity::from_env()
+    // PE startup at 0x479653 sign-extends the low word of GetTickCount.
+    // SDL ticks supply the portable time source before the title UI.
+    let mut startup_process_crt = EngineFidelity::from_env()
         .uses_win95()
-        .then(|| Win95CrtRand::new(sdl3::timer::ticks() as u16 as u32));
+        .then(|| Win95CrtRand::new(i32::from(sdl3::timer::ticks() as i16) as u32));
+    let startup_newspaper = startup_process_crt
+        .as_mut()
+        .map(super::newspaper_state::initialize_pe_newspaper_tables);
     let video = sdl.video().map_err(|err| anyhow::anyhow!(err))?;
     let audio = sdl.audio().map_err(|err| anyhow::anyhow!(err)).ok();
 
@@ -234,6 +235,7 @@ pub fn run() -> Result<()> {
         startup_process_crt,
         view_process_game_rand,
         view_process_lfsr,
+        startup_newspaper,
     )?;
     let mut city_music = crate::title_music::CityMusic::new(
         audio.as_ref(),
@@ -272,6 +274,10 @@ pub fn run() -> Result<()> {
     }
     sync_renderer_to_window(&mut renderer, &window);
     bootstrap_window(&mut renderer, &mut event_pump, &window, &mut state);
+    #[cfg(target_os = "macos")]
+    state
+        .city
+        .set_mac_newspaper_suppressed(!mac_menu::app_is_active());
     state.sync_edit_map_menu();
     state.update_window_title(&video, window.id());
     state.log_traffic_stats(&renderer);
@@ -288,10 +294,29 @@ pub fn run() -> Result<()> {
 
     loop {
         input.running = true;
+        let keyboard = sdl.keyboard();
+        state.modifiers = keyboard.mod_state();
         input.return_to_title = false;
         while input.running {
+            let run_mac_actor_prefix =
+                !state.engine_fidelity.uses_win95() && !input.lifecycle.is_suspended();
+            #[cfg(target_os = "ios")]
+            let run_mac_actor_prefix =
+                run_mac_actor_prefix && !crate::ios_documents::is_presenting();
+            let mac_actor_prefix = run_mac_actor_prefix.then(|| {
+                let sampled_at = Instant::now();
+                let waits = state.begin_mac_frame_actor_phase_with_tick_refresh(
+                    sampled_at.duration_since(last_frame),
+                    || sampled_at.elapsed(),
+                );
+                (sampled_at, waits)
+            });
             mac_menu::pump_events();
             event_pump.pump_events();
+            #[cfg(target_os = "macos")]
+            state
+                .city
+                .set_mac_newspaper_suppressed(!mac_menu::app_is_active());
 
             for event in event_pump.poll_iter() {
                 input::handle_event(
@@ -313,6 +338,7 @@ pub fn run() -> Result<()> {
                 )?;
             }
 
+            state.modifiers = keyboard.mod_state();
             input::tick_held_touch(
                 RuntimeWindows {
                     video: &video,
@@ -370,12 +396,11 @@ pub fn run() -> Result<()> {
             if let Some(player) = city_music.as_mut() {
                 player.update();
             }
-            // Native Mac Raise/Lower sample while held, including a stationary
-            // pointer. Motion only retargets the sample; render-loop cadence is
-            // CityGame's input adaptation, not original Toolbox timing replay.
+            // The sampled editor tools repeat while held, including on a
+            // stationary pointer. A frame supplies one native worker sample.
             if !input.lifecycle.is_suspended()
                 && window.has_input_focus()
-                && state.tick_mac_edit_map_height_hold(
+                && state.tick_edit_map_height_hold(
                     input.painting
                         && (event_pump.mouse_state().left() || input.touch.finger_count() > 0),
                 )
@@ -391,11 +416,9 @@ pub fn run() -> Result<()> {
                 renderer.size(),
             );
 
-            // Full frame-to-frame delta drives the sim clock, ambient animation, and live
-            // traffic. `last_frame` is advanced here (not after the sleep) so the delta spans
-            // render + sleep and this iteration's event pump/commands. That also means any
-            // native-style blocking event/audio work before this sample already contributes
-            // to Mac TickCount admission; do not add its delay a second time in the scheduler.
+            // The full frame delta drives animation and live traffic. Mac
+            // calendar admission receives only the time since the actor phase
+            // sampled the clock, including any blocking event work.
             let frame_start = Instant::now();
             let elapsed = if input.lifecycle.is_suspended() {
                 // Keep the clock stable while backgrounded; still advance last_frame.
@@ -409,8 +432,26 @@ pub fn run() -> Result<()> {
             if state.traffic.speed() != GameSpeed::Paused {
                 state.advance_ambient_animation(elapsed.as_secs_f32());
             }
-            let clock_advance = state.advance_frame_simulation(elapsed);
-            if clock_advance.days > 0 {
+            let mac_budget_review_was_pending =
+                state.mac_loop_scheduler.january_budget_review_pending;
+            let clock_advance = if let Some((sampled_at, waits)) = mac_actor_prefix {
+                let event_elapsed = if input.lifecycle.is_suspended() {
+                    Duration::ZERO
+                } else {
+                    frame_start.duration_since(sampled_at)
+                };
+                state.finish_mac_frame_calendar_phase_with_tick_refresh(
+                    event_elapsed,
+                    waits,
+                    || frame_start.elapsed(),
+                )
+            } else {
+                state.advance_frame_simulation(elapsed)
+            };
+            if clock_advance.days > 0
+                || (!mac_budget_review_was_pending
+                    && state.mac_loop_scheduler.january_budget_review_pending)
+            {
                 state.update_window_title(&video, window.id());
             }
             // Disaster mode can request a camera move while the calendar is held.
@@ -553,6 +594,10 @@ pub fn run() -> Result<()> {
         input = InputState::new();
         sync_renderer_to_window(&mut renderer, &window);
         bootstrap_window(&mut renderer, &mut event_pump, &window, &mut state);
+        #[cfg(target_os = "macos")]
+        state
+            .city
+            .set_mac_newspaper_suppressed(!mac_menu::app_is_active());
         commands::drain_commands(
             RuntimeWindows {
                 video: &video,

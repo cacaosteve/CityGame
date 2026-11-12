@@ -256,7 +256,16 @@ pub(super) fn pe_ordinance_raw_cash_total_for_city(
     city: &City,
     population: PopulationStats,
 ) -> i32 {
-    let (r, c, i, arco, city_pop) =
+    // PE FUN_004194B0 passes SimulationCalculateOrdinanceCost the live
+    // pBudgetArr R/C/I current fields (+0x60 in rows 0..2). These are already
+    // the native tax bases; rebuilding them from zone-population estimates
+    // changes the monthly ordinance row on long retail replays.
+    let [r, c, i] = std::array::from_fn(|row| {
+        budget_row_misc_offset_for_city(city, row, BUDGET_SERVICE_CURRENT_FIELD)
+            .and_then(|offset| city.budget_misc_u32_at(offset))
+            .unwrap_or(0) as i32
+    });
+    let (_, _, _, arco, city_pop) =
         pe_ordinance_tax_bases_and_pops(city, population, EngineFidelity::Win95);
     let flags = ordinance_flags_for_city(city);
     (0..ORDINANCE_COUNT).fold(0_i32, |total, index| {

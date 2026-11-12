@@ -11,9 +11,8 @@ impl City {
     /// `UpdateBudgetInformation`). Museum/library do not age-forward EQ_LE.
     /// Power-plant newspaper (age>48) queues PE story `0x24`. Aged plants rebuild only
     /// when No Disasters (`0x4CC4D4` / MISC `0x1000`) is on and funds cover cost;
-    /// otherwise they demolish. Opinion-poll Approval (`0x4E9904`) uses PE weight
-    /// layout (`0x472510`) and attitude scores from `0x413f89` (traffic÷tax-bases;
-    /// education-divisor demands for scores 1..3). School/college occupancy reads
+    /// otherwise they demolish. The Mayor's House copies the latched Approval
+    /// (`0x4E9904`). School/college occupancy reads
     /// EQ_LE buckets restored from MISC `0x7c` (`[0x4c94b4]+4/+8` and `+0xc`); empty
     /// tables stay empty. Monthly EQ_LE aging is calendar day 21, not this pass.
     ///
@@ -85,13 +84,7 @@ impl City {
             self.reset_pe_transit_passenger_totals();
             return 0;
         }
-        // PE service XMIC selectors read their budget dwords directly. Keep
-        // separate UI-bounded inputs for the opinion poll's weighted scores.
-        let police_funding = police_funding_raw.min(100);
-        let health_funding = health_funding_raw.min(100);
-        let school_funding = school_funding_raw.min(100);
         let arco_population = self.pe_dw_arcology_population;
-        let pe_pop_load = normal_population.saturating_add(arco_population);
         // Win95 `0x4CA1DC` prison-bonus word is snapshotted then cleared at updater entry.
         // PE snapshots the raw WORD and later sign-extends it in the police
         // arm (`MOVSX ECX, word [esp+0x1c]`) before forming 5 - bonus.
@@ -180,18 +173,6 @@ impl City {
             arco_population,
             pe_arco_tile_pop_bonus(arco_building_count_raw),
         );
-        // PE opinion poll (`0x472510`) shares the process CRT stream with the
-        // structure-microsim CRT rolls that follow (live year-roll path).
-        let previous_mayor_approval = self.pe_mayor_approval;
-        self.run_pe_opinion_poll_with_rng(
-            pe_pop_load,
-            school_funding,
-            health_funding,
-            police_funding,
-            rng,
-        );
-        // OpenSC2K MayorApprovalPhase / PE high-approval newspaper: crossed into ≥80.
-        pe_queue_high_mayor_approval_story_if_crossed(self, previous_mayor_approval);
         let mayor_approval = self.pe_mayor_approval;
         // PE marina/arco occupancy use Game_Random LFSR (`0x401415` / `0x401cad`).
         let mut city_funds = self.city_funds();
@@ -640,7 +621,8 @@ impl City {
             changed = true;
         }
 
-        let pop_div_50 = pe_pop_load / 50;
+        // The worker prologue divides the day-22 population DWORD directly.
+        let pop_div_50 = normal_population / 50;
         for &index in water_indices.iter().chain(desal_indices.iter()) {
             *rng = rng_schedule.crt_start_by_slot[index]
                 .expect("water microsim consumes the yearly CRT stream");
@@ -688,7 +670,9 @@ impl City {
                             record.stat0 = 0;
                         } else {
                             let tile_id = record.tile_id;
-                            record = MicrosimRecord::default();
+                            // Both the demolition release and the annual caller
+                            // clear only the type byte, leaving the statistics.
+                            record.tile_id = 0;
                             if let Some(site) = demolition_sites[index].as_ref() {
                                 self.clear_map_structure_for_microsim_pe_plant(
                                     tile_id,

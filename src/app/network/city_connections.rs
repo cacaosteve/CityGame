@@ -102,7 +102,9 @@ pub(in crate::app) fn persist_pe_neighbor_connection_overlay(city: &mut City, x:
         if overlay == 0 {
             city.set_synthetic_trip_marker(x, y);
         }
+    // Native paid markers also exist on tiles without an outward sprite.
     } else if overlay == TRIP_NEIGHBOR_CONNECTION_OVERLAY
+        && city.is_synthetic_trip_marker(x, y)
         && !pe_highway_neighbor_link_origin_at(city, x, y)
     {
         city.set_text_overlay(x, y, 0);
@@ -111,6 +113,7 @@ pub(in crate::app) fn persist_pe_neighbor_connection_overlay(city: &mut City, x:
 
 /// Stamp Win95 XTXT 250 on live road/rail/highway neighbor connections so trips
 /// can complete off-map the same way `L_RunTripGenerator` does.
+#[cfg(test)]
 pub(in crate::app) fn persist_pe_neighbor_connection_overlays(city: &mut City) {
     for y in 0..CITY_HEIGHT {
         for x in 0..CITY_WIDTH {

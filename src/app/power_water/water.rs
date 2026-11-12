@@ -207,24 +207,6 @@ fn mac_connected_water_source_capacity_tiles(
         .sum()
 }
 
-/// Mac counts 100 units from each reached Water Tower that retained served
-/// bit `0x10`; the worker preserves that bit across its entry clear for XBLD
-/// `0xEB` and consumes it during the first pass.
-fn mac_carried_water_tower_capacity_tiles(city: &City, connected_tiles: &[bool]) -> u32 {
-    connected_tiles
-        .iter()
-        .enumerate()
-        .filter(|(index, connected)| {
-            **connected
-                && city.building_at(index % CITY_WIDTH, index / CITY_WIDTH) == 0xeb
-                && city
-                    .tile_bits_at(index % CITY_WIDTH, index / CITY_WIDTH)
-                    .is_some_and(TileBits::watered)
-        })
-        .count() as u32
-        * 100
-}
-
 fn connected_water_source_capacity_tiles_with_inputs(
     city: &City,
     connected_tiles: &[bool],
@@ -529,6 +511,8 @@ pub(in crate::app) struct WaterServiceMaps {
     pub(in crate::app) pipe_tiles: Vec<bool>,
     pub(in crate::app) watered_tiles: Vec<bool>,
     pub(in crate::app) pe_worker_capacity_units: u32,
+    pub(in crate::app) pe_worker_served_cells: u32,
+    pub(in crate::app) pe_worker_pending_tiles: Vec<bool>,
     pub(in crate::app) pe_worker_contract_complete: bool,
     pub(in crate::app) mac_worker_capacity_units: u32,
     pub(in crate::app) mac_worker_served_cells: u32,
@@ -541,6 +525,8 @@ impl Default for WaterServiceMaps {
             pipe_tiles: vec![false; CITY_TILES],
             watered_tiles: vec![false; CITY_TILES],
             pe_worker_capacity_units: 0,
+            pe_worker_served_cells: 0,
+            pe_worker_pending_tiles: Vec::new(),
             pe_worker_contract_complete: false,
             mac_worker_capacity_units: 0,
             mac_worker_served_cells: 0,
@@ -563,36 +549,13 @@ impl WaterServiceMaps {
         count
     }
 
-    /// PE `FUN_004649E0`'s served numerator counts the XBLD classes admitted
-    /// by its generic counter, not CityGame's player-facing water-demand set.
-    pub(in crate::app) fn pe_served_worker_counter(&self, city: &City) -> u32 {
-        self.watered_tiles
-            .iter()
-            .enumerate()
-            .filter(|(index, watered)| {
-                **watered
-                    && pe_water_generic_counter_tile(
-                        city.building_at(index % CITY_WIDTH, index / CITY_WIDTH),
-                    )
-            })
-            .count() as u32
-    }
-
-    /// PE `0x4CC4B8` is served worker cells divided by raw source capacity.
-    /// Only publish that recovered ratio when every eligible source root was
-    /// handled by an exact saved-XBIT component and no geometry fallback
-    /// supplied a generic served cell.
-    pub(in crate::app) fn pe_worker_utilization_percent(&self, city: &City) -> Option<u32> {
-        if !self.pe_worker_contract_complete {
-            return None;
-        }
+    /// PE 0x4648a8 publishes the capped worker count over raw source capacity.
+    pub(in crate::app) fn pe_worker_utilization_percent(&self) -> u32 {
         if self.pe_worker_capacity_units == 0 {
-            return Some(100);
+            100
+        } else {
+            self.pe_worker_served_cells.wrapping_mul(100) / self.pe_worker_capacity_units
         }
-        Some(
-            (u64::from(self.pe_served_worker_counter(city)) * 100
-                / u64::from(self.pe_worker_capacity_units)) as u32,
-        )
     }
 
     /// Mac CODE 14 `export_209` publishes capped generic cells divided by raw
@@ -660,15 +623,13 @@ pub(in crate::app) fn mac_water_treatment_gate(served: u32, treatment_tiles: u16
 /// disagree with saved runtime membership in imported or edited cities.
 fn mac_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> WaterServiceMaps {
     let mut work = vec![false; CITY_TILES];
-    let mut served = vec![false; CITY_TILES];
     let mut watered_tiles = vec![false; CITY_TILES];
     for index in 0..CITY_TILES {
         let x = index % CITY_WIDTH;
         let y = index / CITY_WIDTH;
         // export_209 clears XBIT 0x08 and preserves XBIT 0x10 only on towers.
-        served[index] = city.building_at(x, y) == 0xeb
+        watered_tiles[index] = city.building_at(x, y) == 0xeb
             && city.tile_bits_at(x, y).is_some_and(TileBits::watered);
-        watered_tiles[index] = served[index];
     }
 
     let mut roots: Vec<_> = (0..CITY_TILES)
@@ -686,28 +647,22 @@ fn mac_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) ->
     let mut served_total = 0u32;
     for root in roots {
         let root_index = root.1 * CITY_WIDTH + root.0;
-        if served[root_index] {
+        if watered_tiles[root_index] {
             continue;
         }
         let order = saved_xbit_water_first_pass(city, root, &mut work);
         if order.is_empty() {
             continue;
         }
-        let mut component_mask = vec![false; CITY_TILES];
-        for &(x, y) in &order {
-            component_mask[y * CITY_WIDTH + x] = true;
-        }
-
-        let mut capacity = mac_connected_water_source_capacity_tiles(
+        let (component_mask, tower_carry) =
+            water_worker_members_and_tower_carry(city, &order, &mut watered_tiles);
+        let capacity = mac_connected_water_source_capacity_tiles(
             city,
             &component_mask,
             city.mac_selected_water_height().unwrap_or(0),
             city.mac_weather_humidity().unwrap_or(0),
-        );
-        capacity = capacity.saturating_add(mac_carried_water_tower_capacity_tiles(
-            city,
-            &component_mask,
-        ));
+        )
+        .saturating_add(tower_carry);
         let mut generic_budget = order
             .iter()
             .filter(|&&(x, y)| pe_water_generic_counter_tile(city.building_at(x, y)))
@@ -733,7 +688,7 @@ fn mac_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) ->
             let index = y * CITY_WIDTH + x;
             let building = city.building_at(x, y);
             let powered = city.tile_bits_at(x, y).is_some_and(TileBits::powered);
-            watered_tiles[index] = if matches!(building, 0xdc | 0xf4 | 0xfa) {
+            let watered = if matches!(building, 0xdc | 0xf4 | 0xfa) {
                 powered
             } else if building == 0xeb {
                 let refill = powered && tower_refill_budget > 0;
@@ -750,9 +705,7 @@ fn mac_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) ->
             } else {
                 false
             };
-            if watered_tiles[index] {
-                served[index] = true;
-            }
+            watered_tiles[index] |= watered;
         }
     }
 
@@ -760,6 +713,8 @@ fn mac_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) ->
         pipe_tiles,
         watered_tiles,
         pe_worker_capacity_units: 0,
+        pe_worker_served_cells: 0,
+        pe_worker_pending_tiles: Vec::new(),
         pe_worker_contract_complete: false,
         mac_worker_capacity_units: capacity_total,
         mac_worker_served_cells: served_total,
@@ -767,8 +722,36 @@ fn mac_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) ->
     }
 }
 
-/// PE and Mac water workers share this local flood contract: dequeue-marked
-/// XBIT 0x20 membership, N/W/E/S enqueue order, and the native 511-pending
+/// Both workers consume a tower marker from the live plane during the
+/// first pass. A later root sees the result left by the preceding worker.
+fn water_worker_members_and_tower_carry(
+    city: &City,
+    visits: &[(usize, usize)],
+    watered: &mut [bool],
+) -> (Vec<bool>, u32) {
+    let mut members = vec![false; CITY_TILES];
+    let mut carry = 0;
+    for &(x, y) in visits {
+        let index = y * CITY_WIDTH + x;
+        members[index] = true;
+        if city.building_at(x, y) == 0xeb && watered[index] {
+            carry += 100;
+            watered[index] = false;
+        }
+    }
+    (members, carry)
+}
+
+fn saved_xbit_water_neighbors(x: usize, y: usize) -> [(usize, usize); 4] {
+    [
+        (x, y.wrapping_sub(1)),
+        (x.wrapping_sub(1), y),
+        (x, y + 1),
+        (x + 1, y),
+    ]
+}
+
+/// PE and Mac water workers share dequeue-marked XBIT 0x20 membership and a 511-pending
 /// drop-oldest ring. The transient 0x08 mark is represented by `work` across
 /// roots, so a source reached by an earlier worker is not traversed again.
 pub(in crate::app) fn saved_xbit_water_first_pass(
@@ -785,12 +768,7 @@ pub(in crate::app) fn saved_xbit_water_first_pass(
         }
         work[index] = true;
         order.push((x, y));
-        for (nx, ny) in [
-            (x, y.wrapping_sub(1)),
-            (x.wrapping_sub(1), y),
-            (x + 1, y),
-            (x, y + 1),
-        ] {
+        for (nx, ny) in saved_xbit_water_neighbors(x, y) {
             if nx >= CITY_WIDTH || ny >= CITY_HEIGHT {
                 continue;
             }
@@ -822,12 +800,7 @@ pub(in crate::app) fn saved_xbit_water_second_pass(
         }
         work[index] = false;
         order.push((x, y));
-        for (nx, ny) in [
-            (x, y.wrapping_sub(1)),
-            (x.wrapping_sub(1), y),
-            (x + 1, y),
-            (x, y + 1),
-        ] {
+        for (nx, ny) in saved_xbit_water_neighbors(x, y) {
             if nx >= CITY_WIDTH || ny >= CITY_HEIGHT {
                 continue;
             }
@@ -847,7 +820,10 @@ pub(in crate::app) fn saved_xbit_water_second_pass(
 /// XBIT `0x20` membership, not CityGame's inferred underground geometry.
 /// Keep the geometry map for display and editing; use the bounded native
 /// queue and saved plane for simulation, including mismatched and large maps.
-fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> WaterServiceMaps {
+pub(in crate::app) fn pe_water_service_maps_from_saved_xbit(
+    city: &City,
+    pipe_tiles: Vec<bool>,
+) -> WaterServiceMaps {
     let dim = CITY_WIDTH.min(CITY_HEIGHT).min(0x80);
     let mut work = vec![false; CITY_TILES];
     let mut watered_tiles = vec![false; CITY_TILES];
@@ -858,7 +834,13 @@ fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> 
             && city.tile_bits_at(x, y).is_some_and(TileBits::watered);
     }
 
-    let mut roots: Vec<_> = (0..dim * dim)
+    // PE's dispatch table has four entries. Other saved WORDs skip the scan.
+    let scan_tiles = if city.pe_w_city_rotation < 4 {
+        dim * dim
+    } else {
+        0
+    };
+    let mut roots: Vec<_> = (0..scan_tiles)
         .filter_map(|index| {
             let x = index % dim;
             let y = index / dim;
@@ -867,12 +849,7 @@ fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> 
             .then_some((x, y))
         })
         .collect();
-    roots.sort_by_key(|&(x, y)| match city.rotation() & 3 {
-        0 => (x, y),
-        1 => (y, dim - 1 - x),
-        2 => (dim - 1 - x, dim - 1 - y),
-        _ => (dim - 1 - y, x),
-    });
+    roots.sort_by_key(|&(x, y)| water_source_scan_key(city, EngineFidelity::Win95, x, y));
 
     let mut capacity_total = 0_u32;
     let mut served_total = 0_u32;
@@ -890,18 +867,9 @@ fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> 
         if first_pass.is_empty() {
             continue;
         }
-        let mut member_tiles = vec![false; CITY_TILES];
-        for &(x, y) in &first_pass {
-            member_tiles[y * CITY_WIDTH + x] = true;
-            if city.building_at(x, y) == 0xeb {
-                // The PE first-pass Water Tower arm consumes its carried
-                // marker before the refill decision in pass two.
-                watered_tiles[y * CITY_WIDTH + x] = false;
-            }
-        }
-
+        let (member_tiles, tower_capacity) =
+            water_worker_members_and_tower_carry(city, &first_pass, &mut watered_tiles);
         let source_capacity = pe_connected_water_source_capacity_tiles(city, &member_tiles);
-        let tower_capacity = connected_water_carried_tower_capacity_tiles(city, &member_tiles);
         let capacity = source_capacity.wrapping_add(tower_capacity);
         let mut generic_budget = first_pass
             .iter()
@@ -927,7 +895,7 @@ fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> 
             let index = y * CITY_WIDTH + x;
             let building = city.building_at(x, y);
             let powered = city.tile_bits_at(x, y).is_some_and(TileBits::powered);
-            watered_tiles[index] = if matches!(building, 0xdc | 0xf4 | 0xfa) {
+            let watered = if matches!(building, 0xdc | 0xf4 | 0xfa) {
                 powered
             } else if building == 0xeb {
                 let served = powered && tower_budget > 0;
@@ -944,6 +912,7 @@ fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> 
             } else {
                 false
             };
+            watered_tiles[index] |= watered;
         }
     }
 
@@ -951,6 +920,8 @@ fn pe_water_service_maps_from_saved_xbit(city: &City, pipe_tiles: Vec<bool>) -> 
         pipe_tiles,
         watered_tiles,
         pe_worker_capacity_units: capacity_total,
+        pe_worker_served_cells: served_total,
+        pe_worker_pending_tiles: work,
         pe_worker_contract_complete: true,
         mac_worker_capacity_units: 0,
         mac_worker_served_cells: 0,
@@ -985,21 +956,16 @@ fn water_source_scan_key(
     x: usize,
     y: usize,
 ) -> (usize, usize) {
-    match fidelity {
-        EngineFidelity::Win95 => match city.rotation() & 3 {
-            0 => (x, y),
-            1 => (y, CITY_WIDTH - 1 - x),
-            2 => (CITY_WIDTH - 1 - x, CITY_HEIGHT - 1 - y),
-            _ => (CITY_HEIGHT - 1 - y, x),
-        },
-        EngineFidelity::Mac68k => match city.saved_rotation & 3 {
-            // CODE 14 export_209 loop nesting, with X=D7 (outer/inner per
-            // branch) and Y=D6. Keys are (outer, inner) scan coordinates.
-            0 => (y, x),
-            1 => (x, CITY_HEIGHT - 1 - y),
-            2 => (CITY_HEIGHT - 1 - y, CITY_WIDTH - 1 - x),
-            _ => (CITY_WIDTH - 1 - x, y),
-        },
+    // Both executables index the row-pointer table by the first coordinate.
+    let rotation = match fidelity {
+        EngineFidelity::Win95 => city.pe_w_city_rotation,
+        EngineFidelity::Mac68k => u16::from(city.saved_rotation),
+    };
+    match rotation & 3 {
+        0 => (y, x),
+        1 => (x, CITY_HEIGHT - 1 - y),
+        2 => (CITY_HEIGHT - 1 - y, CITY_WIDTH - 1 - x),
+        _ => (CITY_WIDTH - 1 - x, y),
     }
 }
 
@@ -1048,12 +1014,7 @@ fn water_allocation_order_for_sources(
     let mut membership_queue = VecDeque::from([root]);
     membership_component[root.1 * CITY_WIDTH + root.0] = true;
     while let Some((x, y)) = membership_queue.pop_front() {
-        for (nx, ny) in [
-            (x, y.wrapping_sub(1)),
-            (x.wrapping_sub(1), y),
-            (x + 1, y),
-            (x, y + 1),
-        ] {
+        for (nx, ny) in saved_xbit_water_neighbors(x, y) {
             if nx >= CITY_WIDTH || ny >= CITY_HEIGHT {
                 continue;
             }
@@ -1075,7 +1036,7 @@ fn water_allocation_order_for_sources(
     queue.push_back(root);
     let mut order = Vec::with_capacity(component.len());
 
-    // Both recovered workers mark XBIT 0x08 at dequeue and enqueue N, W, E, S.
+    // Both recovered workers mark XBIT 0x08 at dequeue.
     // Pending duplicates are possible; the native 512-slot ring holds 511
     // records and drops its oldest item when a write collides with the read.
     // The binary's 5,001-dequeue callback does not stop this walk: it calls
@@ -1092,12 +1053,7 @@ fn water_allocation_order_for_sources(
         }
         visited[index] = true;
         order.push((x, y));
-        for (nx, ny) in [
-            (x, y.wrapping_sub(1)),
-            (x.wrapping_sub(1), y),
-            (x + 1, y),
-            (x, y + 1),
-        ] {
+        for (nx, ny) in saved_xbit_water_neighbors(x, y) {
             if nx >= CITY_WIDTH || ny >= CITY_HEIGHT {
                 continue;
             }
@@ -1116,7 +1072,7 @@ fn water_allocation_order_for_sources(
 
 /// Mac `export_209` admits Pump/Desalination source tiles in one of four
 /// orientation-selected scan orders, then `FUN_00026106` services the selected
-/// source through its N/W/E/S FIFO. One worker flood processes each reached
+/// source through its -Y/-X/+Y/+X FIFO. One worker flood processes each reached
 /// source tile, so scan order chooses the root across multiple sources. Water
 /// Towers participate in this component's carry/refill counters. Water
 /// Treatment uses its separate saved-powered served-marker arm and does not

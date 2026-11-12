@@ -177,6 +177,7 @@ fn handle_window_event(
     let single_window = windows.single_window;
     match event {
         Event::AppDidEnterBackground { .. } => {
+            state.city.set_mac_newspaper_suppressed(true);
             let paused = input.lifecycle.enter_background(state.traffic.speed());
             state.traffic.set_speed(paused);
             state.menu_checks.speed = paused;
@@ -189,6 +190,7 @@ fn handle_window_event(
             }
         }
         Event::AppWillEnterForeground { .. } => {
+            state.city.set_mac_newspaper_suppressed(false);
             if let Some(speed) = input.lifecycle.enter_foreground() {
                 state.traffic.set_speed(speed);
                 state.menu_checks.speed = speed;
@@ -395,6 +397,9 @@ fn handle_keyboard_event(
     let video = windows.video;
     let window = windows.window;
     let renderer = &*windows.renderer;
+    if let Event::KeyDown { keymod, .. } | Event::KeyUp { keymod, .. } = event {
+        state.modifiers = keymod;
+    }
     match event {
         Event::KeyDown {
             keycode: Some(Keycode::LShift | Keycode::RShift),
@@ -420,14 +425,32 @@ fn handle_keyboard_event(
                 state.cancel_sign_dialog();
                 video.text_input().stop(window);
             } else if state.military_base_dialog.is_some() {
-                state.decline_military_base_offer();
+                if state.engine_fidelity.uses_win95() {
+                    state.decline_military_base_offer();
+                } else {
+                    state.accept_military_base_offer();
+                }
             } else if state.power_plant_dialog.is_some() {
                 state.close_power_plant_dialog();
             } else if state.arcology_dialog.is_some() {
                 state.close_arcology_dialog();
             } else if state.city_info_dialog.is_some() {
-                state.close_city_info_dialog();
+                super::super::dialog_input::close_city_info_dialog_from_input(state, window);
             }
+        }
+        Event::KeyDown {
+            keycode: Some(Keycode::Return | Keycode::KpEnter),
+            ..
+        } if state.mac_loop_scheduler.january_budget_review_pending
+            && state.city_info_dialog == Some(CityInfoDialog::Budget) =>
+        {
+            state.close_city_info_dialog();
+        }
+        Event::KeyDown {
+            keycode: Some(Keycode::Return),
+            ..
+        } if state.military_base_dialog.is_some() && !state.engine_fidelity.uses_win95() => {
+            state.accept_military_base_offer();
         }
         Event::KeyDown {
             keycode: Some(Keycode::Return),
@@ -668,6 +691,12 @@ fn handle_mouse_event(
                             _ => {
                                 state.close_tool_menu();
                                 state.handle_ui_action(action, video, window.id());
+                                // The floating Tools palette can hold key focus on
+                                // macOS. Return focus to the map as soon as a leaf
+                                // tool/action is chosen, so the next map press is a
+                                // gameplay input instead of the window-activation click.
+                                mac_menu::focus_main_window(window);
+                                palette_window::sync_palette_stacking(window, palette_window);
                             }
                         }
                     }
@@ -889,9 +918,8 @@ fn handle_mouse_event(
             state.cancel_highway_drag();
             state.cancel_terrain_drag();
             state.cancel_edit_map_stretch_drag();
-            state.cancel_edit_map_lower_drag();
             state.cancel_edit_map_level_drag();
-            state.cancel_edit_map_raise_hold();
+            state.cancel_edit_map_height_hold();
             state.cancel_edit_map_spread_hold();
             state.cancel_nature_drag();
             input.paint_tile = None;
@@ -977,13 +1005,7 @@ fn handle_mouse_event(
                 return Ok(());
             }
             input.dragging = false;
-            release_map_tools(
-                state,
-                input.paint_tile,
-                input.shift_down,
-                window,
-                sound.as_ref(),
-            );
+            release_map_tools(state, input.shift_down, window, sound.as_ref());
             input.painting = false;
             input.paint_tile = None;
             state.release_palette_button();

@@ -7,9 +7,10 @@ pub(super) use super::dialog_layout::*;
 
 use super::{
     GraphScale, MILITARY_BASE_AIR_FORCE, MILITARY_BASE_ARMY, MILITARY_BASE_DECLINED,
-    MILITARY_BASE_MISSILE_SILOS, MILITARY_BASE_NAVY, SIGN_LABEL_MAX_BYTES, ViewerState,
-    newspaper_open_choice_for_edition, ordinance_enabled_for_city_with_fidelity,
-    ordinance_index_is_valid, set_city_newspaper_choice_with_crt,
+    MILITARY_BASE_MISSILE_SILOS, MILITARY_BASE_NAVY, MISC_MILITARY_BASE_TYPE_OFFSET,
+    PlacementSound, SIGN_LABEL_MAX_BYTES, ViewerState, newspaper_open_choice_for_edition,
+    ordinance_enabled_for_city_with_fidelity, ordinance_index_is_valid,
+    pe_powerline_post_place_power_recalc_43f396, raw_tax_rate_for_city, set_city_newspaper_choice,
     set_city_ordinance_enabled_with_fidelity,
 };
 use crate::city::CityFileKind;
@@ -41,9 +42,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.power_plant_dialog = Some(PowerPlantDialogState {
@@ -67,9 +67,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.arcology_dialog = Some(ArcologyDialogState {
@@ -93,9 +92,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.military_base_dialog = Some(MilitaryBaseDialogState::default());
@@ -108,16 +106,20 @@ impl ViewerState {
     }
 
     pub(super) fn accept_military_base_offer(&mut self) -> bool {
-        self.close_military_base_dialog();
-        match self.try_place_military_base() {
+        let placed = if self.engine_fidelity.uses_win95() {
+            self.try_place_military_base()
+        } else {
+            super::military_base::place_mac_military_base(&mut self.city, || {
+                self.mac_process_rng.random_u16()
+            })
+        };
+        match placed {
             Some((base_type, center)) => {
-                if self.engine_fidelity.uses_win95() {
-                    self.city.set_pe_military_base_type(base_type);
-                }
+                self.finish_military_base_offer(base_type);
                 self.city.mark_all_dirty();
                 self.query_is_inspect = false;
                 // PE Game_CenterOnTileCoords after army/AF/naval/silo placement.
-                if self.auto_goto_enabled {
+                if self.auto_goto_enabled || !self.engine_fidelity.uses_win95() {
                     self.pending_disaster_auto_goto = Some(center);
                 }
                 self.set_sim_status_announcement(match base_type {
@@ -127,6 +129,7 @@ impl ViewerState {
                     MILITARY_BASE_MISSILE_SILOS => "Missile Silos Established",
                     _ => "Military Base Established",
                 });
+                self.finish_mac_military_scenario_tail();
                 true
             }
             None => {
@@ -141,12 +144,28 @@ impl ViewerState {
     }
 
     pub(super) fn decline_military_base_offer_with_message(&mut self, message: &str) {
-        self.close_military_base_dialog();
-        if self.engine_fidelity.uses_win95() {
-            self.city.set_pe_military_base_type(MILITARY_BASE_DECLINED);
-        }
+        self.finish_military_base_offer(MILITARY_BASE_DECLINED);
         self.query_is_inspect = false;
         self.set_sim_status_announcement(message);
+        self.finish_mac_military_scenario_tail();
+    }
+
+    fn finish_mac_military_scenario_tail(&mut self) {
+        if !self.engine_fidelity.uses_win95() {
+            self.tick_mac_scenario_tail();
+        }
+    }
+
+    fn finish_military_base_offer(&mut self, base_type: u32) {
+        self.close_military_base_dialog();
+        if self.engine_fidelity.uses_win95() {
+            self.city.set_pe_military_base_type(base_type);
+        } else {
+            self.city.set_mac_city_progression(4);
+            self.city
+                .set_mac_state_misc_u32_at(MISC_MILITARY_BASE_TYPE_OFFSET, base_type);
+            self.city.refresh_mac_arcology_latch();
+        }
     }
 
     pub(super) fn open_sign_dialog(&mut self, sign_id: u8) {
@@ -159,9 +178,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.sign_dialog = Some(SignDialogState {
@@ -199,11 +217,15 @@ impl ViewerState {
             && edition != NewspaperEdition::Founding
         {
             let choice = newspaper_open_choice_for_edition(&self.city, edition);
-            set_city_newspaper_choice_with_crt(
-                &mut self.city,
-                choice,
-                Some(&mut self.pe_process_crt),
-            );
+            set_city_newspaper_choice(&mut self.city, choice);
+            let tax_rate = raw_tax_rate_for_city(&self.city, 0);
+            if self.city_info_dialog != Some(dialog)
+                && self
+                    .city
+                    .run_pe_opinion_poll_with_rng(tax_rate, &mut self.pe_process_crt)
+            {
+                self.queue_disaster_extra_sounds(PlacementSound::Cheers, 1);
+            }
         }
         let next_dialog = (self.city_info_dialog != Some(dialog)).then_some(dialog);
         if next_dialog == Some(CityInfoDialog::Budget) {
@@ -220,9 +242,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.city_info_dialog = next_dialog;
@@ -230,8 +251,26 @@ impl ViewerState {
     }
 
     pub(super) fn close_city_info_dialog(&mut self) {
-        self.city_info_dialog = None;
+        let closed = self.city_info_dialog.take();
         self.sync_pe_city_info_modal_state();
+        // The original dry tool succeeds even when its optional bridge is
+        // canceled or refused. Its dispatcher refreshes power on that return.
+        if matches!(
+            closed,
+            Some(CityInfoDialog::PowerBridge {
+                dry_stroke: true,
+                ..
+            })
+        ) {
+            if self.engine_fidelity.uses_win95() {
+                pe_powerline_post_place_power_recalc_43f396(
+                    &mut self.city,
+                    &mut self.pe_process_crt,
+                );
+            } else {
+                self.mac_power_tool_post_place_recalc();
+            }
+        }
     }
 
     pub(super) fn toggle_graph_series(&mut self, index: usize) -> bool {

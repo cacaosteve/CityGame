@@ -12,20 +12,15 @@ use super::{
     budget_service_funding_raw_for_city, budget_tax_bases_for_city_with_fidelity,
     live_traffic_count_for_city_with_power, mac_auto_budget_enabled_for_city,
     mac_budget_clear_monthly_rci_scan_counters, mac_budget_month_snapshot_and_accrue,
-    mac_budget_refresh_derived_currents, mac_ordinance_raw_cash_total, mac_raw_tax_rate_for_city,
+    mac_budget_refresh_derived_currents, mac_ordinance_raw_cash_total,
     pe_attitude_demand_inputs_for_city_with_power, pe_budget_month_index,
-    pe_fiscal_crisis_after_settlement, pe_misc_mirror_storage_active,
-    pe_water_worker_utilization_percent, persist_pe_year_end_misc,
-    persist_speed_misc_value_to_city, population_stats_for_city_with_fidelity,
-    power_service_maps_with_entry_seed, publish_pe_sewer_bonus, service_percent,
-    set_auto_budget_enabled_for_engine, set_mac_auto_budget_enabled, speed_misc_value_for_city,
-    sync_bond_budget_row_for_city, water_service_maps_with_entry_seed_and_fidelity,
-    water_service_summary_with_entry_seed,
+    pe_fiscal_crisis_after_settlement, pe_misc_mirror_storage_active, persist_pe_year_end_misc,
+    population_stats_for_city_with_fidelity, power_service_maps_with_entry_seed,
+    raw_tax_rate_for_city, set_auto_budget_enabled_for_engine, sync_bond_budget_row_for_city,
+    water_service_maps_with_entry_seed_and_fidelity,
 };
 use crate::city::{CityDate, CityFileKind};
 use crate::engine_fidelity::EngineFidelity;
-use crate::mac_menu;
-use crate::traffic::GameSpeed;
 
 impl ViewerState {
     /// Interleave arcology water passes with the QuickDraw-consuming rows.
@@ -100,18 +95,6 @@ impl ViewerState {
         if year_rolled {
             self.apply_budget_year_end_settlement();
             self.clear_budget_year_history();
-            // Mac CODE 4 export 227 turns Auto-Budget off after an annual
-            // settlement that leaves city funds negative. The January review
-            // gate below then opens the budget window, matching the native
-            // option's negative-funds fallback without applying PE funding.
-            if self.engine_fidelity == EngineFidelity::Mac68k
-                && mac_auto_budget_enabled_for_city(&self.city)
-                && self.city.city_funds() < 0
-            {
-                if set_mac_auto_budget_enabled(&mut self.city, false) {
-                    self.sync_edit_map_menu();
-                }
-            }
             // Both native Mac and Win95 paths gate the January budget window
             // on their own edition-specific Auto-Budget setting.
             if !auto_budget_enabled_for_engine(&self.city, self.engine_fidelity) {
@@ -142,21 +125,10 @@ impl ViewerState {
         // structure microsims get occupancy / aging from InitializeMicrosim-style rules.
         self.city.refresh_system_microsim_counts();
         let population = population_stats_for_city_with_fidelity(&self.city, self.engine_fidelity);
-        // Refresh PE `0x4CC4B8` coverage before year-end structure microsims.
-        // Same FUN_004679B0 process CRT as day-20 water used% / summary.
-        let water_entry_seed = self.pe_process_crt.seed();
-        let water = water_service_summary_with_entry_seed(&self.city, water_entry_seed);
-        // Mac 68k has no recovered `0x4CC4B8` water-coverage January writer.
-        if self.engine_fidelity.uses_win95() {
-            let water_percent = pe_water_worker_utilization_percent(&self.city, water_entry_seed)
-                .unwrap_or_else(|| service_percent(water.served, water.demand));
-            self.city.set_pe_water_coverage_percent(water_percent);
-            publish_pe_sewer_bonus(&mut self.city);
-        }
-        // PE `0x4CA5F8` unemployment feeds the January opinion poll weight vector.
+        // January consumers read the coverage latched by the last native water pass.
+        // PE `0x4CA5F8` unemployment feeds the opinion-poll weight vector.
         // Day-21 `FUN_00413E50` already published the growth-aggregate ratio into
         // `pe_unemployment_percent`; leave that PE global alone here.
-        // PE attitude score 0 (`0x413f89`): traffic / (R+C+I tax bases + 1).
         // Map-less traffic heuristic shares process-CRT plant maps with attitude inputs.
         // Mac 68k has no recovered `0x4CC6F4` / dwCityTrafficCount January writer.
         let power_maps = power_service_maps_with_entry_seed(&self.city, self.pe_process_crt.seed());
@@ -267,6 +239,9 @@ impl ViewerState {
             if month == 1 {
                 sync_bond_budget_row_for_city(&mut self.city, 0);
             }
+            // The native calendar clears 0x4ca428 at 0x4136a0 after budget work.
+            // Saves made before the first growth pass must already see the reset.
+            self.reset_monthly_growth_budget();
         } else {
             // CODE 4 export 227 settles annual cash at the January boundary,
             // then calls CODE 3 export 162 only inside that annual branch.
@@ -279,7 +254,7 @@ impl ViewerState {
                 let health_funding = budget_service_funding_raw_for_city(&self.city, 2);
                 let school_funding = budget_service_funding_raw_for_city(&self.city, 3);
                 let college_funding = budget_service_funding_raw_for_city(&self.city, 4);
-                let tax_rates = [0, 1, 2].map(|row| mac_raw_tax_rate_for_city(&self.city, row));
+                let tax_rates = [0, 1, 2].map(|row| raw_tax_rate_for_city(&self.city, row));
                 self.refresh_mac_xmic_with_arcologies(
                     [
                         police_funding,
@@ -290,6 +265,20 @@ impl ViewerState {
                     ],
                     tax_rates,
                 );
+                // Export 225 already skipped the review while Auto-Budget
+                // was enabled. Export 227 clears it after the annual XMIC
+                // sweep when the remaining cash is negative.
+                if self.city.city_funds() < 0
+                    && mac_auto_budget_enabled_for_city(&self.city)
+                    && set_auto_budget_enabled_for_engine(
+                        &mut self.city,
+                        EngineFidelity::Mac68k,
+                        false,
+                    )
+                {
+                    self.sync_edit_map_menu();
+                    self.set_sim_status_announcement("Fiscal crisis: Auto-Budget turned off");
+                }
             }
 
             // The monthly snapshot precedes the derived-current rebuild, so
@@ -323,6 +312,11 @@ impl ViewerState {
                 self.no_disasters_enabled,
                 &mut self.mac_process_rng,
             );
+            // CODE 14 opens the subscribed paper directly after export 227.
+            if matches!(month, 4 | 8) && self.city.mac_newspaper_subscription_enabled() {
+                self.city
+                    .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+            }
             // These deterministic workers consume no QuickDraw draws, so they
             // do not guess the shared Mac RNG chronology of other XMIC cases.
             // CODE 14 phase 0 clears these scan accumulators after export 227
@@ -331,19 +325,19 @@ impl ViewerState {
         }
     }
 
+    pub(super) fn finish_mac_january_budget_review(&mut self) {
+        // The on-screen clock shows January during review. Keep the persisted
+        // date at December until settlement, so a save can resume the rollover.
+        let at = self.game_clock;
+        self.query_status_pinned = false;
+        self.apply_budget_year_end_settlement();
+        self.clear_budget_year_history();
+        self.finish_sim_calendar_day0_publication(at.year(), at.month(), at.day());
+    }
+
     pub(super) fn open_january_budget_review(&mut self) {
-        self.open_city_info_dialog(CityInfoDialog::Budget);
-        // PE is a transient DialogBox pause; Mac retains its independently
-        // modeled budget behavior until its callback contract is recovered.
-        if !self.engine_fidelity.uses_win95() && self.traffic.speed() != GameSpeed::Paused {
-            self.traffic.set_speed(GameSpeed::Paused);
-            if let Some(value) =
-                speed_misc_value_for_city(&self.city, self.engine_fidelity, GameSpeed::Paused)
-            {
-                persist_speed_misc_value_to_city(&mut self.city, value);
-            }
-            self.menu_checks.speed = GameSpeed::Paused;
-            mac_menu::set_game_speed(GameSpeed::Paused);
+        if self.city_info_dialog != Some(CityInfoDialog::Budget) {
+            self.open_city_info_dialog(CityInfoDialog::Budget);
         }
         self.set_sim_status_announcement("Budget: review January funding");
     }

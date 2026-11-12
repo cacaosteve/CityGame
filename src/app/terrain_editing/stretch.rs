@@ -69,50 +69,52 @@ pub(in crate::app) fn pe_stretch_terrain_hill_step_443a50_with_crt(
     let land = sample.land.saturating_add(1).min(0x1f);
     city.set_altitude(tx, ty, land, sample.water);
     // PE @ `0x443b94`: `0x445b50` uses tool args (click origin), not the jittered tile.
-    let waits_445b50 = pe_post_flatten_neighbor_altm_445b50(city, x, y);
+    let waits_445b50 =
+        super::flatten::pe_smooth_and_refresh_terrain_neighbors(city, crt.as_deref_mut(), x, y);
     // PE @ `0x443b9e`: `0x40215d`→`0x447490` neighbor FUN_00447020.
     pe_terrain_neighbor_fun_00447020_447490(city, crt, tx, ty);
     Some(waits_445b50)
 }
 
-/// PE LevelTerrain hold @ `0x444951`–`0x4449bb`: mouse-Y delta → land delta by view rotation.
-/// Rot 0/1/2 divide by 3/6/12; rot 3 uses raw delta. Clamp `1..=0x1e`, floor `base-10`,
-/// skip when unchanged.
-pub(in crate::app) fn pe_level_terrain_mouse_land_444951(
+/// PE Stretch at 0x444951 uses zoom modes 0/1/2 to divide the pointer delta by
+/// 3/6/12. Other modes use the raw delta. Reject out-of-range or repeated requests.
+pub(in crate::app) fn pe_stretch_terrain_mouse_land_444951(
     base_land: u8,
-    current_land: u8,
+    last_land: u8,
     press_mouse_y: i16,
     mouse_y: i16,
-    view_rotation: u8,
+    view_zoom: u8,
 ) -> Option<u8> {
     let delta = mouse_y.wrapping_sub(press_mouse_y);
-    let land_delta = match view_rotation & 3 {
+    let land_delta = match view_zoom {
         0 => delta / 3,
         1 => delta / 6,
         2 => delta / 0xc,
         _ => delta,
     };
-    let new = i32::from(base_land) + i32::from(land_delta);
+    let new = i16::from(base_land).wrapping_add(land_delta);
     if !(1..=0x1e).contains(&new) {
         return None;
     }
-    if i32::from(base_land) - 10 > new {
+    if i16::from(base_land) - 10 > new {
         return None;
     }
     let new_u8 = new as u8;
-    if new_u8 == current_land {
+    if new_u8 == last_land {
         return None;
     }
     Some(new_u8)
 }
 
 /// PE Stretch hold @ `0x443ba6`: `test si, 7` — UI `0x40226b` when `(si & 7) == 0`.
+#[cfg(test)]
 pub(in crate::app) fn pe_stretch_hold_ui_refresh_due_443ba6(si: u16) -> bool {
     si & 7 == 0
 }
 
 /// PE Stretch success-path `si` advances: loop-start `inc` (`0x443a91`) + post-apply `inc`
 /// (`0x443b88`). Returns whether `0x443ba6` should fire UI refresh.
+#[cfg(test)]
 pub(in crate::app) fn pe_stretch_hold_after_successful_hill_443b88(si: &mut u16) -> bool {
     *si = si.wrapping_add(2);
     pe_stretch_hold_ui_refresh_due_443ba6(*si)
@@ -120,6 +122,7 @@ pub(in crate::app) fn pe_stretch_hold_after_successful_hill_443b88(si: &mut u16)
 
 /// PE Stretch `0x443a50` @ `0x443aae`/`0x443ab1`: unpack `0x444bf0` (`& 0x7f`) before CRT jitter.
 /// Returns PE `0x445b50` adjust-path `0x4012c1` wait count on success.
+#[cfg(test)]
 pub(in crate::app) fn pe_stretch_terrain_from_packed_443a50(
     city: &mut City,
     crt: &mut Win95CrtRand,

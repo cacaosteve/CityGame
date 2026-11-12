@@ -28,9 +28,7 @@ pub(in crate::app) fn mac_power_source_trace_begin() {
 }
 
 #[cfg(test)]
-pub(in crate::app) fn mac_power_source_trace_take()
-    -> Vec<(usize, usize, u8, u32, u32, u32)>
-{
+pub(in crate::app) fn mac_power_source_trace_take() -> Vec<(usize, usize, u8, u32, u32, u32)> {
     MAC_POWER_SOURCE_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
 }
 
@@ -40,8 +38,7 @@ pub(in crate::app) fn mac_power_flood_trace_begin() {
 }
 
 #[cfg(test)]
-pub(in crate::app) fn mac_power_flood_trace_take()
-    -> Vec<(usize, usize, usize, usize, u32, u8, u8)>
+pub(in crate::app) fn mac_power_flood_trace_take() -> Vec<(usize, usize, usize, usize, u32, u8, u8)>
 {
     MAC_POWER_FLOOD_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
 }
@@ -52,9 +49,7 @@ pub(in crate::app) fn mac_power_component_trace_begin() {
 }
 
 #[cfg(test)]
-pub(in crate::app) fn mac_power_component_trace_take()
-    -> Vec<(usize, usize, u32, u32, u32, bool)>
-{
+pub(in crate::app) fn mac_power_component_trace_take() -> Vec<(usize, usize, u32, u32, u32, bool)> {
     MAC_POWER_COMPONENT_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
 }
 
@@ -64,8 +59,7 @@ pub(in crate::app) fn mac_power_first_pass_trace_begin() {
 }
 
 #[cfg(test)]
-pub(in crate::app) fn mac_power_first_pass_trace_take()
-    -> Vec<(usize, usize, usize, usize, u8, u8)>
+pub(in crate::app) fn mac_power_first_pass_trace_take() -> Vec<(usize, usize, usize, usize, u8, u8)>
 {
     MAC_POWER_FIRST_PASS_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
 }
@@ -215,7 +209,7 @@ impl PowerServiceMaps {
         count
     }
 
-    /// PE flood-fill consumer arm: powered tiles with XBLD in `[0x70,0xC6)` only.
+    /// Powered tiles in the PE flood-fill consumer classes.
     pub(in crate::app) fn pe_powered_consumers(&self, city: &City) -> u32 {
         let mut count = 0;
         for y in 0..CITY_HEIGHT {
@@ -642,9 +636,10 @@ pub(in crate::app) fn pe_power_c8_pe_units(
     y: usize,
     rand_remainder: u32,
 ) -> u32 {
-    let xval = u32::from(city.land_value_at(x, y).unwrap_or(0)) & 0x1f;
-    let modulus = pe_power_c8_random_modulus(city).max(1);
-    (xval.saturating_add(rand_remainder % modulus)) / 2
+    // 0x467afe reads the ALTM row and 0x467b0c masks off water/tunnel fields.
+    let altitude = u32::from(city.altitude_at(x, y));
+    let modulus = pe_power_c8_random_modulus(city);
+    (altitude + rand_remainder % modulus) / 2
 }
 
 /// PE `FUN_004679b0` `0xCC` worker contribution (pre network tile scaling).
@@ -822,8 +817,15 @@ fn mac_power_second_pass(city: &mut City, root: (usize, usize), mut remaining: u
         #[cfg(test)]
         MAC_POWER_FLOOD_TRACE.with(|trace| {
             if let Some(trace) = trace.borrow_mut().as_mut() {
-                trace.push((root.0, root.1, x, y, remaining,
-                    city.building_at(x, y), bits.raw_bits()));
+                trace.push((
+                    root.0,
+                    root.1,
+                    x,
+                    y,
+                    remaining,
+                    city.building_at(x, y),
+                    bits.raw_bits(),
+                ));
             }
         });
         if remaining != 0 {
@@ -936,8 +938,14 @@ fn mac_export_218_power_inner(
             #[cfg(test)]
             MAC_POWER_COMPONENT_TRACE.with(|trace| {
                 if let Some(trace) = trace.borrow_mut().as_mut() {
-                    trace.push((x, y, component_capacity, consumers, available,
-                        energy_conservation_enabled));
+                    trace.push((
+                        x,
+                        y,
+                        component_capacity,
+                        consumers,
+                        available,
+                        energy_conservation_enabled,
+                    ));
                 }
             });
             served = served.saturating_add(available.min(consumers));
@@ -1257,44 +1265,29 @@ pub(in crate::app) fn pe_fun_00467860(city: &mut City, crt: &mut Win95CrtRand) {
 /// `XBIT &= 0xef` (drop watered `0x10`); always `XBIT &= 0xf7` (drop work `0x08`).
 /// The root-level clear is followed by the saved-XBIT source scan and bounded
 /// queue worker, independent of CityGame's geometry-derived display map.
-pub(in crate::app) fn pe_fun_00464550(city: &mut City) {
-    let dim = 0x80.min(CITY_WIDTH).min(CITY_HEIGHT);
-    for y in 0..dim {
-        for x in 0..dim {
+pub(in crate::app) fn pe_fun_00464550(city: &mut City) -> WaterServiceMaps {
+    let maps = pe_water_service_maps_from_saved_xbit(city, Vec::new());
+    for y in 0..CITY_HEIGHT {
+        for x in 0..CITY_WIDTH {
             let Some(bits) = city.tile_bits_at(x, y) else {
                 continue;
             };
-            let mut raw = bits.raw_bits();
-            if city.building_at(x, y) != 0xeb {
-                raw &= 0xef;
-            }
-            raw &= 0xf7;
-            city.set_tile_bits(x, y, TileBits::new(raw));
-        }
-    }
-
-    // The native wrapper scans eligible sources and dispatches FUN_004649E0.
-    // Its served-water result follows saved XBIT membership directly; Water
-    // Tower carry starts from the wrapper's preserved XBLD-0xEB marker.
-    let service = water_service_maps_with_entry_seed_and_fidelity(
-        city,
-        pe_power_recalc_seed(city),
-        EngineFidelity::Win95,
-    );
-    for y in 0..dim {
-        for x in 0..dim {
-            let Some(bits) = city.tile_bits_at(x, y) else {
-                continue;
+            let index = y * CITY_WIDTH + x;
+            let work = if maps.pe_worker_pending_tiles[index] {
+                0x08
+            } else {
+                0
             };
-            let building = city.building_at(x, y);
-            let watered =
-                service.watered_tiles[y * CITY_WIDTH + x] || (building == 0xeb && bits.watered());
-            let updated = bits.with_watered(watered);
+            let updated = TileBits::new((bits.raw_bits() & !0x08) | work)
+                .with_watered(maps.watered_tiles[index]);
             if bits != updated {
                 city.set_tile_bits(x, y, updated);
             }
         }
     }
+    city.set_pe_water_coverage_percent(maps.pe_worker_utilization_percent());
+    city.publish_pe_sewer_bonus(maps.pe_worker_served_cells, city.pe_dw_tile_count[0xf4]);
+    maps
 }
 
 /// Stamp XBIT piped (`0x20`) on one tile.
@@ -1333,22 +1326,14 @@ pub(in crate::app) fn stamp_power_plant_xbit_powerable(
     }
 }
 
-/// Test helper: PE `0xC8` reads low five XVAL bits from the land-value plane.
-pub(in crate::app) fn pe_seed_power_plant_xval_for_test(
+#[cfg(test)]
+pub(in crate::app) fn pe_seed_power_plant_altitude_for_test(
     city: &mut City,
     x: usize,
     y: usize,
-    xval: u8,
+    altitude: u8,
 ) {
-    let mut land = city
-        .land_value_slice()
-        .map(|slice| slice.to_vec())
-        .unwrap_or_else(|| vec![0_u8; CITY_TILES]);
-    if land.len() != CITY_TILES {
-        land.resize(CITY_TILES, 0);
-    }
-    land[x * CITY_HEIGHT + y] = xval;
-    city.sync_land_value_from_slice(&land);
+    city.set_altitude(x, y, altitude, city.water_height_at(x, y));
 }
 
 /// PE `0xC8` plant output in Rust tile units (`PE units × 16`).
@@ -1422,9 +1407,10 @@ pub(in crate::app) fn power_plant_output_tiles_with_rng(
     }
 }
 
-/// PE `FUN_004679B0` consumer-count arm: `0x70 <= XBLD < 0xC6`.
+/// PE 0x467b6f counts developed XBLD below the plant band. The
+/// out-of-table branch at 0x467ac2 also counts XBLD above it.
 pub(in crate::app) fn pe_power_consumer_xbld(building: u8) -> bool {
-    (0x70..0xC6).contains(&building)
+    matches!(building, 0x70..=0xc5 | 0xd0..=0xff)
 }
 
 /// PE flood-fill consumer predicate: XBLD band only (zones use building `0`).
@@ -1452,7 +1438,7 @@ pub(in crate::app) fn power_demand_tiles(city: &City) -> u32 {
     demand
 }
 
-/// PE `FUN_004679B0` consumer-count arm: XBLD `[0x70,0xC6)` only (no bare zones).
+/// PE flood-fill consumer demand from XBLD, excluding bare zones.
 pub(in crate::app) fn pe_power_demand_tiles(city: &City) -> u32 {
     let mut demand = 0;
     for y in 0..CITY_HEIGHT {

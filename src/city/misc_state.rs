@@ -1,6 +1,7 @@
 // MISC persistence accessors and synchronization with live City caches.
 
 use super::file_format::MacCrossLayoutSavedState;
+use super::scenario_state::{MAC_ACTION_OFFSETS, MacScenarioContinuation};
 use super::*;
 
 impl City {
@@ -17,7 +18,51 @@ impl City {
             treatment_gate: self.mac_treatment_gate_runtime,
             developed_cells: self.mac_developed_cell_snapshot,
             mac_scenario_active: Some(self.mac_scenario_active()),
+            residential_total: self.mac_residential_total_runtime,
+            scenario: self.mac_scenario_runtime,
+            road_neighbor_links: self.mac_road_neighbor_link_count_runtime,
         }
+    }
+
+    pub(crate) fn mac_residential_pair_total(&self) -> i32 {
+        self.mac_residential_total_runtime
+            .filter(|_| self.kind.is_win95())
+            .or_else(|| self.misc_u32_at(MISC_RESIDENTIAL_POPULATION_OFFSET))
+            .unwrap_or(0) as i32
+    }
+
+    pub(crate) fn set_mac_residential_pair_total(&mut self, total: i32) {
+        if self.kind.is_win95() {
+            self.mac_residential_total_runtime = Some(total as u32);
+        } else {
+            self.set_mac_state_misc_u32_at(MISC_RESIDENTIAL_POPULATION_OFFSET, total as u32);
+        }
+    }
+
+    pub(crate) fn mac_rci_overlay_cap_counts(&self) -> [u16; 2] {
+        [
+            MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET,
+            MAC_XTXT_FA_NON_NETWORK_COUNT_MISC_OFFSET,
+        ]
+        .map(|offset| self.mac_state_misc_u32_at(offset).unwrap_or(0) as u16)
+    }
+
+    pub(crate) fn mac_increment_road_neighbor_link_count(&mut self) {
+        let count = self.mac_rci_overlay_cap_counts()[0].wrapping_add(1);
+        self.set_mac_state_misc_u32_at(MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET, u32::from(count));
+    }
+
+    pub(crate) fn mac_increment_rail_neighbor_link_count(&mut self) {
+        let count = self.mac_rci_overlay_cap_counts()[1].wrapping_add(1);
+        self.set_mac_state_misc_u32_at(MAC_XTXT_FA_NON_NETWORK_COUNT_MISC_OFFSET, u32::from(count));
+    }
+
+    pub(crate) fn mac_rci_pair_totals(&self) -> [i32; 3] {
+        std::array::from_fn(|index| {
+            let light = self.mac_rci_counter(index * 2 + 1);
+            let dense = self.mac_rci_counter(index * 2 + 2);
+            light.wrapping_add(dense) as i32
+        })
     }
 
     /// Mac CODE 2's queued action. The native Mac file stores it at MISC
@@ -65,6 +110,10 @@ impl City {
                 // MISC before their first monthly consumers. On a first open
                 // of a Win-layout city, preserve that native raw-slot
                 // interpretation; later opens use the Mac CGEX snapshot.
+                self.mac_rci_counters_runtime = self
+                    .misc_u32_values(380 * MISC_FIELD_LEN, 8)
+                    .try_into()
+                    .unwrap_or([0; 8]);
                 self.mac_power_summary_runtime =
                     self.misc_u32_at(MAC_POWER_SUMMARY_MISC_OFFSET).unwrap_or(0);
                 self.mac_water_summary_runtime =
@@ -79,9 +128,9 @@ impl City {
                 // extension exists. Kind-2 and kind-5 actors can consume it
                 // before the day-2 derived-map refresh.
                 self.mac_kind2_hotspot_runtime = Some((
-                    self.misc_u32_at(MAC_KIND2_HOTSPOT_X_MISC_OFFSET)
+                    self.misc_u32_at(MISC_DEVELOPED_CENTER_X_OFFSET)
                         .unwrap_or(0) as u16,
-                    self.misc_u32_at(MAC_KIND2_HOTSPOT_Y_MISC_OFFSET)
+                    self.misc_u32_at(MISC_DEVELOPED_CENTER_Y_OFFSET)
                         .unwrap_or(0) as u16,
                 ));
             }
@@ -114,14 +163,31 @@ impl City {
         }
     }
 
+    /// Win95 reads the low WORDs of these shared MISC fields at `0x431b6b`
+    /// and `0x431b75`. Older short MISC records use the new-city default.
+    pub(crate) fn pe_city_center(&self) -> (i16, i16) {
+        match self
+            .misc_u32_values(MISC_DEVELOPED_CENTER_X_OFFSET, 2)
+            .as_slice()
+        {
+            &[x, y] => (x as i16, y as i16),
+            _ => (64, 64),
+        }
+    }
+
+    pub(crate) fn set_pe_city_center(&mut self, x: i16, y: i16) {
+        // The original save writes the WORDs as sign-extended DWORDs.
+        self.set_misc_u32_values(MISC_DEVELOPED_CENTER_X_OFFSET, &[x as u32, y as u32]);
+    }
+
     /// CODE 6 state-2 target center loaded from native Mac MISC slots 1030/1031.
     /// On Win-layout saves the corresponding bytes belong to PE state, so use
     /// a separate runtime pair and let the Mac derived-map worker refresh it.
     pub(crate) fn mac_kind2_hotspot(&self) -> Option<(u16, u16)> {
         if self.kind == CityFileKind::MacCity {
             Some((
-                self.mac_state_misc_u32_at(MAC_KIND2_HOTSPOT_X_MISC_OFFSET)? as u16,
-                self.mac_state_misc_u32_at(MAC_KIND2_HOTSPOT_Y_MISC_OFFSET)? as u16,
+                self.mac_state_misc_u32_at(MISC_DEVELOPED_CENTER_X_OFFSET)? as u16,
+                self.mac_state_misc_u32_at(MISC_DEVELOPED_CENTER_Y_OFFSET)? as u16,
             ))
         } else {
             self.mac_kind2_hotspot_runtime
@@ -131,8 +197,8 @@ impl City {
     pub(crate) fn set_mac_kind2_hotspot(&mut self, x: u16, y: u16) {
         self.mac_kind2_hotspot_runtime = Some((x, y));
         if self.kind == CityFileKind::MacCity {
-            self.set_mac_state_misc_u32_at(MAC_KIND2_HOTSPOT_X_MISC_OFFSET, u32::from(x));
-            self.set_mac_state_misc_u32_at(MAC_KIND2_HOTSPOT_Y_MISC_OFFSET, u32::from(y));
+            self.set_mac_state_misc_u32_at(MISC_DEVELOPED_CENTER_X_OFFSET, u32::from(x));
+            self.set_mac_state_misc_u32_at(MISC_DEVELOPED_CENTER_Y_OFFSET, u32::from(y));
         }
     }
 
@@ -145,7 +211,7 @@ impl City {
     }
 
     /// Mac `fffff03e` monthly RCI counters occupy MISC slots 380–387.
-    /// Win-layout saves use overlapping fields with different meanings.
+    /// On Win-layout saves Mac's continuation is stored separately in CGEX.
     pub(crate) fn mac_rci_counter(&self, slot: usize) -> u32 {
         if self.kind == CityFileKind::MacCity {
             self.mac_state_misc_u32_at((380 + slot) * MISC_FIELD_LEN)
@@ -333,7 +399,7 @@ impl City {
 
     /// Read one big-endian unsigned value from the decoded `MISC` chunk.
     pub fn misc_u32_at(&self, offset: usize) -> Option<u32> {
-        decode_misc_u32(&self.chunks, offset).ok()
+        decode_misc_u32_for_kind(&self.chunks, offset, self.kind).ok()
     }
 
     /// Read a row-book dword through the file-format-specific persistence view.
@@ -343,8 +409,20 @@ impl City {
 
     /// Read a Mac engine state dword through the preserved Mac MISC region.
     /// The caller chooses the Mac state offset; Win95 engine state should use
-    /// `misc_u32_at` instead. Mac's +0x78 latch is separate on PE-layout files.
+    /// `misc_u32_at` instead. Mac's command latch and scenario actions use
+    /// separate runtime fields on PE-layout files.
     pub fn mac_state_misc_u32_at(&self, offset: usize) -> Option<u32> {
+        if offset == MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET
+            && self.kind.is_win95()
+            && let Some(count) = self.mac_road_neighbor_link_count_runtime
+        {
+            return Some(u32::from(count));
+        }
+        if self.kind.is_win95()
+            && let Some(index) = MAC_ACTION_OFFSETS.iter().position(|&slot| slot == offset)
+        {
+            return Some(self.mac_scenario_runtime.unwrap_or_default().action[index]);
+        }
         if offset == MISC_REWARDS_AVAILABLE_OFFSET
             && self.kind.is_win95()
             && self.mac_cross_layout_active
@@ -352,6 +430,38 @@ impl City {
             return self.mac_cross_layout_saved_civic_latch;
         }
         self.budget_misc_u32_at(offset)
+    }
+
+    /// Mac CODE 14's signed progression WORD is sign-extended in MISC.
+    pub(crate) fn mac_city_progression(&self) -> i16 {
+        self.mac_state_misc_u32_at(MISC_CITY_PROGRESSION_OFFSET)
+            .unwrap_or(0) as i16
+    }
+
+    pub(crate) fn set_mac_city_progression(&mut self, level: i16) {
+        self.set_mac_state_misc_u32_at(MISC_CITY_PROGRESSION_OFFSET, i32::from(level) as u32);
+    }
+
+    pub(crate) fn mac_civic_latch(&self) -> u32 {
+        self.mac_state_misc_u32_at(MISC_REWARDS_AVAILABLE_OFFSET)
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn set_mac_civic_latch(&mut self, latch: u32) {
+        self.set_mac_state_misc_u32_at(MISC_REWARDS_AVAILABLE_OFFSET, latch);
+    }
+
+    /// Mac export 240 counts zero date WORDs in slots 12–15 before asking
+    /// export 104 to set the arcology latch. Export 104 also requires level 6.
+    pub(crate) fn refresh_mac_arcology_latch(&mut self) {
+        if self.mac_city_progression() >= 6
+            && Technology::ALL[12..16].iter().any(|technology| {
+                self.mac_state_misc_u32_at(technology.misc_offset())
+                    .is_some_and(|date| date as u16 == 0)
+            })
+        {
+            self.set_mac_civic_latch(self.mac_civic_latch() | (1 << 4));
+        }
     }
 
     /// Mac CODE 14 developed-cell WORD `ffffbb50`, saved in MISC slot 1067.
@@ -415,9 +525,23 @@ impl City {
     }
 
     /// Write a Mac engine state dword without interpreting its overlapping
-    /// bytes as Win95 runtime-cache updates. On non-Mac files this uses the
-    /// ordinary MISC writer.
+    /// bytes as Win95 runtime-cache updates. On non-Mac files, shared state
+    /// uses the ordinary MISC writer and Mac-only fields use the extension.
     pub fn set_mac_state_misc_u32_at(&mut self, offset: usize, value: u32) {
+        if offset == MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET && self.kind.is_win95() {
+            self.mac_road_neighbor_link_count_runtime = Some(value as u16);
+            self.modified = true;
+            return;
+        }
+        if self.kind.is_win95()
+            && let Some(index) = MAC_ACTION_OFFSETS.iter().position(|&slot| slot == offset)
+        {
+            self.mac_scenario_runtime
+                .get_or_insert_with(MacScenarioContinuation::default)
+                .action[index] = value;
+            self.modified = true;
+            return;
+        }
         if offset == MISC_REWARDS_AVAILABLE_OFFSET
             && self.kind.is_win95()
             && self.mac_cross_layout_active
@@ -494,18 +618,19 @@ impl City {
 
     /// Mac CODE 14 scenario-active flag (`fffffdf0`), persisted in state slot 1050.
     pub fn mac_scenario_active(&self) -> bool {
-        if self.kind.is_win95() && self.mac_cross_layout_active {
-            if let Some(active) = self.mac_scenario_active_runtime {
-                return active;
-            }
+        if self.kind.is_win95()
+            && let Some(active) = self.mac_scenario_active_runtime
+        {
+            return active;
         }
         self.mac_state_misc_u32_at(MAC_SCENARIO_ACTIVE_STATE_OFFSET)
             .is_some_and(|state| state as u8 != 0)
     }
 
     pub fn set_mac_scenario_active(&mut self, active: bool) {
-        if self.kind.is_win95() && self.mac_cross_layout_active {
+        if self.kind.is_win95() {
             self.mac_scenario_active_runtime = Some(active);
+            self.modified = true;
         } else {
             self.set_mac_state_misc_low_byte_at(MAC_SCENARIO_ACTIVE_STATE_OFFSET, u8::from(active));
         }
@@ -554,7 +679,7 @@ impl City {
             return;
         }
         if self.mac_budget_book.is_none() {
-            let raw = decode_misc_bytes(&self.chunks).unwrap_or_default();
+            let raw = decode_misc_bytes_for_kind(&self.chunks, self.kind).unwrap_or_default();
             let mut book = vec![0; book_len];
             if let Some(saved) = raw.get(MAC_MISC_BUDGET_BOOK_OFFSET..) {
                 let count = saved.len().min(book_len);
@@ -575,12 +700,18 @@ impl City {
         let Some(book) = self.mac_budget_book.as_deref() else {
             return;
         };
-        let mut misc = decode_misc_bytes(&self.chunks).unwrap_or_default();
+        let mut misc = decode_misc_bytes_for_kind(&self.chunks, self.kind).unwrap_or_default();
         let start = MAC_MISC_BUDGET_BOOK_OFFSET;
         let end = start + book.len();
         misc.resize(misc.len().max(end), 0);
         misc[start..end].copy_from_slice(book);
-        upsert_chunk(&mut self.chunks, &mut self.chunk_index, "MISC", &misc);
+        upsert_chunk_for_kind(
+            &mut self.chunks,
+            &mut self.chunk_index,
+            "MISC",
+            &misc,
+            self.kind,
+        );
     }
 
     /// Read one big-endian signed value from the decoded `MISC` chunk.
@@ -590,7 +721,7 @@ impl City {
 
     /// Read a contiguous sequence of big-endian unsigned values from `MISC` in one decode pass.
     pub fn misc_u32_values(&self, offset: usize, count: usize) -> Vec<u32> {
-        decode_misc_bytes(&self.chunks)
+        decode_misc_bytes_for_kind(&self.chunks, self.kind)
             .and_then(|data| {
                 let byte_len = count.checked_mul(4)?;
                 let end = offset.checked_add(byte_len)?;
@@ -654,13 +785,19 @@ impl City {
             self.pe_rci_demand_initialized = true;
         }
 
-        let mut misc = decode_misc_bytes(&self.chunks).unwrap_or_default();
+        let mut misc = decode_misc_bytes_for_kind(&self.chunks, self.kind).unwrap_or_default();
         misc.resize(misc.len().max(end), 0);
         for (index, value) in values.iter().copied().enumerate() {
             let field_offset = offset + index * FIELD_LEN;
             misc[field_offset..field_offset + FIELD_LEN].copy_from_slice(&value.to_be_bytes());
         }
-        upsert_chunk(&mut self.chunks, &mut self.chunk_index, "MISC", &misc);
+        upsert_chunk_for_kind(
+            &mut self.chunks,
+            &mut self.chunk_index,
+            "MISC",
+            &misc,
+            self.kind,
+        );
         if !sync_pe_caches {
             return;
         }

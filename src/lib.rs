@@ -21,6 +21,7 @@ mod game_clock;
 #[cfg(target_os = "ios")]
 mod ios_documents;
 mod mac_import;
+mod mac_scenario;
 mod mac_traffic_geometry;
 // Retained as a test-only archaeology model; the incomplete Mac actor lifecycle is not a
 // supported road-traffic renderer.

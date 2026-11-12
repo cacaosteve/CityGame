@@ -86,6 +86,29 @@ pub(crate) fn city_from_cgms_v4_for_test(bytes: &[u8]) -> Result<City> {
     city.traffic_overlays = Some(decode_xthg_records(xthg)?);
     city.traffic_overlays_from_file = true;
     city.saved_rotation = city.mac_state_misc_u32_at(8).unwrap_or(0) as u8;
+    // The native CODE 2 calendar replay restores its date from the Mac
+    // MISC year-founded word and phase counter. Keep that context when a
+    // diagnostic CGMS is loaded; otherwise calendar probes silently fall
+    // back to January 1900 and cannot exercise year-roll callbacks.
+    if let Some(founded) = city
+        .mac_state_misc_u32_at(MISC_YEAR_FOUNDED_OFFSET)
+        .map(|raw| raw as u16)
+        .filter(|year| *year > 0)
+    {
+        if let Some(counter) = city.mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET) {
+            let year = u32::from(founded).saturating_add(counter / MAC_CALENDAR_PHASES_PER_YEAR);
+            if let Ok(year) = u16::try_from(year) {
+                let within_year = counter % MAC_CALENDAR_PHASES_PER_YEAR;
+                city.set_saved_date_and_day(
+                    CityDate {
+                        year,
+                        month: (within_year / MAC_CALENDAR_PHASES_PER_MONTH + 1) as u8,
+                    },
+                    (within_year % MAC_CALENDAR_PHASES_PER_MONTH) as u8,
+                );
+            }
+        }
+    }
     city.rebuild_corner_metadata();
     city.pe_rebuild_dw_tile_count_434f80();
     city.modified = false;

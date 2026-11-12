@@ -13,6 +13,7 @@ fn run_sweep(city: &mut City, quickdraw: &mut MacToolboxRng) -> Vec<PlacementSou
         &mut sound_deadline,
         0,
         &mut now,
+        &mut None,
     )
 }
 

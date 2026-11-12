@@ -17,6 +17,7 @@ pub(super) struct PeIdleScheduler {
     modal: PeModalPause,
     continuation: Option<PeIdleContinuation>,
     day_zero: Option<PeDayZeroContinuation>,
+    pub(super) pending_disaster_point: Option<(i16, i16)>,
 }
 
 /// Admitted body of PE 0x4815e0. Rejected/waiting dialog admission belongs to
@@ -54,6 +55,7 @@ impl PeModalPause {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PeIdleContinuation {
+    ProposePhase24Disaster,
     AdmitDisaster,
     TickDisaster { started: bool },
     PublishDisasterEnd,
@@ -238,6 +240,20 @@ impl ViewerState {
         self.pe_idle_scheduler.day_zero = None;
     }
 
+    pub(super) fn run_pe_phase24_disaster_chooser(&mut self) {
+        if !self.engine_fidelity.uses_win95() {
+            return;
+        }
+        self.maybe_queue_pe_monthly_condition_newspaper_story();
+        if self.pe_dialog_owns_input()
+            && self.pe_idle_scheduler.continuation == Some(PeIdleContinuation::AdmitDisaster)
+        {
+            self.pe_idle_scheduler.continuation = Some(PeIdleContinuation::ProposePhase24Disaster);
+        } else {
+            self.queue_pe_monthly_disaster_if_due();
+        }
+    }
+
     fn begin_live_pe_day_zero(&mut self) {
         let at = self.game_clock;
         let context = PeDayZeroContext {
@@ -320,6 +336,10 @@ impl ViewerState {
                 break;
             };
             match stage {
+                PeIdleContinuation::ProposePhase24Disaster => {
+                    self.pe_idle_scheduler.continuation = Some(PeIdleContinuation::AdmitDisaster);
+                    self.queue_pe_monthly_disaster_if_due();
+                }
                 PeIdleContinuation::AdmitDisaster => {
                     let started = self.consume_pe_trigger_disaster();
                     self.pe_idle_scheduler.continuation =
@@ -347,14 +367,20 @@ impl ViewerState {
         }
     }
 
+    fn pe_idle_city_mode(&self) -> u16 {
+        // A Things explosion can paint XTXT before the idle disaster wrapper.
+        // Its queued trigger still belongs to the ordinary gameplay branch.
+        let active = self.city.has_active_disaster() && !self.pe_pending_trigger_in_gameplay_mode();
+        pe_city_mode_misc_value(self.mode, active) as u16
+    }
+
     pub(super) fn advance_frame_simulation(&mut self, elapsed: Duration) -> GameClockAdvance {
         if !self.engine_fidelity.uses_win95() {
             return self.advance_mac_frame_simulation(elapsed);
         }
 
-        // These are runtime mode/actors. A Mac save's opaque MISC +4 is not a
-        // Win95 scheduler selector, and must not choose the simulation branch.
-        let mode = pe_city_mode_misc_value(self.mode, self.city.has_active_disaster()) as u16;
+        // Use the live mode and actors after the city-open transition.
+        let mode = self.pe_idle_city_mode();
         let timer_speed = self.traffic.speed();
         self.pe_idle_scheduler
             .advance_timers(elapsed, timer_speed, mode);
@@ -396,7 +422,7 @@ impl ViewerState {
             self.tick_pe_disaster_xthg_actors_in_slot_order();
         }
         let speed = self.traffic.speed();
-        let mode = pe_city_mode_misc_value(self.mode, self.city.has_active_disaster()) as u16;
+        let mode = self.pe_idle_city_mode();
         let Some(dispatch) = self
             .pe_idle_scheduler
             .idle_dispatch(speed, mode, input_busy)

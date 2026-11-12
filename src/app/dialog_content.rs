@@ -173,31 +173,45 @@ pub(super) enum CityInfoDialog {
         x: usize,
         y: usize,
     },
-    /// Win95 bridge chooser after a valid road-water span has been preflighted.
+    /// Bridge chooser after a valid road-water span has been preflighted.
     RoadBridge {
         seed_x: usize,
         seed_y: usize,
         direction: u8,
         span_count: usize,
         selector_mask: u8,
+        mac_neighbor_link: Option<RoadNeighborLinkCandidate>,
     },
-    /// Win95 Rail `FUN_0045B930` selector-1 water span.
+    /// Rail selector-1 water span.
     RailBridge {
         seed_x: usize,
         seed_y: usize,
         direction: u8,
         span_count: usize,
+        neighbor_link: Option<RailNeighborLinkCandidate>,
     },
-    /// Win95 Power `FUN_0045B930` selector-0 water span.
+    /// Power selector-0 water span.
     PowerBridge {
         seed_x: usize,
         seed_y: usize,
         direction: u8,
         span_count: usize,
+        dry_stroke: bool,
     },
-    /// Win95 Highway `FUN_0045C1E0` water-worker selector dialog.
+    /// Mac tunnel route quote awaiting the player.
+    TunnelQuote {
+        entrance: (usize, usize),
+        exit: (usize, usize),
+        cost: u32,
+    },
+    /// Highway water-worker selector dialog.
     HighwayWaterBridge {
-        candidate: PeHighwayWaterBridgeCandidate,
+        candidate: HighwayWaterBridgeCandidate,
+    },
+    StadiumTeam {
+        x: usize,
+        y: usize,
+        available: u16,
     },
 }
 
@@ -213,6 +227,18 @@ impl CityInfoDialog {
             UiAction::OpenHelp => Some(Self::Help),
             _ => None,
         }
+    }
+
+    pub(super) fn holds_mac_simulation(self) -> bool {
+        matches!(
+            self,
+            Self::RoadBridge { .. }
+                | Self::RailBridge { .. }
+                | Self::PowerBridge { .. }
+                | Self::TunnelQuote { .. }
+                | Self::HighwayWaterBridge { .. }
+                | Self::StadiumTeam { .. }
+        )
     }
 
     pub(super) fn title(self) -> &'static str {
@@ -232,7 +258,9 @@ impl CityInfoDialog {
             Self::RoadBridge { .. } => "Select Road Bridge",
             Self::RailBridge { .. } => "Select Rail Bridge",
             Self::PowerBridge { .. } => "Select Power Bridge",
+            Self::TunnelQuote { .. } => "Engineer's Report",
             Self::HighwayWaterBridge { .. } => "Select Highway Bridge",
+            Self::StadiumTeam { .. } => "Select Stadium Team",
         }
     }
 
@@ -252,8 +280,8 @@ impl CityInfoDialog {
             Self::Query { .. } => None,
             Self::RoadBridge { .. } => None,
             Self::RailBridge { .. } => None,
-            Self::PowerBridge { .. } => None,
-            Self::HighwayWaterBridge { .. } => None,
+            Self::PowerBridge { .. } | Self::TunnelQuote { .. } => None,
+            Self::HighwayWaterBridge { .. } | Self::StadiumTeam { .. } => None,
         }
     }
 }
@@ -274,7 +302,9 @@ pub(super) enum CityInfoDialogAction {
     SelectRoadBridge(u8),
     SelectRailBridge,
     SelectPowerBridge,
+    ConfirmTunnel,
     SelectHighwayWaterBridge(u8),
+    SelectStadiumTeam(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

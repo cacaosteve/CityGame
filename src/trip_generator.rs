@@ -397,8 +397,6 @@ fn try_step(
             } else if is_road_tile(building) {
                 // Win95 drops to pedestrian after leaving the depot onto road.
                 Some((TransitMode::Pedestrian, 2, false))
-            } else if building > TRIP_DESAL_BUILDING {
-                Some((mode, 0, true))
             } else {
                 None
             }
@@ -407,9 +405,8 @@ fn try_step(
             if building == BUS_DEPOT || building == RAIL_STATION {
                 Some((TransitMode::TransitTransfer, 4, false))
             } else if is_road_tile(building) {
-                Some((TransitMode::Pedestrian, 3, false))
-            } else if building > TRIP_DESAL_BUILDING {
-                Some((mode, 0, true))
+                // Win95 @ 0x457f47 resumes vehicle traffic after a transfer.
+                Some((TransitMode::Road, 3, false))
             } else {
                 None
             }
@@ -424,7 +421,8 @@ fn try_step(
             }
         }
         TransitMode::SubwayEnter => {
-            if is_subway_underground(underground) || building == SUBWAY_STATION {
+            // The entry arm at 0x457fd6 reads only XUND.
+            if is_subway_underground(underground) {
                 Some((TransitMode::Subway, 1, false))
             } else {
                 None

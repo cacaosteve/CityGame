@@ -23,13 +23,14 @@ use super::{
     PE_NETWORK_SURFACE_REMAP_4E7BD8, PE_NETWORK_SURFACE_REMAP_GATE_4E7B68, PeRoadStrokePlan,
     PeRoadStrokeStep, PeRoadStrokeWalk, RailNeighborLinkCandidate, RoadNeighborLinkCandidate,
     SubToRailPlan, alternating_grid_path, axis_aligned_path, crossover_network_axis,
-    directional_neighbor_tiles, mac_network_slope_building_for_terrain, network_axis_mask,
-    network_axis_mask_for_side_mask, network_building_connects_to, network_building_for_tile,
+    directional_neighbor_tiles, mac_connector_slope_offset, mac_connector_terrain_open,
+    mac_network_slope_building_for_terrain, network_axis_mask, network_axis_mask_for_side_mask,
+    network_building_connects_to, network_building_for_tile,
     network_crossing_building_for_path_tile, network_kind_for_tool, network_path_side_mask,
     network_slope_building_for_terrain, opposite_network_side, proportional_grid_path,
     terrain_allows_network_axis,
 };
-use crate::city::{CITY_HEIGHT, CITY_TILES, CITY_WIDTH, City, TileBits, ZONE_CORNER_ALL};
+use crate::city::{CITY_HEIGHT, CITY_WIDTH, City, TileBits, ZONE_CORNER_ALL};
 use crate::engine_fidelity::EngineFidelity;
 use crate::renderer::{RenderSprite, Renderer};
 use crate::ui::EditTool;
@@ -150,8 +151,8 @@ pub(in crate::app) fn pe_place_power_mask_tile_44ac2c(mask: u8) -> u8 {
     (PE_PLACE_PIPES_MASK_TILE[idx].wrapping_add(0x0e) & 0xff) as u8
 }
 
-/// PE PlaceRoads reshape XTXT early arm @ `0x44af30`–`0x44af50`:
-/// XBLD `0x1d..0x2c` + XTXT gate → PlaceTile(`0x4e7c60[nibble] + 0x1d`).
+/// Legacy generic refresh uses a text-marker remap for ordinary roads.
+/// The native road tool uses the XTER selector in `network::pe_reshape`.
 pub(in crate::app) fn pe_place_road_xtxt_reshape_44af50(
     city: &mut City,
     x: usize,
@@ -182,8 +183,9 @@ pub(in crate::app) fn pe_place_road_mask_tile_44b0e5(mask: u8) -> u8 {
     (PE_PLACE_PIPES_MASK_TILE[idx].wrapping_add(0x1d) & 0xff) as u8
 }
 
-/// PE PlaceRoads reshape neighbor accept @ `0x44af6e`–`0x44b0a0`: XBLD in
-/// `0x1d..0x2c` / `0x3f..0x47` / `0x4b`/`0x4c` / `0x5d..0x61`, then NS/EW gates.
+/// Legacy generic refresh applies the axis tables to XBLD. The native
+/// reshape accepts the same building bands and applies those tables to XTER.
+#[cfg(test)]
 pub(in crate::app) fn pe_place_road_reshape_neighbor_connects_44af6e(
     building: u8,
     side: u8,
@@ -306,6 +308,7 @@ pub(in crate::app) fn pe_place_rail_slope_from_cardinal_neighbor_44b467(
 
 /// PE PlaceRails reshape neighbor accept @ `0x44b485`–`0x44b4c0`: XBLD in
 /// `0x2c..0x3f` / `0x45..0x49` / `0x6c..0x70` / `0x4d`/`0x4e`, then NS/EW gates.
+#[cfg(test)]
 pub(in crate::app) fn pe_place_rail_reshape_neighbor_connects_44b485(
     building: u8,
     side: u8,
@@ -719,7 +722,8 @@ pub(in crate::app) fn pe_road_stroke_plan_449bb0(
         } else {
             return Some(PeRoadStrokePlan {
                 path,
-                water_bridge_candidate: step.water_bridge_candidate,
+                water_bridge_candidate: pe_pipe_step_coordinate_44f50(current, direction)
+                    .filter(|&seed| pe_road_start_is_surface_water_449bb0(city, seed)),
             });
         }
     }
@@ -853,7 +857,8 @@ pub(in crate::app) fn pe_rail_stroke_plan_449f50(
         } else {
             return Some(PeRoadStrokePlan {
                 path,
-                water_bridge_candidate: step.water_bridge_candidate,
+                water_bridge_candidate: pe_pipe_step_coordinate_44f50(current, direction)
+                    .filter(|&seed| pe_road_start_is_surface_water_449bb0(city, seed)),
             });
         }
     }
@@ -893,4 +898,5 @@ pub(in crate::app) fn straight_power_line_drag_path(
 mod actions;
 mod confirmation;
 pub(in crate::app) use confirmation::*;
+mod mac_surface;
 mod topology;

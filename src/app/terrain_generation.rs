@@ -152,11 +152,11 @@ fn height_sample(
     outside_height: u16,
     ocean_enabled: bool,
 ) -> u16 {
-    if x < 0 || y < 0 || y >= CITY_HEIGHT as isize {
-        return outside_height;
+    if x >= CITY_WIDTH as isize && ocean_enabled {
+        return 0;
     }
-    if x >= CITY_WIDTH as isize {
-        return if ocean_enabled { 0 } else { outside_height };
+    if x < 0 || x >= CITY_WIDTH as isize || y < 0 || y >= CITY_HEIGHT as isize {
+        return outside_height;
     }
     heights[city_index(x as usize, y as usize)]
 }
@@ -172,13 +172,17 @@ fn apply_win95_mode_bands(
     if ocean_enabled {
         let mut offset = game_rng.random_mod(10) + 10;
         for y in 0..CITY_HEIGHT {
-            let x_a = 128 - usize::from(offset);
-            let x_b = x_a + 1;
-            heights[city_index(x_a, y)] =
-                (heights[city_index(x_a, y)] & !0x1f) | target.saturating_sub(2);
-            heights[city_index(x_b, y)] =
-                (heights[city_index(x_b, y)] & !0x1f) | target.saturating_sub(3);
-            xbit[city_index(x_b, y)] |= 0x01;
+            // PE 0x447b20 writes the shoulder, then floods the band to the edge.
+            let shoulder = CITY_WIDTH - usize::from(offset);
+            if shoulder < CITY_WIDTH {
+                let index = city_index(shoulder, y);
+                heights[index] = (heights[index] & !0x1f) | (target - 2);
+                for x in (shoulder + 1)..CITY_WIDTH {
+                    let index = city_index(x, y);
+                    heights[index] = (heights[index] & !0x1f) | (target - 3);
+                    xbit[index] |= 0x01;
+                }
+            }
 
             let destination = game_rng.random_mod(30);
             if destination > offset {
@@ -192,14 +196,14 @@ fn apply_win95_mode_bands(
     if river_enabled {
         let mut center = 64i16;
         let mut retained_delta = game_rng.random_mod(3) as i16 - 1;
-        for y in (0..CITY_HEIGHT).rev() {
-            for x in (center - 3)..=(center + 3) {
-                heights[city_index(x as usize, y)] =
-                    (heights[city_index(x as usize, y)] & !0x1f) | target.saturating_sub(3);
+        for x in (0..CITY_WIDTH).rev() {
+            for y in (center - 3)..=(center + 3) {
+                let index = city_index(x, y as usize);
+                heights[index] = (heights[index] & !0x1f) | (target - 3);
             }
-            for x in [center - 4, center + 4] {
-                heights[city_index(x as usize, y)] =
-                    (heights[city_index(x as usize, y)] & !0x1f) | target.saturating_sub(2);
+            for y in [center - 4, center + 4] {
+                let index = city_index(x, y as usize);
+                heights[index] = (heights[index] & !0x1f) | (target - 2);
             }
             if game_rng.random_mod(8) == 0 {
                 retained_delta = game_rng.random_mod(3) as i16 - 1;
@@ -276,10 +280,11 @@ fn relax_win95_slope(heights: &mut [u16], x: usize, y: usize) {
             && ny < CITY_HEIGHT as isize
             && (heights[city_index(nx as usize, ny as usize)] & 0x1f) + 1 < current
     });
-    if drop {
-        heights[index] = (heights[index] & !0x1f) | current.saturating_sub(1);
+    if !drop {
+        return;
     }
-    let adjusted = heights[index] & 0x1f;
+    let adjusted = current - 1;
+    heights[index] = (heights[index] & !0x1f) | adjusted;
     for &(nx, ny) in &neighbors {
         if nx < 0 || ny < 0 || nx >= CITY_WIDTH as isize || ny >= CITY_HEIGHT as isize {
             continue;

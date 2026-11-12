@@ -36,7 +36,7 @@ impl City {
         let mac_budget_book = if kind == CityFileKind::MacCity {
             let start = MAC_MISC_BUDGET_BOOK_OFFSET;
             let len = MISC_BUDGET_ROW_DWORDS * MISC_BUDGET_ROW_COUNT * MISC_FIELD_LEN;
-            let raw = decode_misc_bytes(&chunks).unwrap_or_default();
+            let raw = decode_misc_bytes_for_kind(&chunks, kind).unwrap_or_default();
             let mut book = vec![0; len];
             if let Some(saved) = raw.get(start..start.saturating_add(len)) {
                 book.copy_from_slice(saved);
@@ -61,27 +61,35 @@ impl City {
         })?;
         for (name, expected) in [("XGRP", 0xd00)] {
             decode_optional_chunk_layer(&chunks, name, kind, |chunks| {
-                decode_expected_chunk(chunks, name, expected).map(|_| ())
+                decode_expected_chunk_for_kind(chunks, name, expected, kind).map(|_| ())
             })?;
         }
-        let altm = decode_optional_chunk_layer(&chunks, "ALTM", kind, decode_altm)?;
+        let altm =
+            decode_optional_chunk_layer(&chunks, "ALTM", kind, |chunks| decode_altm(chunks, kind))?;
         let name = city_name_from_chunks(&path, &chunks, kind);
         let terrain = decode_optional_chunk_layer(&chunks, "XTER", kind, |chunks| {
-            decode_expected_chunk(chunks, "XTER", CITY_TILES)
+            decode_expected_chunk_for_kind(chunks, "XTER", CITY_TILES, kind)
         })?;
         let buildings = decode_optional_chunk_layer(&chunks, "XBLD", kind, |chunks| {
-            decode_expected_chunk(chunks, "XBLD", CITY_TILES)
+            decode_expected_chunk_for_kind(chunks, "XBLD", CITY_TILES, kind)
         })?;
         let underground = decode_optional_chunk_layer(&chunks, "XUND", kind, |chunks| {
-            decode_expected_chunk(chunks, "XUND", CITY_TILES)
+            decode_expected_chunk_for_kind(chunks, "XUND", CITY_TILES, kind)
         })?;
-        let zones = decode_optional_chunk_layer(&chunks, "XZON", kind, decode_zones)?;
+        let zones = decode_optional_chunk_layer(&chunks, "XZON", kind, |chunks| {
+            decode_zones(chunks, kind)
+        })?;
         let text_overlays = decode_optional_chunk_layer(&chunks, "XTXT", kind, |chunks| {
-            decode_expected_chunk(chunks, "XTXT", CITY_TILES)
+            decode_expected_chunk_for_kind(chunks, "XTXT", CITY_TILES, kind)
         })?;
-        let labels = decode_optional_chunk_layer(&chunks, "XLAB", kind, decode_labels)?;
-        let microsims = decode_optional_chunk_layer(&chunks, "XMIC", kind, decode_xmic)?;
-        let tile_bits = decode_optional_chunk_layer(&chunks, "XBIT", kind, decode_tile_bits)?;
+        let labels = decode_optional_chunk_layer(&chunks, "XLAB", kind, |chunks| {
+            decode_labels(chunks, kind)
+        })?;
+        let microsims =
+            decode_optional_chunk_layer(&chunks, "XMIC", kind, |chunks| decode_xmic(chunks, kind))?;
+        let tile_bits = decode_optional_chunk_layer(&chunks, "XBIT", kind, |chunks| {
+            decode_tile_bits(chunks, kind)
+        })?;
         let (traffic_density, xtrf_storage) = if chunks.iter().any(|chunk| chunk.name == "XTRF") {
             let (data, format) = decode_xtrf(&chunks, kind).context("loading XTRF chunk")?;
             (Some(data), format)
@@ -99,7 +107,7 @@ impl City {
         // Preserve the legacy port format that stored its full-resolution pollution map in
         // XPLC when XPLT was absent; do not misclassify that payload as malformed coverage.
         let legacy_xplc_pollution = !chunks.iter().any(|chunk| chunk.name == "XPLT")
-            && decode_expected_chunk(&chunks, "XPLC", CITY_TILES).is_ok();
+            && decode_expected_chunk_for_kind(&chunks, "XPLC", CITY_TILES, kind).is_ok();
         let police_coverage = if legacy_xplc_pollution {
             None
         } else {
@@ -111,20 +119,24 @@ impl City {
         let pollution_density = if chunks.iter().any(|chunk| chunk.name == "XPLT") {
             Some(decode_microsim64_chunk(&chunks, "XPLT", kind).context("loading XPLT chunk")?)
         } else if police_coverage.is_none() {
-            decode_expected_chunk(&chunks, "XPLC", CITY_TILES).ok()
+            decode_expected_chunk_for_kind(&chunks, "XPLC", CITY_TILES, kind).ok()
         } else {
             None
         };
-        let traffic_overlays = decode_optional_chunk_layer(&chunks, "XTHG", kind, decode_xthg)?;
+        let traffic_overlays =
+            decode_optional_chunk_layer(&chunks, "XTHG", kind, |chunks| decode_xthg(chunks, kind))?;
         let traffic_overlays_from_file = traffic_overlays.is_some();
-        let saved_rotation = decode_rotation(&chunks).unwrap_or(0);
-        let misc_crime_count = decode_misc_crime_count(&chunks).ok();
-        let misc_traffic_count = decode_misc_traffic_count(&chunks).ok();
-        let misc_pollution_count = decode_misc_pollution_count(&chunks).ok();
-        let misc_humidity = decode_misc_u32(&chunks, MISC_HUMIDITY_OFFSET)
+        let saved_rotation = decode_rotation_for_kind(&chunks, kind).unwrap_or(0);
+        let misc_crime_count = decode_misc_u32_for_kind(&chunks, MISC_CITY_CRIME_OFFSET, kind).ok();
+        let misc_traffic_count =
+            decode_misc_u32_for_kind(&chunks, MISC_CITY_TRAFFIC_OFFSET, kind).ok();
+        let misc_pollution_count =
+            decode_misc_u32_for_kind(&chunks, MISC_CITY_POLLUTION_OFFSET, kind).ok();
+        let misc_humidity = decode_misc_u32_for_kind(&chunks, MISC_HUMIDITY_OFFSET, kind)
             .ok()
             .map(|value| u32::from(weather_cache_byte_from_misc(value)));
-        let misc_water_table_level = decode_misc_u32(&chunks, MISC_WATER_TABLE_LEVEL_OFFSET).ok();
+        let misc_water_table_level =
+            decode_misc_u32_for_kind(&chunks, MISC_WATER_TABLE_LEVEL_OFFSET, kind).ok();
         let saved_date = decode_city_date(&chunks, kind).ok();
         let saved_view = decode_city_view(&chunks, kind).ok();
         let corner_key_bits = infer_corner_key_bits(buildings.as_deref(), zones.as_deref());
@@ -170,6 +182,7 @@ impl City {
             traffic_overlays,
             traffic_overlays_from_file,
             pe_active_train_count_override: None,
+            pe_tornado_actor_counter: 0,
             mac_marina_actor_counter: 0,
             mac_kind3_actor_counter: 0,
             mac_kind1_actor_counter: 0,
@@ -185,6 +198,7 @@ impl City {
             mac_pending_action_runtime,
             mac_scenario_active_runtime: mac_saved_state
                 .and_then(|state| state.mac_scenario_active),
+            mac_scenario_runtime: mac_saved_state.and_then(|state| state.scenario),
             mac_rci_counters_runtime: mac_saved_state
                 .map(|state| state.rci_counters)
                 .unwrap_or([0; 8]),
@@ -236,6 +250,10 @@ impl City {
                 .as_ref()
                 .and_then(|extension| extension.pe_monster_xthg_index),
             mac_cross_layout_active: false,
+            mac_road_neighbor_link_count_runtime: mac_saved_state
+                .and_then(|state| state.road_neighbor_links),
+            mac_residential_total_runtime: mac_saved_state
+                .and_then(|state| state.residential_total),
             mac_cross_layout_saved_civic_latch: citygame_extension
                 .as_ref()
                 .and_then(|extension| extension.mac_civic_latch),
@@ -249,11 +267,13 @@ impl City {
             pe_xund_occupancy: 0,
             pe_dw_tile_count: [0; 256],
             pe_nonnetwork_neighbor_links: 0,
+            pe_road_link_census_delta: 0,
             pe_synthetic_trip_markers: vec![false; CITY_TILES],
             pe_military_tile_count: [0; MILITARY_TILE_COUNT_VALUES],
             pe_city_value: 0,
             pe_cargo_spawn_tile: (0, 0),
             dispatch_cursors: [0; 3],
+            mac_dispatch: Default::default(),
             pe_rci_demand_initialized,
             pe_water_coverage_percent: 100,
             pe_power_used_percent: 100,
@@ -261,6 +281,8 @@ impl City {
             pe_dw_rail_passengers: 0,
             pe_dw_subway_passengers: 0,
             mac_monthly_arrest_total: 0,
+            mac_mayor_approval: 0,
+            mac_newspaper_suppressed: false,
             mac_police_gate_runtime: mac_saved_state.map(|state| state.police_gate).unwrap_or(0),
             mac_arcology_total_runtime: mac_saved_state.and_then(|state| state.arcology_total),
             mac_power_summary_runtime: mac_saved_state
@@ -345,6 +367,7 @@ impl City {
             pe_dw_tech_ui_4e9a10: [0; 18],
             pe_w_neighbor_fame_ranks: [0; PE_NEIGHBOR_FAME_RANK_COUNT],
             pe_newspaper_extra_popup_pending: false,
+            pe_newspaper_storage: PeNewspaperStorage::default(),
             pe_disaster_end_newspaper_pending: false,
             misc_crime_count,
             misc_traffic_count,
@@ -672,6 +695,7 @@ impl City {
             traffic_overlays: Some(empty_overlay_table()),
             traffic_overlays_from_file: false,
             pe_active_train_count_override: None,
+            pe_tornado_actor_counter: 0,
             mac_marina_actor_counter: 0,
             mac_kind3_actor_counter: 0,
             mac_kind1_actor_counter: 0,
@@ -684,6 +708,7 @@ impl City {
             mac_transit_accumulators_runtime: [0; 3],
             mac_pending_action_runtime: 0,
             mac_scenario_active_runtime: None,
+            mac_scenario_runtime: None,
             mac_rci_counters_runtime: [0; 8],
             mac_population_change_balances: [0; 2],
             pe_cross_layout_active: false,
@@ -703,6 +728,8 @@ impl City {
             pe_cross_layout_saved_traffic_count: None,
             pe_cross_layout_saved_monster_xthg_index: None,
             mac_cross_layout_active: false,
+            mac_road_neighbor_link_count_runtime: None,
+            mac_residential_total_runtime: None,
             mac_cross_layout_saved_civic_latch: None,
             mac_xbld_census_runtime: [0; 256],
             mac_cross_layout_state_restored: false,
@@ -712,11 +739,13 @@ impl City {
             pe_xund_occupancy: 0,
             pe_dw_tile_count: [0; 256],
             pe_nonnetwork_neighbor_links: 0,
+            pe_road_link_census_delta: 0,
             pe_synthetic_trip_markers: vec![false; CITY_TILES],
             pe_military_tile_count: [0; MILITARY_TILE_COUNT_VALUES],
             pe_city_value: 0,
             pe_cargo_spawn_tile: (0, 0),
             dispatch_cursors: [0; 3],
+            mac_dispatch: Default::default(),
             pe_rci_demand_initialized: false,
             pe_water_coverage_percent: 100,
             pe_power_used_percent: 100,
@@ -724,6 +753,8 @@ impl City {
             pe_dw_rail_passengers: 0,
             pe_dw_subway_passengers: 0,
             mac_monthly_arrest_total: 0,
+            mac_mayor_approval: 0,
+            mac_newspaper_suppressed: false,
             mac_police_gate_runtime: 0,
             mac_arcology_total_runtime: None,
             mac_power_summary_runtime: 0,
@@ -804,6 +835,7 @@ impl City {
             pe_dw_tech_ui_4e9a10: [0; 18],
             pe_w_neighbor_fame_ranks: [0; PE_NEIGHBOR_FAME_RANK_COUNT],
             pe_newspaper_extra_popup_pending: false,
+            pe_newspaper_storage: PeNewspaperStorage::default(),
             pe_disaster_end_newspaper_pending: false,
             misc_crime_count: None,
             misc_traffic_count: None,
@@ -839,6 +871,8 @@ impl City {
             "MISC",
             &misc_record,
         );
+        // PE new-city setup writes 64 into both center WORDs at 0x4349ec/0x4349f8.
+        city.set_pe_city_center(64, 64);
         city.rebuild_corner_metadata();
         city.mark_all_dirty();
         // PE new-city @ `0x40e2e7`–`0x40e337`: zero `0x4ca4c8`, then `dwTileCount[0] = 0x4000`

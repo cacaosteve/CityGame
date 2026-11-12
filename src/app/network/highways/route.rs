@@ -59,6 +59,7 @@ pub(in crate::app) fn pe_highway_terminal_plan_461ae0(
         None
     };
     HighwayDragPlan {
+        mac_dry_endpoint: None,
         path,
         terminal_direction: None,
         neighbor_link,
@@ -199,6 +200,7 @@ pub(in crate::app) fn pe_highway_route_path_461ae0(
         // to the geometric dry-route approximation.
         let water_bridge = pe_highway_water_bridge_candidate_45c1e0(city, start, 1, 0);
         return Some(HighwayDragPlan {
+            mac_dry_endpoint: None,
             path: Vec::new(),
             terminal_direction: None,
             neighbor_link: None,
@@ -209,6 +211,7 @@ pub(in crate::app) fn pe_highway_route_path_461ae0(
         // FUN_004621F0 rejects the initial footprint before asking for a drag.
         // Keep that native refusal distinct from an unsupported planner case.
         return Some(HighwayDragPlan {
+            mac_dry_endpoint: None,
             path: Vec::new(),
             terminal_direction: None,
             neighbor_link: None,
@@ -216,12 +219,7 @@ pub(in crate::app) fn pe_highway_route_path_461ae0(
         });
     }
 
-    let bounds = (
-        start.0.min(endpoint.0),
-        start.1.min(endpoint.1),
-        start.0.max(endpoint.0),
-        start.1.max(endpoint.1),
-    );
+    let bounds = highway_drag_bounds(start, endpoint);
     let mut simulated_city = city.clone();
     let mut current = start;
     let mut direction = pe_pipe_direction_to_target_44c680(start, endpoint);
@@ -306,4 +304,102 @@ pub(in crate::app) fn pe_highway_route_path_461ae0(
         }
     }
     None
+}
+
+/// CODE 13 @ 0x204ca/0x20658 prices the route against the unchanged map.
+/// The Mac worker shares the route and terrain gates with Win95. It prices
+/// against the unchanged map and re-runs the route during the live stamp.
+pub(super) fn mac_highway_dry_plan(
+    city: &City,
+    start: (usize, usize),
+    raw_endpoint: (usize, usize),
+) -> HighwayDragPlan {
+    let clicked_without_drag = start == raw_endpoint;
+    let start = highway_canonical_origin(start);
+    let raw_endpoint = if clicked_without_drag {
+        start
+    } else {
+        raw_endpoint
+    };
+    let endpoint = highway_canonical_origin(raw_endpoint);
+    if start.0 >= CITY_WIDTH
+        || start.1 >= CITY_HEIGHT
+        || endpoint.0 >= CITY_WIDTH
+        || endpoint.1 >= CITY_HEIGHT
+    {
+        return HighwayDragPlan::default();
+    }
+    if pe_highway_route_footprint_has_water_xbit_461ae0(city, start) {
+        return HighwayDragPlan {
+            water_bridge: super::water::mac_highway_water_bridge_candidate(city, start, 1, 0),
+            ..HighwayDragPlan::default()
+        };
+    }
+    let mut plan = HighwayDragPlan {
+        mac_dry_endpoint: Some(raw_endpoint),
+        ..HighwayDragPlan::default()
+    };
+    if pe_highway_route_gate_low_word_464040(city, start.0, start.1) == 0x8000 {
+        return plan;
+    }
+
+    let bounds = highway_drag_bounds(start, endpoint);
+    let mut current = start;
+    let mut direction = pe_pipe_direction_to_target_44c680(start, raw_endpoint);
+    plan.path.push(current);
+    while current != endpoint {
+        let step = pe_highway_route_step_461ae0(city, current, endpoint, bounds, &mut direction);
+        match step {
+            PeHighwayRouteStep461ae0::Advanced(next) => {
+                plan.path.push(next);
+                current = next;
+            }
+            PeHighwayRouteStep461ae0::WaterHandoff
+            | PeHighwayRouteStep461ae0::Stopped
+            | PeHighwayRouteStep461ae0::LateXbldReject => break,
+        }
+    }
+    plan.terminal_direction = Some(direction);
+    plan
+}
+
+fn highway_drag_bounds(
+    start: (usize, usize),
+    endpoint: (usize, usize),
+) -> (usize, usize, usize, usize) {
+    (
+        start.0.min(endpoint.0),
+        start.1.min(endpoint.1),
+        start.0.max(endpoint.0),
+        start.1.max(endpoint.1),
+    )
+}
+
+pub(super) fn stamp_mac_highway_dry_route(
+    city: &mut City,
+    start: (usize, usize),
+    raw_endpoint: (usize, usize),
+) -> (usize, (usize, usize), u8) {
+    let mut direction = pe_pipe_direction_to_target_44c680(start, raw_endpoint);
+    let mut current = highway_canonical_origin(start);
+    let endpoint = highway_canonical_origin(raw_endpoint);
+    let bounds = highway_drag_bounds(current, endpoint);
+    let mut placed = 0;
+
+    // CODE 13 @ 0x20bf6 advances first, then stamps the old origin using the
+    // newly saved direction. The next step reads the mutations from that stamp.
+    loop {
+        let step = pe_highway_route_step_461ae0(city, current, endpoint, bounds, &mut direction);
+        pe_city_tool_place_highway_stamp_body_4626d0(
+            city,
+            current.0,
+            current.1,
+            highway_axis_for_pe_direction(direction),
+        );
+        placed += 1;
+        let PeHighwayRouteStep461ae0::Advanced(next) = step else {
+            return (placed, current, direction);
+        };
+        current = next;
+    }
 }

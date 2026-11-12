@@ -176,10 +176,13 @@ pub(in crate::app) fn mac_publish_monthly_riot_ratio(city: &mut City) -> Option<
 /// selects this worker by engine fidelity; cross-layout cities read the Mac
 /// counters and arcology total from their separate runtime state.
 pub(in crate::app) fn mac_budget_refresh_rci_budget_currents(city: &mut City) {
-    let rci_counts = std::array::from_fn::<_, 6, _>(|index| city.mac_rci_counter(index + 1) as i32);
     let arcology_total = city.mac_arcology_resident_total() as i32;
-    for (row, numerator, divisor) in [(0, 0, 6_i32), (1, 2, 12), (2, 4, 12)] {
-        let pair_total = rci_counts[numerator].wrapping_add(rci_counts[numerator + 1]);
+    for (row, (pair_total, divisor)) in city
+        .mac_rci_pair_totals()
+        .into_iter()
+        .zip([6, 12, 12])
+        .enumerate()
+    {
         let current = pair_total
             .wrapping_mul(10)
             .wrapping_add(arcology_total / divisor);
@@ -191,7 +194,9 @@ pub(in crate::app) fn mac_budget_refresh_rci_budget_currents(city: &mut City) {
 /// snapshot. Its inputs are the persisted Mac XBLD census words, not the PE
 /// census, which is rebuilt with a different military-zone rule.
 pub(in crate::app) fn mac_budget_refresh_derived_currents(city: &mut City) {
-    mac_budget_refresh_rci_budget_currents(city);
+    // CODE 8 export 237 owns rows 0–2 in phase 21. CODE 4 writes the
+    // outstanding bond count to row 4 after taking the monthly snapshot.
+    mac_budget_set_current(city, BUDGET_BOND_ROW, city.pe_dw_city_bonds);
 
     let census = std::array::from_fn::<_, 256, _>(|id| city.mac_xbld_tile_count(id as u8));
     let count = |building: u8| census[usize::from(building)];
@@ -234,5 +239,25 @@ pub(in crate::app) fn mac_budget_refresh_derived_currents(city: &mut City) {
 fn mac_budget_set_current(city: &mut City, row: usize, current: u32) {
     if let Some(offset) = budget_row_misc_offset_for_city(city, row, BUDGET_SERVICE_CURRENT_FIELD) {
         city.set_budget_misc_u32_values(offset, &[current]);
+    }
+}
+
+/// CODE 5 0x3c20–0x3c5e adds one to the selected civic current on placement.
+pub(in crate::app) fn mac_budget_add_civic_placement(city: &mut City, building: u8) {
+    let row = match building {
+        0xd2 => 5,
+        0xd3 => 6,
+        0xd1 => 7,
+        0xd6 => 8,
+        0xd9 => 9,
+        _ => return,
+    };
+    if let Some(offset) = budget_row_misc_offset_for_city(city, row, BUDGET_SERVICE_CURRENT_FIELD) {
+        let current = city
+            .budget_misc_u32_values(offset, 1)
+            .first()
+            .copied()
+            .unwrap_or(0);
+        city.set_budget_misc_u32_values(offset, &[current.wrapping_add(1)]);
     }
 }

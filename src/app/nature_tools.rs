@@ -281,13 +281,13 @@ pub(super) fn pe_terrain_generation_water_walk_446440(
             let next_x = nx as usize;
             let next_y = ny as usize;
             let next_height = u16::from(city.altitude_at(next_x, next_y) & 0x1f);
+            // 0x446544 skips uphill candidates before testing XTER.
             if next_height > current_height {
-                selected = Some((next_x, next_y, tried));
-                break;
+                continue;
             }
 
             let next_terrain = city.terrain_at(next_x, next_y);
-            if (0x11..0x30).contains(&next_terrain) {
+            if (0x10..0x30).contains(&next_terrain) {
                 return;
             }
             if next_height < current_height || next_terrain == 0 {

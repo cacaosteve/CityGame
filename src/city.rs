@@ -23,13 +23,17 @@ mod construction;
 #[cfg(test)]
 use construction::city_name_from_chunks;
 mod destruction;
-pub(crate) use destruction::pe_destroy_building_mode1_render_scatter_draw_count;
+pub(crate) use destruction::{
+    pe_choose_and_place_corner_bits, pe_destroy_building_corner_origin,
+    pe_destroy_building_mode1_render_scatter_draw_count,
+};
 mod ambient_actors;
 mod disaster_actors;
 mod disaster_state;
 mod economy;
 mod eq_life;
 mod scenario_state;
+pub(crate) use scenario_state::MacScenarioResult;
 mod service_state;
 #[cfg(test)]
 use eq_life::PeEqLeMonthParams;
@@ -61,7 +65,8 @@ mod misc_state;
 mod state_layout;
 use state_layout::*;
 mod newspaper;
-pub(crate) use newspaper::pe_queue_high_mayor_approval_story_if_crossed;
+use newspaper::PeNewspaperStorage;
+pub(crate) use newspaper::PeNewspaperTables;
 use newspaper::{
     PE_NEWSPAPER_STORY_FUND_EDUCATION, PE_NEWSPAPER_STORY_NATIONAL_TAX_DOWN,
     PE_NEWSPAPER_STORY_NATIONAL_TAX_UP, PE_NEWSPAPER_STORY_NATIONAL_TREND,
@@ -103,22 +108,27 @@ use economy::*;
 #[allow(unused_imports)]
 pub use economy::{pe_national_prosperity, pe_national_trend_from_prosperity};
 use file_format::{
-    CITYGAME_EXTENSION_CHUNK, decode_citygame_extension, encode_citygame_extension, upsert_chunk,
+    CITYGAME_EXTENSION_CHUNK, city_rle_decode, decode_citygame_extension,
+    encode_citygame_extension, upsert_chunk, upsert_chunk_for_kind,
 };
 #[allow(unused_imports)]
 pub use file_format::{SAVE_CHUNK_ORDER, chunk_tags_in_file, sc2_rle_encode};
-pub use file_format::{detect_city_kind, encode_scdh_file, parse_scdh_chunks, sc2_rle_decode};
+pub use file_format::{
+    detect_city_kind, encode_scdh_file, mac_rle_decode, mac_rle_encode, parse_scdh_chunks,
+    sc2_rle_decode,
+};
 use layer_codec::{
-    cnam_text, decode_altm, decode_city_date, decode_city_view, decode_cnam_chunk,
-    decode_expected_chunk, decode_labels, decode_microsim64_chunk, decode_misc_bytes,
-    decode_misc_crime_count, decode_misc_pollution_count, decode_misc_traffic_count,
-    decode_misc_u32, decode_optional_chunk_layer, decode_optional_microsim32_chunk,
-    decode_rotation, decode_tile_bits, decode_win95_misc_record, decode_xmic, decode_xthg,
+    CITYGAME_FIRE_COVERAGE_CHUNK, CITYGAME_FIRE_COVERAGE_VERSION, CITYGAME_MAP_PLANES_CHUNK,
+    CITYGAME_MAP_PLANES_VERSION, cnam_text, decode_altm, decode_city_date, decode_city_view,
+    decode_cnam_chunk, decode_expected_chunk, decode_expected_chunk_for_kind, decode_labels,
+    decode_microsim64_chunk, decode_misc_bytes, decode_misc_bytes_for_kind, decode_misc_u32,
+    decode_misc_u32_for_kind, decode_optional_chunk_layer, decode_optional_microsim32_chunk,
+    decode_rotation_for_kind, decode_tile_bits, decode_win95_misc_record, decode_xmic, decode_xthg,
     decode_xtrf, decode_zones, encode_altm, encode_microsim32_for_save, encode_microsim64_for_save,
     encode_xtrf_for_save,
 };
 #[cfg(test)]
-use layer_codec::{resize_map_64_to_128, resize_map_128_to_64};
+use layer_codec::{MicrosimOrder, resize_map_64_to_128, resize_map_128_to_64};
 use yearly_microsim_schedule::{
     YearlyMicrosimRngInputs, power_plant_rebuild_cost, yearly_microsim_rng_schedule,
 };
@@ -600,6 +610,8 @@ pub struct City {
     /// records when the native constructor writes through allocator slot zero.
     /// The next PE actor sweep rebuilds it from usable slots.
     pub(crate) pe_active_train_count_override: Option<u16>,
+    /// Win95 BSS `0x4e99dc`: starts and visits since the last Things reset.
+    pub(crate) pe_tornado_actor_counter: u16,
     /// Mac CODE 6 `ffffa09a`: transient visit count shared by marina kind-9 actors.
     /// It is separate from the Win95 sailboat budget and is reset by the Mac actor sweep.
     pub(crate) mac_marina_actor_counter: u16,
@@ -630,8 +642,11 @@ pub struct City {
     /// Mac CODE 14 scenario-active byte when Win95 owns the colliding MISC slot.
     /// `None` means the first-open value still comes from the raw saved MISC.
     pub(crate) mac_scenario_active_runtime: Option<bool>,
+    mac_scenario_runtime: Option<scenario_state::MacScenarioContinuation>,
     /// Mac monthly RCI scan counters for a city with Win95 storage layout.
     pub(crate) mac_rci_counters_runtime: [u32; 8],
+    /// Mac's phase-21 residential pair snapshot when Win95 owns MISC `+0x74`.
+    mac_residential_total_runtime: Option<u32>,
     /// Phase-21 change balances at Mac `fffff01e` and `fffff022`.
     pub(crate) mac_population_change_balances: [u32; 2],
     /// Win95 fidelity has explicitly prepared a Mac-layout city.
@@ -667,6 +682,8 @@ pub struct City {
     /// PE weather when Mac owns MISC `+0x60..+0x6c`.
     /// Mac fidelity has explicitly prepared a Windows-layout city.
     pub(crate) mac_cross_layout_active: bool,
+    /// Mac CODE 13's paid road-link tally when PE owns MISC +0x1050.
+    pub(crate) mac_road_neighbor_link_count_runtime: Option<u16>,
     /// Mac CODE 4 `ffffdc74` command-strip latch when PE owns MISC `+0x78`.
     pub(crate) mac_cross_layout_saved_civic_latch: Option<u32>,
     /// Mac saved XBLD census when running a Windows-layout city.
@@ -693,6 +710,9 @@ pub struct City {
     /// paid confirmation flow. Runtime WORD cleared on city open; separate from
     /// edge geometry used by off-map trips.
     pub(crate) pe_nonnetwork_neighbor_links: u16,
+    /// Difference between the live PE road-link WORD and its tile-class census.
+    /// The original counts purchases by tool and reclassifies XTXT on load.
+    pub(crate) pe_road_link_census_delta: u16,
     /// Session-only provenance for XTXT markers synthesized for off-map trips.
     /// Loaded markers have no provenance and remain native-visible.
     pe_synthetic_trip_markers: Vec<bool>,
@@ -704,6 +724,7 @@ pub struct City {
     pub(crate) pe_cargo_spawn_tile: (u8, u8),
     /// Runtime cursors used by the original emergency dispatch palette's per-service rings.
     dispatch_cursors: [usize; 3],
+    mac_dispatch: overlay_actors::MacDispatch,
     /// Whether the saved Win95 RCI demand triple has been loaded or written. A fresh
     /// MISC record is zero-filled, so byte availability alone cannot distinguish it
     /// from an explicit saved zero-demand triple.
@@ -722,6 +743,10 @@ pub struct City {
     /// Rebuilt by the monthly police XMIC rows and consumed by prison rows;
     /// not serialized as independent city state.
     mac_monthly_arrest_total: u16,
+    /// Mac process approval word. The session carries it across city changes.
+    mac_mayor_approval: u16,
+    /// Mac process background flag at ffff8c7e. Excluded from saves.
+    mac_newspaper_suppressed: bool,
     /// Mac police gate for Win95-layout cities, whose MISC slot belongs to PE.
     mac_police_gate_runtime: i16,
     /// Mac phase-0 arcology total for a city with Win95 MISC ownership.
@@ -801,7 +826,7 @@ pub struct City {
     pe_eq_averages_ready: bool,
     /// Coverage life expectancy (hospital overlay); EQ_LE seed/births use ordinance LE.
     pe_life_expectancy: u8,
-    /// Win95 `0x4E9904` opinion-poll Approval streak (0..=100 from the yearly poll).
+    /// Win95 `0x4E9904` approval score latched by the opinion poll.
     pe_mayor_approval: u16,
     /// Win95 `0x4CA5F8` unemployment percent; app refreshes before January microsims.
     pe_unemployment_percent: u32,
@@ -886,6 +911,7 @@ pub struct City {
     pe_w_neighbor_fame_ranks: [u16; PE_NEIGHBOR_FAME_RANK_COUNT],
     /// Set by story insert when PE would auto-open Extra (`0x47b681`: ids 3..=5 or `0x24`).
     pe_newspaper_extra_popup_pending: bool,
+    pe_newspaper_storage: PeNewspaperStorage,
     /// Set by disaster-end UI arm (`0x45cf10` / OpenSC2K DisasterEnd): open paper 0.
     pe_disaster_end_newspaper_pending: bool,
     /// MISC offset 0x2c. sc2kfix loads this as the city crime scenario counter.

@@ -9,10 +9,10 @@ use super::{
     BUDGET_SERVICE_FUNDING_FIELD, BUDGET_SERVICE_MISC_STRIDE, MAX_TAX_RATE, ViewerState,
     append_bond_rate_for_city, bond_issue_rate_scaled_for_city, budget_row_misc_offset_for_city,
     budget_service_built_counts_for_city, budget_service_funding_misc_offset_for_city,
-    budget_service_funding_percent_for_city, budget_service_misc_offset_for_city,
-    budget_tax_bases_for_city_with_fidelity, ensure_budget_misc_defaults_before_extension,
-    ensure_industry_misc_defaults_before_extension, industry_stats_for_city,
-    industry_tax_misc_offset, mac_bond_issue_city_value_allows_3a714,
+    budget_service_funding_percent_for_city, budget_service_funding_raw_for_city,
+    budget_service_misc_offset_for_city, budget_tax_bases_for_city_with_fidelity,
+    ensure_budget_misc_defaults_before_extension, ensure_industry_misc_defaults_before_extension,
+    industry_stats_for_city, industry_tax_misc_offset, mac_bond_issue_city_value_allows_3a714,
     mac_bond_issue_city_value_would_allow_3a714, mac_bond_issue_rate_scaled_3a714,
     mac_industry_stats_for_city, outstanding_bond_count_for_city,
     pe_bond_issue_city_value_allows_41a679, pe_bond_issue_city_value_would_allow_41a679,
@@ -106,38 +106,44 @@ impl ViewerState {
         else {
             return false;
         };
-        let current = budget_service_funding_percent_for_city(&self.city, service_index);
-        let next = (current as i32 + delta).clamp(0, 100) as u32;
-        if next == current {
-            return false;
-        }
-        ensure_budget_misc_defaults_before_extension(&mut self.city);
-        if let Some(row_offset) = budget_service_misc_offset_for_city(&self.city, service_index, 0)
-        {
-            let live_current =
-                budget_service_built_counts_for_city(&self.city).by_budget_index(service_index);
-            let mut values = self
-                .city
-                .budget_misc_u32_values(row_offset, BUDGET_SERVICE_MISC_STRIDE);
-            values.resize(BUDGET_SERVICE_MISC_STRIDE, 0);
-            if values[BUDGET_SERVICE_CURRENT_FIELD] == 0 {
-                values[BUDGET_SERVICE_CURRENT_FIELD] = live_current;
-            }
-            values[BUDGET_SERVICE_FUNDING_FIELD] = next;
-            self.city.set_budget_misc_u32_values(row_offset, &values);
-        } else {
-            self.city.set_misc_u32_at(offset, next);
-        }
-        self.refresh_live_misc_current_values();
         if self.engine_fidelity.uses_win95() {
-            // PE's funding-button path rebuilds service-row currents from the
-            // live counters. Mac CODE 4's FUN_00029e98 edits only the selected
-            // saved funding fields and redraws the budget view; its current,
-            // year-to-date, and history fields stay as saved until native
-            // monthly publication.
+            let current = budget_service_funding_percent_for_city(&self.city, service_index);
+            let next = (current as i32 + delta).clamp(0, 100) as u32;
+            if next == current {
+                return false;
+            }
+            ensure_budget_misc_defaults_before_extension(&mut self.city);
+            if let Some(row_offset) =
+                budget_service_misc_offset_for_city(&self.city, service_index, 0)
+            {
+                let live_current =
+                    budget_service_built_counts_for_city(&self.city).by_budget_index(service_index);
+                let mut values = self
+                    .city
+                    .budget_misc_u32_values(row_offset, BUDGET_SERVICE_MISC_STRIDE);
+                values.resize(BUDGET_SERVICE_MISC_STRIDE, 0);
+                if values[BUDGET_SERVICE_CURRENT_FIELD] == 0 {
+                    values[BUDGET_SERVICE_CURRENT_FIELD] = live_current;
+                }
+                values[BUDGET_SERVICE_FUNDING_FIELD] = next;
+                self.city.set_budget_misc_u32_values(row_offset, &values);
+            } else {
+                self.city.set_misc_u32_at(offset, next);
+            }
+            self.refresh_live_misc_current_values();
             self.refresh_budget_service_rows_from_live_counts();
+            self.refresh_reward_availability();
+        } else {
+            // CODE 4's budget action checks the signed saved funding before
+            // stepping it and leaves current, accrual and history untouched.
+            let current = budget_service_funding_raw_for_city(&self.city, service_index) as i32;
+            if delta == 0 || (delta > 0 && current >= 100) || (delta < 0 && current <= 0) {
+                return false;
+            }
+            ensure_budget_misc_defaults_before_extension(&mut self.city);
+            self.city
+                .set_budget_misc_u32_values(offset, &[current.wrapping_add(delta) as u32]);
         }
-        self.refresh_reward_availability();
         if !self.query_is_inspect {
             self.refresh_status_line();
         }

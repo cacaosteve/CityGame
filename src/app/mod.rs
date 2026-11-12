@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate::city::QUERY_SPECIFIC_MAYOR_STATS_OVERLAY;
+use crate::city::pe_choose_and_place_corner_bits;
 use crate::city::{
     AppMode, CITY_HEIGHT, CITY_TILES, CITY_WIDTH, City, CityDate, CityFileKind, MICROSIM_COUNT,
     MICROSIM_STRUCTURE_FIRST, MICROSIM_SYSTEM_BUS, MICROSIM_SYSTEM_HYDRO, MICROSIM_SYSTEM_WIND,
@@ -56,6 +57,7 @@ use crate::win95_tile_draw::uses_win95_overlay_draw;
 use glam::Vec2;
 #[cfg(test)]
 use sdl3::keyboard::Keycode;
+use sdl3::keyboard::Mod;
 #[cfg(test)]
 use sdl3::mouse::MouseWheelDirection;
 use std::collections::{HashSet, VecDeque};
@@ -196,9 +198,6 @@ mod tile_classification;
 mod title_flow;
 mod ui_format;
 
-pub(crate) fn pe_city_center_for_overlay(city: &City) -> (usize, usize) {
-    density::land_value_city_center(city)
-}
 mod building_placement;
 mod inspection;
 mod nature_tools;
@@ -223,8 +222,8 @@ use zoning_signs::{tile_rectangle, zone_build_cost};
 use budget::*;
 use building_placement::{
     building_footprint_from_origin, building_zone_bits_for_tile, footprint_origin,
-    pe_choose_and_place_corner_bits, pe_place_tile_size_440c50, pe_place_tile_size_440c50_ex,
-    pe_place_tile_size_click_to_nw, placeable_building_for_tool, reward_mask_for_tool,
+    pe_place_tile_size_440c50, pe_place_tile_size_440c50_ex, pe_place_tile_size_click_to_nw,
+    placeable_building_for_tool, reward_mask_for_tool,
 };
 #[cfg(test)]
 use building_placement::{
@@ -238,10 +237,8 @@ use city_options::{
     AUTO_GOTO_MISC_OFFSET, MISC_NEWSPAPER_CHOICE_OFFSET, MISC_NEWSPAPER_EXTRA_OFFSET,
     MISC_NEWSPAPER_SUBSCRIPTION_OFFSET, MUSIC_MISC_OFFSET, NO_DISASTERS_MISC_OFFSET,
     SOUND_EFFECTS_MISC_OFFSET, auto_goto_enabled_for_city, ensure_default_city_options,
-    ensure_default_city_options_with_crt, ensure_newspaper_list_misc_defaults_before_extension,
-    music_enabled_for_city, set_city_auto_goto_enabled, set_city_music_enabled,
-    set_city_newspaper_choice, set_city_newspaper_extra_enabled,
-    set_city_newspaper_subscription_enabled, set_city_sound_effects_enabled,
+    ensure_newspaper_list_misc_defaults_before_extension, music_enabled_for_city,
+    set_city_auto_goto_enabled, set_city_music_enabled, set_city_sound_effects_enabled,
     sound_effects_enabled_for_city,
 };
 use city_options::{
@@ -249,11 +246,11 @@ use city_options::{
     city_difficulty_for_city, ensure_default_city_options_for_engine, music_enabled_for_engine,
     newspaper_choice_for_city, newspaper_extra_enabled_for_city, newspaper_max_choice_for_city,
     newspaper_subscription_enabled_for_city, no_disasters_enabled_for_city,
-    no_disasters_enabled_for_engine, set_auto_goto_enabled_for_engine,
-    set_city_newspaper_choice_with_crt, set_city_newspaper_extra_enabled_with_crt,
-    set_city_newspaper_subscription_enabled_with_crt, set_city_no_disasters_enabled,
-    set_music_enabled_for_engine, set_no_disasters_enabled_for_engine,
-    set_sound_effects_enabled_for_engine, sound_effects_enabled_for_engine,
+    no_disasters_enabled_for_engine, set_auto_goto_enabled_for_engine, set_city_newspaper_choice,
+    set_city_newspaper_extra_enabled, set_city_newspaper_subscription_enabled,
+    set_city_no_disasters_enabled, set_music_enabled_for_engine,
+    set_no_disasters_enabled_for_engine, set_sound_effects_enabled_for_engine,
+    sound_effects_enabled_for_engine,
 };
 #[cfg(test)]
 use city_publication::pe_year_end_flag;
@@ -313,12 +310,10 @@ pub(crate) fn queue_document_saved(path: std::path::PathBuf, previous_path: std:
 use coverage::*;
 use cursors::{GameCursor, GameCursors};
 use demolition::{
-    pe_clear_xtxt_sign_label, pe_destroy_building_elevated_arm_45994e,
-    pe_destroy_building_footprint, pe_destroy_building_mode0_optional_crt,
-    pe_destroy_building_mode1_optional_crt, pe_destroy_building_size,
-    pe_destroy_structure_fire_paint, pe_flood_destroy_tile_with_crt,
-    pe_maptool_surface_destroy_building_443461, pe_maptool_surface_xter_gate_4434de,
-    pe_maptool_underground_clear_subway_443427, pe_maptool_underground_empty_refuse_443350,
+    pe_clear_tunnel_portal_surface, pe_clear_xtxt_sign_label, pe_destroy_building_footprint,
+    pe_destroy_building_mode0_optional_crt, pe_destroy_building_mode1_optional_crt,
+    pe_destroy_building_size, pe_destroy_structure_fire_paint,
+    pe_flood_destroy_tile_mode_maybe_crt, pe_flood_destroy_tile_with_crt,
 };
 #[cfg(test)]
 use demolition::{
@@ -328,10 +323,12 @@ use demolition::{
     pe_destroy_building_selector2_low_class_cleanup_order,
     pe_destroy_building_size1_nonflat_fun_00447020_45a1ee,
     pe_destroy_building_size2_snap_hit_45b1c0, pe_flood_destroy_tile,
-    pe_flood_destroy_tile_mode_maybe_crt, pe_maptool_funds_debit_44338a,
-    pe_maptool_refuse_xzon_type7_4432d2, pe_maptool_surface_clear_subway_xund_44344b,
+    pe_maptool_funds_debit_44338a, pe_maptool_refuse_xzon_type7_4432d2,
+    pe_maptool_surface_clear_subway_xund_44344b, pe_maptool_surface_destroy_building_443461,
     pe_maptool_surface_placetile_zero_4434d2, pe_maptool_surface_preclear_subway_443461,
     pe_maptool_surface_refuse_xbld5_4432fd, pe_maptool_surface_vacant_refuse_44331c,
+    pe_maptool_surface_xter_gate_4434de, pe_maptool_underground_clear_subway_443427,
+    pe_maptool_underground_empty_refuse_443350,
 };
 use density::*;
 use dialogs::{
@@ -409,19 +406,23 @@ use military_base::{
     select_pe_military_base_fallback_plots, stamp_pe_military_base_fallback_plot,
 };
 use military_base::{MILITARY_SILO_PLOT_SIZE, pe_stamp_military_zone_tile_4144d4};
+#[cfg(test)]
+use nature_tools::is_edit_map_tree_terrain;
 use nature_tools::{
-    NatureDrag, is_edit_map_tree_terrain, is_tree_building, pe_fun_00447500,
-    pe_fun_00447500_new_city_tree_count, pe_place_water_helper_446650,
-    pe_place_water_reslope_neighbors_446a66, pe_terrain_generation_water_walk_446440,
+    NatureDrag, is_tree_building, pe_fun_00447500, pe_fun_00447500_new_city_tree_count,
+    pe_place_water_helper_446650, pe_place_water_reslope_neighbors_446a66,
+    pe_terrain_generation_water_walk_446440,
 };
 #[cfg(test)]
 use nature_tools::{pe_forest_shift_xbld, pe_fun_00447500_tree_place_tile, pe_tree_place_xbld};
 #[cfg(test)]
 use network::network_placement_sound;
+#[cfg(test)]
+use network::persist_pe_neighbor_connection_overlays;
 use network::{
     HIGHWAY_COST_PER_SEGMENT, HIGHWAY_TILES_PER_SEGMENT, HighwayDrag, HighwayNeighborLinkCandidate,
-    NETWORK_BOTTOM, NETWORK_LEFT, NETWORK_RIGHT, NETWORK_TOP, NetworkAxis, NetworkDrag,
-    NetworkKind, PE_NETWORK_SURFACE_REMAP_GATE_4E7B68, PeHighwayWaterBridgeCandidate,
+    HighwayWaterBridgeCandidate, NETWORK_BOTTOM, NETWORK_LEFT, NETWORK_RIGHT, NETWORK_TOP,
+    NetworkAxis, NetworkDrag, NetworkKind, PE_NETWORK_SURFACE_REMAP_GATE_4E7B68,
     RailNeighborLinkCandidate, RoadNeighborLinkCandidate, building_network_access_kinds,
     directional_neighbor_tiles, highway_neighbor_connection_tiles_for_city, highway_segment_tiles,
     neighbor_connection_tiles_for_city, network_axis_mask_for_side_mask,
@@ -432,9 +433,8 @@ use network::{
     pe_highway_water_selectors_45c1e0, pe_network_gate_connects_side,
     pe_network_surface_edit_448e20, pe_network_surface_stroke_cost_448a90,
     pe_road_bridge_selector_cost, pe_road_bridge_selector_name, pe_road_bridge_selectors,
-    persist_pe_neighbor_connection_overlay, persist_pe_neighbor_connection_overlays,
-    power_line_drag_path, rail_neighbor_connection_tiles_for_city,
-    road_neighbor_connection_tiles_for_city,
+    persist_pe_neighbor_connection_overlay, power_line_drag_path,
+    rail_neighbor_connection_tiles_for_city, road_neighbor_connection_tiles_for_city,
 };
 #[cfg(test)]
 use network::{
@@ -442,9 +442,9 @@ use network::{
     apply_highway_neighbor_link_confirmation, apply_rail_neighbor_link_confirmation,
     apply_road_neighbor_link_confirmation, highway_axis_for_drag_plan_tile,
     highway_axis_for_path_tile, highway_building_for_axis, highway_building_for_mask,
-    highway_drag_path, highway_drag_path_for_fidelity, highway_neighbor_link_is_available,
-    mac_onramp_compatible_road_mask, network_building_for_tile, network_commit_path_for_kind,
-    network_drag_path_for_kind, network_preview_path_for_kind, onramp_building_for_sides,
+    highway_drag_path, highway_neighbor_link_is_available, mac_onramp_compatible_road_mask,
+    network_building_for_tile, network_commit_path_for_kind, network_drag_path_for_kind,
+    network_preview_path_for_kind, onramp_building_for_sides,
     pe_city_tool_place_highway_stamp_body_4626d0, pe_get_highway_tile_462910,
     pe_get_highway_tile_classify_refuse_462956, pe_highway_gate_early_8000_4640a1,
     pe_highway_gate_returns_4000_4642e7, pe_highway_gate_si0_fallthrough_464310,
@@ -463,12 +463,12 @@ use network::{
     pe_place_rails_crossover_from_existing_44b2f4, pe_place_road_mask_tile_44b0e5,
     pe_place_road_reshape_neighbor_connects_44af6e, pe_place_road_xtxt_reshape_44af50,
     pe_place_roads_crossover_from_existing_44ae24, pe_power_bridge_selector_cost_45b930,
-    pe_power_bridge_span_plan, pe_rail_bridge_interior_tile, pe_rail_bridge_selector_cost,
-    pe_rail_bridge_span_plan, pe_rail_next_stroke_tile_449f50, pe_road_bridge_direction_mask,
-    pe_road_bridge_interior_tile, pe_road_bridge_selector_mask, pe_road_bridge_span_plan,
+    pe_rail_bridge_interior_tile, pe_rail_bridge_selector_cost, pe_rail_bridge_span_plan,
+    pe_rail_next_stroke_tile_449f50, pe_road_bridge_direction_mask, pe_road_bridge_interior_tile,
+    pe_road_bridge_selector_mask, pe_road_bridge_span_plan,
     pe_road_candidate_xbld_allows_step_448f50, pe_road_next_stroke_tile_448f50,
-    pe_road_stroke_plan_449bb0, pe_road_stroke_walk_init_448bc0, rail_neighbor_link_is_available,
-    road_neighbor_link_is_available,
+    pe_road_stroke_plan_449bb0, pe_road_stroke_walk_init_448bc0, power_bridge_span_plan,
+    rail_neighbor_link_is_available, road_neighbor_link_is_available,
 };
 #[cfg(test)]
 use newspaper_events::citygame_fa_non_network_neighbor_marker_count;
@@ -488,8 +488,7 @@ use power_water::*;
 use rci::*;
 use scenario::*;
 use scenario_lifecycle::{
-    earned_reward_mask_for_city_with_outcomes,
-    earned_reward_mask_for_city_with_outcomes_and_fidelity, reward_available_status_line,
+    reward_available_status_line,
 };
 #[cfg(test)]
 use session::{
@@ -513,44 +512,32 @@ use startup_assets::{
 #[cfg(test)]
 use status_display::{CITY_CLEAR_COLOR, UNDERGROUND_CLEAR_COLOR};
 use terrain_editing::{
-    EditMapLevelDrag, EditMapLowerDrag, EditMapStretchDrag, PE_447490_UI_WAIT_4012C1_PER_CALL,
-    PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_A, PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_B,
-    PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_C, PE_RAISE_MIDBAND_REFUSE_UI_402900_A,
-    PE_RAISE_MIDBAND_REFUSE_UI_402900_B, PE_RAISE_SUBMODE_ADJUST_TOWARD, PE_RAISE_SUBMODE_DEFAULT,
-    PE_RAISE_SUBMODE_HUGE, PE_RAISE_SUBMODE0_DESTROY_XBLD_MIN, PE_RAISE_SUBMODE0_MIDBAND_XBLD_MIN,
-    PE_RAISE_SUBMODE0_POST_DEBIT_UI_WAIT_4012C1, PE_RAISE_TOOL0_UI_TOOL_ID,
+    EditMapLevelDrag, EditMapStretchDrag, PE_447490_UI_WAIT_4012C1_PER_CALL,
     PE_SPREAD_TOOL4_UI_TIMER_INIT, TerrainDrag, pe_fun_00447020_mode0_xund_slope_sea,
     pe_fun_00447020_mode1_destroy_and_city_clear_447085, pe_lower_terrain_from_packed_443900,
-    pe_raise_adjust_land_toward_443200_with_crt, pe_raise_drag_step_dir_445da0,
-    pe_raise_epilogue_surface_reshape_kind_44c7a0,
-    pe_raise_epilogue_underground_reshape_kind_44c9b0, pe_raise_land_inc_443c60_with_crt,
-    pe_raise_submode0_step_billed_443270, pe_raise_tool0_clear_temp_xtxt_0xc9,
-    pe_raise_tool0_stamp_temp_xtxt_0xc9, pe_raise_tool0_submode_step_with_crt,
-    pe_raise_tool0_ui_press_y_byte_442ff4, pe_raise_tool0_ui_tile_xy_443003,
-    pe_raise_tool0_xter_ui_byte_442e8b, pe_selected_water_height_for_fun_00447020,
-    pe_spread_terrain_from_packed_442a30_with_crt, pe_stretch_terrain_from_packed_443a50,
+    pe_selected_water_height_for_fun_00447020, pe_spread_terrain_from_packed_442a30_with_crt,
     pe_terrain_nesw_land_copy_442a30_with_crt, pe_volcano_apply_flatten_with_crt,
     pe_volcano_flatten_check,
 };
 #[cfg(test)]
 use terrain_editing::{
-    PE_POST_FLATTEN_NEIGHBOR_XBLD_GATE, PE_RAISE_SUBMODE_ARM_VA, PE_RAISE_SUBMODE_MAX,
-    PE_RAISE_SUBMODE0_FUND_COST, PE_TERRAIN_TOOL_LEVEL, PE_TERRAIN_TOOL_LOWER,
-    PE_TERRAIN_TOOL_NESW_COPY, PE_TERRAIN_TOOL_STRETCH, PE_VOLCANO_FLATTEN_COST,
-    PE_VOLCANO_FLATTEN_MAX_HEIGHT, PeTerrainCoordinateQueue, pe_can_raise_stretch_hill_444ff0,
-    pe_fun_00447020_slope_xter, pe_level_terrain_mouse_land_444951, pe_lower_444440_mode_cost,
+    PE_POST_FLATTEN_NEIGHBOR_XBLD_GATE, PE_RAISE_SUBMODE_DEFAULT, PE_TERRAIN_TOOL_LEVEL,
+    PE_TERRAIN_TOOL_LOWER, PE_TERRAIN_TOOL_NESW_COPY, PE_TERRAIN_TOOL_STRETCH,
+    PE_VOLCANO_FLATTEN_COST, PE_VOLCANO_FLATTEN_MAX_HEIGHT, PeTerrainCoordinateQueue,
+    pe_can_raise_stretch_hill_444ff0, pe_fun_00447020_slope_xter, pe_lower_444440_mode_cost,
     pe_lower_terrain_444440_mode_skips_funds, pe_lower_terrain_crt_step_443900,
     pe_lower_terrain_land_dec_444440, pe_lower_terrain_land_dec_444440_mode_with_submode,
     pe_lower_terrain_land_dec_444440_mode_with_submode_and_crt,
     pe_lower_terrain_land_dec_444440_mode_with_submode_and_crt_effects,
     pe_lower_unpack_tile_444bf0, pe_post_flatten_neighbor_altm_445b50,
-    pe_raise_adjust_land_toward_443200, pe_raise_land_inc_443c60,
-    pe_raise_submode0_clear_xbit_20_4433f0, pe_raise_submode0_clears_xund_443430,
-    pe_raise_submode0_early_refuse_443270, pe_raise_submode0_midband_crt_refuse_443470,
-    pe_raise_terrain_land_inc_445b50, pe_raise_tool0_submode_step, pe_raise_unpack_tile_444bf0,
-    pe_set_flatten_mark, pe_spread_terrain_from_packed_442a30, pe_stretch_hill_crt_jitter,
+    pe_raise_adjust_land_toward_443200, pe_raise_adjust_land_toward_443200_with_crt,
+    pe_raise_drag_step_dir_445da0, pe_raise_epilogue_surface_reshape_kind_44c7a0,
+    pe_raise_epilogue_underground_reshape_kind_44c9b0, pe_raise_land_inc_443c60,
+    pe_raise_land_inc_443c60_with_crt, pe_raise_unpack_tile_444bf0, pe_set_flatten_mark,
+    pe_spread_terrain_from_packed_442a30, pe_stretch_hill_crt_jitter,
     pe_stretch_hold_after_successful_hill_443b88, pe_stretch_hold_ui_refresh_due_443ba6,
-    pe_stretch_terrain_hill_step_443a50, pe_stretch_terrain_hill_step_443a50_with_crt,
+    pe_stretch_terrain_from_packed_443a50, pe_stretch_terrain_hill_step_443a50,
+    pe_stretch_terrain_hill_step_443a50_with_crt, pe_stretch_terrain_mouse_land_444951,
     pe_terrain_neighbor_fun_00447020_447490, pe_terrain_nesw_land_copy_442a30,
     pe_terrain_nesw_land_copy_442a30_if_moved, pe_volcano_apply_flatten,
 };
@@ -693,10 +680,7 @@ const MISC_HUMID_OFFSET: usize = 0x0068; // PE `0x004CB3D4` (weather humidity + 
 const MISC_WEATHER_TREND_OFFSET: usize = 0x006c; // PE `0x004CB40C`
 /// Stock SC2K `wSetTriggerDisasterType` (`0x4CA420`).
 const MISC_TRIGGER_DISASTER_OFFSET: usize = 0x0070;
-const MISC_POPULATED_TILE_COUNT_OFFSET: usize = 0x05f0;
-const MISC_RESIDENTIAL_TILE_COUNT_OFFSET: usize = 0x05f8;
-const MISC_COMMERCIAL_TILE_COUNT_OFFSET: usize = 0x0600;
-const MISC_INDUSTRIAL_TILE_COUNT_OFFSET: usize = 0x0608;
+const MISC_PE_GROWTH_AGGREGATE_OFFSET: usize = 0x05f0;
 const MISC_ARCOLOGY_POPULATION_OFFSET: usize = 0x1020;
 const MISC_NORMAL_POPULATION_OFFSET: usize = 0x102c;
 const MISC_BUILDING_TILE_COUNTS_OFFSET: usize = 0x01f0;
@@ -795,8 +779,7 @@ const MISC_CITY_ADVERTISING_OFFSET: usize = 0x003c;
 const MISC_GARBAGE_OFFSET: usize = 0x0040;
 /// These PE MISC mirrors collide with Mac CODE 4 state-vector slots. In
 /// particular, +0x2c/+0x30/+0x34 are native XCRM/XTRF/XPLT aggregates, not
-/// the PE crime/traffic/pollution snapshots; +0x5f0/+0x5f8/+0x600/+0x608
-/// overlap a Mac-saved state block and weighted RCI counters. The +0x38/+0x3c
+/// the PE crime/traffic/pollution snapshots. The +0x38/+0x3c
 /// Mac roles are still opaque; +0x44/+0x74 are known saved state.
 const MAC_NATIVE_MISC_STATE_COLLISIONS: &[usize] = &[
     MISC_CITY_MODE_OFFSET,
@@ -807,10 +790,6 @@ const MAC_NATIVE_MISC_STATE_COLLISIONS: &[usize] = &[
     MISC_CITY_CRIME_OFFSET,
     MISC_CITY_TRAFFIC_OFFSET,
     MISC_CITY_POLLUTION_OFFSET,
-    MISC_POPULATED_TILE_COUNT_OFFSET,
-    MISC_RESIDENTIAL_TILE_COUNT_OFFSET,
-    MISC_COMMERCIAL_TILE_COUNT_OFFSET,
-    MISC_INDUSTRIAL_TILE_COUNT_OFFSET,
     MISC_CITY_FAME_OFFSET,
     MISC_CITY_ADVERTISING_OFFSET,
     MISC_GARBAGE_OFFSET,
@@ -909,6 +888,17 @@ fn pe_place_tile_441f00(city: &mut City, x: usize, y: usize, building: u8) {
     city.set_building(x, y, building);
 }
 
+/// Map-space directions encoded in road tunnel portals in both originals.
+fn tunnel_portal_direction(building: u8) -> Option<(isize, isize)> {
+    match building {
+        0x3f => Some((-1, 0)),
+        0x40 => Some((0, -1)),
+        0x41 => Some((1, 0)),
+        0x42 => Some((0, 1)),
+        _ => None,
+    }
+}
+
 fn offset_city_tile(x: usize, y: usize, dx: isize, dy: isize) -> Option<(usize, usize)> {
     let nx = x as isize + dx;
     let ny = y as isize + dy;
@@ -949,6 +939,7 @@ struct RciDevelopmentServices {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LiveDensityMaps {
+    pe_city_center: Option<(i16, i16)>,
     land_value: Vec<u8>,
     crime: Vec<u8>,
     pollution: Vec<u8>,
@@ -985,6 +976,7 @@ struct ViewerState {
     show_infrastructure: bool,
     show_zones: bool,
     show_underground: bool,
+    modifiers: Mod,
     auto_goto_enabled: bool,
     pending_disaster_auto_goto: Option<(usize, usize)>,
     pending_disaster_start_sound: Option<PlacementSound>,
@@ -1022,10 +1014,8 @@ struct ViewerState {
     mac_game_rng: MacGameLcgRng,
     /// Win95 game-specific LCG (`0x4cdb80`), separate from CRT and Game_Random.
     pe_process_game_rand: Win95GameRand,
-    /// PE Raise tool-0 submode word `0x4cc950` (`0..=4`; default 0).
-    pe_raise_submode: u16,
-    /// PE Raise submode-1 target land sampled at press (`0x442e06` / `0x443221`).
-    pe_raise_adjust_land: u8,
+    /// Whether a held editor height tool has made any accepted edit.
+    edit_map_height_hold: Option<bool>,
     /// PE Raise tool-0 UI byte at `[0x4ca434]+5` from XTER≠0 (`0x442e8b`).
     pe_raise_xter_ui_byte: u8,
     /// PE Raise tool-0 UI tool-id at `[0x4ca434]+0` (`0x442e15` = 4).
@@ -1033,8 +1023,6 @@ struct ViewerState {
     /// PE Raise tool-0 UI tile X/Y at `[0x4ca434]+3`/`+4` (`0x443003`/`0x44300c`).
     pe_raise_ui_tile_x: u8,
     pe_raise_ui_tile_y: u8,
-    /// PE Raise tool-0 press-tile Y for UI byte `+1` (`0x442ff4` / `[esp+0x14]`).
-    pe_raise_press_y: u8,
     /// PE Raise tool-0 UI byte at `[0x4ca434]+1` (`0x442ff4`).
     pe_raise_ui_press_y_byte: u8,
     /// PE Raise tool-0 entry zeros UI bytes `+6`/`+7`/`+8`/`+9` (`0x442e3c`–`0x442e4e`).
@@ -1042,39 +1030,21 @@ struct ViewerState {
     pe_raise_ui_byte7: u8,
     pe_raise_ui_byte8: u8,
     pe_raise_ui_byte9: u8,
-    /// PE Raise hold stores `0x445da0` direction at `[esp+0x24]` (`0x442fbf`).
-    pe_raise_drag_dir: u16,
-    /// PE Raise tool-0 entry clears `this+0xf8` (`0x442de4`).
-    pe_raise_this_f8: u32,
     /// PE terrain tool-4 `[0x4cad4c]` init (`0x442a88` = `0xfffffc18`).
     pe_spread_tool4_ui_timer: i32,
     /// PE Spread hold prev-tile X/Y at `[esp+0x14]`/`[esp+0x16]` (`0x442c7e`/`0x442c83`).
     pe_spread_prev_tile_x: i16,
     pe_spread_prev_tile_y: i16,
-    /// PE Stretch hold `si` counter (`0x443a5a` xor / `0x443a91`+`0x443b88` incs).
-    pe_stretch_hold_si: u16,
-    /// PE Stretch hold UI refresh count when `test si,7` is zero (`0x443ba6`→`0x40226b`).
+    /// Win95 Stretch refreshes after each accepted height request at 0x444a32.
     pe_stretch_hold_ui_refresh_count: u32,
-    /// PE Stretch hold cursor from `0x401e7e(0x1fc, -1)` (`0x443a6f`/`0x443a74`).
+    /// Win95 Stretch hold cursor at 0x44494c.
     pe_stretch_hold_cursor_id: u16,
     pe_stretch_hold_cursor_arg: i16,
-    /// PE Stretch `0x4012c1` UI wait on success path (`0x443b4a`).
+    /// Win95 terrain refresh waits tracked by the Stretch adapters.
     pe_stretch_hold_ui_wait_4012c1_count: u32,
-    /// PE Lower hold UI refresh count — every successful dig (`0x4439c9`→`0x40226b`, no `si` gate).
+    /// PE Lower redraw after each in-bounds dig call (0x4439c9).
     pe_lower_hold_ui_refresh_count: u32,
-    /// PE Lower hold cursor from `0x401e7e(0x1fc, -1)` (`0x443931`).
-    pe_lower_hold_cursor_id: u16,
-    pe_lower_hold_cursor_arg: i16,
-    /// PE LevelTerrain hold sound ids from `0x402cf2` (`0x444a09` = 1, `0x444a2b` = 0xe).
-    pe_level_hold_sound_after_altm: u16,
-    pe_level_hold_sound_after_smooth: u16,
-    /// PE LevelTerrain hold UI refresh count (`0x444a32`→`0x40226b`).
-    pe_level_hold_ui_refresh_count: u32,
-    /// PE LevelTerrain hold cursor id from `0x401e7e(0x1fc, -1)` (`0x44492c`/`0x44494c`).
-    pe_level_hold_cursor_id: u16,
-    /// PE LevelTerrain hold cursor secondary arg (`-1` at entry).
-    pe_level_hold_cursor_arg: i16,
-    /// PE LevelTerrain `0x4012c1` UI neighbor-wait before ALTM write (`0x4449c4`).
+    /// City-view terrain leveling refresh waits.
     pe_level_hold_ui_wait_4012c1_count: u32,
     /// PE Spread hold UI refresh count (`0x442c8c` / exit `0x442cf0`→`0x40226b`).
     pe_spread_hold_ui_refresh_count: u32,
@@ -1086,29 +1056,6 @@ struct ViewerState {
     pe_spread_ui_cursor_4519e0_last_arg: i32,
     /// PE Spread `0x4012c1` UI wait count (`0x442c1c`/`0x442c71`/`0x442cda`).
     pe_spread_ui_wait_4012c1_count: u32,
-    /// PE Raise hold UI refresh count (`0x442f15` / exit `0x4430ea`→`0x40226b`).
-    pe_raise_hold_ui_refresh_count: u32,
-    /// PE Raise hold cursor from `0x401e7e(0x1fc, -1)` (`0x442df4`/`0x442e0b`).
-    pe_raise_hold_cursor_id: u16,
-    pe_raise_hold_cursor_arg: i16,
-    /// PE Raise `0x401758`→`0x4519e0` UI-cursor helper (arg 0 @ `0x442fc9`/`0x44300f`/`0x4430a6`/`0x4430d1`).
-    pe_raise_ui_cursor_4519e0_count: u32,
-    pe_raise_ui_cursor_4519e0_last_arg: i32,
-    /// PE Raise `0x4012c1` UI wait count (`0x44303e`/`0x443048` apply; `0x44309c`/`0x4430c7` exit).
-    pe_raise_ui_wait_4012c1_count: u32,
-    /// PE billed Raise midband refuse `0x401096(0x200)` @ `0x4434a3`.
-    pe_raise_midband_refuse_sound_401096_count: u32,
-    /// PE midband refuse dialog thunk `0x402c4d(0x193, 0xec, 1)` @ `0x4434b4`.
-    pe_raise_midband_refuse_dialog_402c4d_count: u32,
-    pe_raise_midband_refuse_dialog_402c4d_a: u32,
-    pe_raise_midband_refuse_dialog_402c4d_b: u32,
-    pe_raise_midband_refuse_dialog_402c4d_c: u32,
-    /// PE midband refuse UI thunk `0x402900(0x28, 0)` @ `0x4434c0`.
-    pe_raise_midband_refuse_ui_402900_count: u32,
-    pe_raise_midband_refuse_ui_402900_a: u32,
-    pe_raise_midband_refuse_ui_402900_b: u32,
-    /// PE Raise hold blit via `[0x4efe74]` after UI (`0x442f1e` / exit `0x4430f3`).
-    pe_raise_hold_blit_count: u32,
     /// PE Lower hold blit via `[0x4efe74]` after UI (`0x4439d2`).
     pe_lower_hold_blit_count: u32,
     /// Win95 shared Game_Random LFSR (`0x4cdb7c`) for disaster rubble/recede/wind arms.
@@ -1150,7 +1097,6 @@ struct ViewerState {
     highway_drag: Option<HighwayDrag>,
     terrain_drag: Option<TerrainDrag>,
     edit_map_stretch_drag: Option<EditMapStretchDrag>,
-    edit_map_lower_drag: Option<EditMapLowerDrag>,
     edit_map_level_drag: Option<EditMapLevelDrag>,
     nature_drag: Option<NatureDrag>,
     power_plant_dialog: Option<PowerPlantDialogState>,

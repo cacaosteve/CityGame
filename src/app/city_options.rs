@@ -6,16 +6,18 @@
 //! existing callers and workers.
 
 use super::{
-    CITY_DIFFICULTY_HARD, CITY_DIFFICULTY_MEDIUM, MISC_DIFFICULTY_OFFSET,
-    MISC_NEWSPAPER_LIST_OFFSET, MISC_NEWSPAPER_STORY_LIST_OFFSET, NEWSPAPER_CHOICE_MAX,
-    NEWSPAPER_LIST_MISC_DWORDS, NEWSPAPER_STORY_LIST_MISC_DWORDS,
+    CITY_DIFFICULTY_HARD, CITY_DIFFICULTY_MEDIUM, MISC_DIFFICULTY_OFFSET, NEWSPAPER_CHOICE_MAX,
     ensure_budget_misc_defaults_before_extension, ensure_industry_misc_defaults_before_extension,
-    pe_misc_mirror_storage_active, pe_newspaper_paper_list_misc_values,
-    pe_newspaper_paper_list_misc_values_with_rng, pe_newspaper_story_list_misc_values,
+    pe_misc_mirror_storage_active,
+};
+#[cfg(test)]
+use super::{
+    MISC_NEWSPAPER_LIST_OFFSET, MISC_NEWSPAPER_STORY_LIST_OFFSET, NEWSPAPER_LIST_MISC_DWORDS,
+    NEWSPAPER_STORY_LIST_MISC_DWORDS, pe_newspaper_paper_list_misc_values,
+    pe_newspaper_story_list_misc_values,
 };
 use crate::city::{City, CityFileKind};
 use crate::engine_fidelity::EngineFidelity;
-use crate::win95_random::Win95CrtRand;
 
 pub(super) const AUTO_GOTO_MISC_OFFSET: usize = 0x0ff4;
 
@@ -59,16 +61,6 @@ fn set_city_option_enabled(
     enabled: bool,
     default_enabled: bool,
 ) -> bool {
-    set_city_option_enabled_with_crt(city, offset, enabled, default_enabled, None)
-}
-
-fn set_city_option_enabled_with_crt(
-    city: &mut City,
-    offset: usize,
-    enabled: bool,
-    default_enabled: bool,
-    crt: Option<&mut Win95CrtRand>,
-) -> bool {
     if city.kind == CityFileKind::MacCity {
         return false;
     }
@@ -81,7 +73,6 @@ fn set_city_option_enabled_with_crt(
         return false;
     }
     ensure_budget_misc_defaults_before_extension(city);
-    ensure_newspaper_list_misc_defaults_before_extension(city, crt);
     city.set_misc_u32_at(offset, next);
     true
 }
@@ -246,21 +237,7 @@ pub(super) fn newspaper_subscription_enabled_for_city(city: &City) -> bool {
 }
 
 pub(super) fn set_city_newspaper_subscription_enabled(city: &mut City, enabled: bool) -> bool {
-    set_city_newspaper_subscription_enabled_with_crt(city, enabled, None)
-}
-
-pub(super) fn set_city_newspaper_subscription_enabled_with_crt(
-    city: &mut City,
-    enabled: bool,
-    crt: Option<&mut Win95CrtRand>,
-) -> bool {
-    set_city_option_enabled_with_crt(
-        city,
-        MISC_NEWSPAPER_SUBSCRIPTION_OFFSET,
-        enabled,
-        false,
-        crt,
-    )
+    set_city_option_enabled(city, MISC_NEWSPAPER_SUBSCRIPTION_OFFSET, enabled, false)
 }
 
 pub(super) fn newspaper_extra_enabled_for_city(city: &City) -> bool {
@@ -268,15 +245,7 @@ pub(super) fn newspaper_extra_enabled_for_city(city: &City) -> bool {
 }
 
 pub(super) fn set_city_newspaper_extra_enabled(city: &mut City, enabled: bool) -> bool {
-    set_city_newspaper_extra_enabled_with_crt(city, enabled, None)
-}
-
-pub(super) fn set_city_newspaper_extra_enabled_with_crt(
-    city: &mut City,
-    enabled: bool,
-    crt: Option<&mut Win95CrtRand>,
-) -> bool {
-    set_city_option_enabled_with_crt(city, MISC_NEWSPAPER_EXTRA_OFFSET, enabled, false, crt)
+    set_city_option_enabled(city, MISC_NEWSPAPER_EXTRA_OFFSET, enabled, false)
 }
 
 pub(super) fn newspaper_choice_for_city(city: &City) -> u32 {
@@ -289,14 +258,6 @@ pub(super) fn newspaper_choice_for_city(city: &City) -> u32 {
 }
 
 pub(super) fn set_city_newspaper_choice(city: &mut City, choice: u32) -> bool {
-    set_city_newspaper_choice_with_crt(city, choice, None)
-}
-
-pub(super) fn set_city_newspaper_choice_with_crt(
-    city: &mut City,
-    choice: u32,
-    crt: Option<&mut Win95CrtRand>,
-) -> bool {
     if city.kind == CityFileKind::MacCity {
         return false;
     }
@@ -305,7 +266,6 @@ pub(super) fn set_city_newspaper_choice_with_crt(
         return false;
     }
     ensure_budget_misc_defaults_before_extension(city);
-    ensure_newspaper_list_misc_defaults_before_extension(city, crt);
     city.set_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET, next);
     true
 }
@@ -315,22 +275,14 @@ pub(super) fn newspaper_max_choice_for_city(city: &City) -> u32 {
     u32::from(city.pe_w_city_progression).min(NEWSPAPER_CHOICE_MAX)
 }
 
-pub(super) fn ensure_newspaper_list_misc_defaults_before_extension(
-    city: &mut City,
-    crt: Option<&mut Win95CrtRand>,
-) {
+#[cfg(test)]
+pub(super) fn ensure_newspaper_list_misc_defaults_before_extension(city: &mut City) {
     if city.kind == CityFileKind::MacCity {
         return;
     }
-    // A fresh city carries a full-sized, zero-filled MISC record. The PE paper
-    // table is a permutation of 30 nonzero bytes, so all-zero means it has not
-    // been initialized; any nonzero saved table remains authoritative.
     let paper_list = city.misc_u32_values(MISC_NEWSPAPER_LIST_OFFSET, NEWSPAPER_LIST_MISC_DWORDS);
     if paper_list.iter().all(|&value| value == 0) {
-        let values = match crt {
-            Some(crt) => pe_newspaper_paper_list_misc_values_with_rng(crt),
-            None => pe_newspaper_paper_list_misc_values(city),
-        };
+        let values = pe_newspaper_paper_list_misc_values(city);
         city.set_misc_u32_values(MISC_NEWSPAPER_LIST_OFFSET, &values);
     }
     let story_list = city.misc_u32_values(
@@ -345,21 +297,15 @@ pub(super) fn ensure_newspaper_list_misc_defaults_before_extension(
     }
 }
 
+#[cfg(test)]
 pub(super) fn ensure_default_city_options(city: &mut City) {
-    ensure_default_city_options_with_crt(city, None)
-}
-
-pub(super) fn ensure_default_city_options_with_crt(
-    city: &mut City,
-    crt: Option<&mut Win95CrtRand>,
-) {
-    ensure_default_city_options_for_engine(city, EngineFidelity::Win95, crt)
+    ensure_newspaper_list_misc_defaults_before_extension(city);
+    ensure_default_city_options_for_engine(city, EngineFidelity::Win95);
 }
 
 pub(super) fn ensure_default_city_options_for_engine(
     city: &mut City,
     engine_fidelity: EngineFidelity,
-    crt: Option<&mut Win95CrtRand>,
 ) {
     // These defaults model Win95 MISC extensions. Mac CODE 4 serializes native
     // state through many of the same offsets (including the industry block,
@@ -370,7 +316,6 @@ pub(super) fn ensure_default_city_options_for_engine(
     }
     ensure_budget_misc_defaults_before_extension(city);
     ensure_industry_misc_defaults_before_extension(city);
-    ensure_newspaper_list_misc_defaults_before_extension(city, crt);
     for offset in [
         AUTO_GOTO_MISC_OFFSET,
         SOUND_EFFECTS_MISC_OFFSET,

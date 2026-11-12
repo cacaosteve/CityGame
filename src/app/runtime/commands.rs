@@ -109,9 +109,7 @@ pub(super) fn drain_commands(
                 AppCommand::ToggleNewspaperSubscription => {
                     log::info!(
                         "newspaper subscription: {}",
-                        if state.engine_fidelity.uses_win95()
-                            && newspaper_subscription_enabled_for_city(&state.city)
-                        {
+                        if state.menu_checks.newspaper_subscription {
                             "on"
                         } else {
                             "off"
@@ -121,9 +119,7 @@ pub(super) fn drain_commands(
                 AppCommand::ToggleNewspaperExtra => {
                     log::info!(
                         "newspaper extra: {}",
-                        if state.engine_fidelity.uses_win95()
-                            && newspaper_extra_enabled_for_city(&state.city)
-                        {
+                        if state.menu_checks.newspaper_extra {
                             "on"
                         } else {
                             "off"
@@ -168,6 +164,16 @@ pub(super) fn drain_commands(
                 state.load_city(&path, renderer.size(), pixel_scale(window, renderer.size()))?;
                 if let Err(error) = asset_profile.remember_city(&path) {
                     log::warn!("could not remember city {}: {error:#}", path.display());
+                }
+                state.update_window_title(video, window.id());
+            }
+            AppCommand::StartMacScenario(path) => {
+                if let Err(error) = state.load_mac_scenario(
+                    &path,
+                    renderer.size(),
+                    pixel_scale(window, renderer.size()),
+                ) {
+                    show_asset_error(window, "Could Not Start Scenario", &error);
                 }
                 state.update_window_title(video, window.id());
             }
@@ -522,7 +528,7 @@ pub(super) fn drain_commands(
                 }
             }
             #[cfg(not(target_os = "ios"))]
-            AppCommand::SaveCityAs => save_city_dialog(window),
+            AppCommand::SaveCityAs => save_city_dialog(window, state.city.kind),
             AppCommand::SaveToPath(path) => {
                 let size = renderer.size();
                 if let Err(error) = state.save_city(&path, size, pixel_scale(window, size)) {

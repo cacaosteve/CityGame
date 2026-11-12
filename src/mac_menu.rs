@@ -21,6 +21,7 @@ unsafe extern "C" {
     fn sc2000_set_data_map_mode(mode_command: i32);
     fn sc2000_set_underground_view(enabled: i32);
     fn sc2000_pump_events();
+    fn citygame_app_is_active() -> i32;
     fn sc2000_activate_app();
     fn sc2000_configure_palette_window(palette: *mut std::ffi::c_void, main: *mut std::ffi::c_void);
     fn sc2000_order_palette_above_main(palette: *mut std::ffi::c_void, main: *mut std::ffi::c_void);
@@ -184,6 +185,11 @@ pub fn pump_events() {
     unsafe {
         sc2000_pump_events();
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn app_is_active() -> bool {
+    unsafe { citygame_app_is_active() != 0 }
 }
 
 #[cfg(target_os = "macos")]

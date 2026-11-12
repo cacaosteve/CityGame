@@ -5,12 +5,10 @@
 
 use super::super::{
     HIGHWAY_TILES_PER_SEGMENT, HighwayDragPlan, NETWORK_BOTTOM, NETWORK_LEFT, NETWORK_RIGHT,
-    NETWORK_TOP, NetworkAxis, NetworkKind, axis_aligned_path_with_stride,
-    highway_axis_for_pe_direction, network_path_axis_mask, network_single_axis, network_step_axis,
-    straight_network_axis,
+    NETWORK_TOP, NetworkAxis, NetworkKind, highway_axis_for_pe_direction, network_path_axis_mask,
+    network_single_axis, network_step_axis, straight_network_axis,
 };
 use super::is_highway_tile;
-use super::projected_tile_units;
 use crate::city::{CITY_HEIGHT, CITY_WIDTH};
 use crate::engine_fidelity::EngineFidelity;
 
@@ -50,43 +48,6 @@ pub(in crate::app) fn highway_drag_path(
         path.push(current);
     }
     path
-}
-
-pub(in crate::app) fn highway_drag_path_for_fidelity(
-    fidelity: EngineFidelity,
-    start: (usize, usize),
-    end: (usize, usize),
-) -> Vec<(usize, usize)> {
-    match fidelity {
-        EngineFidelity::Win95 => highway_drag_path(start, end),
-        // Keep the pre-PE shared path for Mac until a rooted Mac route trace
-        // establishes its own geometry; the PE rule must not silently bleed
-        // into the Mac-fidelity tool path.
-        EngineFidelity::Mac68k => mac_highway_drag_path(start, end),
-    }
-}
-
-pub(in crate::app) fn mac_highway_drag_path(
-    start: (usize, usize),
-    end: (usize, usize),
-) -> Vec<(usize, usize)> {
-    let start = highway_canonical_origin(start);
-    let end = highway_canonical_origin(end);
-    if start.0 == end.0 || start.1 == end.1 {
-        return axis_aligned_path_with_stride(start, end, 2);
-    }
-
-    let x_only_end = (end.0, start.1);
-    let y_only_end = (start.0, end.1);
-    if projected_distance_squared(x_only_end, end) <= projected_distance_squared(y_only_end, end) {
-        axis_aligned_path_with_stride(start, x_only_end, 2)
-    } else {
-        axis_aligned_path_with_stride(start, y_only_end, 2)
-    }
-}
-
-fn projected_distance_squared(a: (usize, usize), b: (usize, usize)) -> f32 {
-    (projected_tile_units(a.0, a.1, 0.0) - projected_tile_units(b.0, b.1, 0.0)).length_squared()
 }
 
 pub(in crate::app) fn highway_canonical_origin(tile: (usize, usize)) -> (usize, usize) {

@@ -21,6 +21,7 @@ pub(super) enum AppCommand {
     OpenCityDialog,
     OpenScenarioDialog,
     OpenPath(PathBuf),
+    StartMacScenario(PathBuf),
     OpenTitlePath(PathBuf),
     SaveCity,
     SaveCityAs,

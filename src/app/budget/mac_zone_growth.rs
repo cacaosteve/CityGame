@@ -51,7 +51,11 @@ pub(in crate::app) fn mac_budget_zone_special_growth_xbld(
         8 => {
             // 68k ADD.W wraps before DIVU.W; keep that intermediate width.
             let threshold = count(0xdd).wrapping_add(count(0xde)) / 5;
-            if count(0xee) >> 2 <= threshold {
+            // CODE 8 compares the shared threshold against ee/4 and takes
+            // the runway branch only when threshold <= ee/4. The unsigned
+            // `bhi` at 0x36b24 continues to the later selectors when the
+            // threshold is strictly greater.
+            if count(0xee) >> 2 >= threshold {
                 Some(0xdd)
             } else if count(0xe1).wrapping_mul(2) < threshold {
                 Some(0xe1)
@@ -520,7 +524,6 @@ fn mac_budget_try_create_runway_kind1(
         return false;
     }
 
-    let saved_xtxt = city.text_overlay_at(x, y).unwrap_or(0);
     let slot = {
         let records = city.mac_object_slot_records_mut();
         let Some(slot) =
@@ -532,7 +535,7 @@ fn mac_budget_try_create_runway_kind1(
     };
     let direct = rng.random_u16() % 10 >= 5;
     let (lane, state, height, tile_x, tile_y, target_x, target_y) = if direct {
-        (mode, 0, 0, y as u8, x as u8, 20, 20)
+        (mode, 0, 0, x as u8, y as u8, 20, 20)
     } else {
         let edge = (rng.random_u16() & 3) as u8;
         let inset = (rng.random_u16() % 100 + 10) as u8;
@@ -544,20 +547,25 @@ fn mac_budget_try_create_runway_kind1(
         };
         let state = if mode == 0 { 0x03 } else { 0x23 };
         let (target_x, target_y) = if mode == 0 {
-            (y as u8, (x as u8).wrapping_add(16))
+            (x as u8, (y as u8).wrapping_add(16))
         } else {
-            ((y as u8).wrapping_sub(16), x as u8)
+            ((x as u8).wrapping_sub(16), y as u8)
         };
         (heading, state, 16, row, column, target_x, target_y)
     };
+    // CODE 6 export 114 saves and replaces XTXT at the actor's selected
+    // record coordinate. The edge branch marks its selected border tile; the
+    // direct branch marks the scan candidate in the city-plane coordinates.
+    let saved_xtxt = city
+        .text_overlay_at(tile_x as usize, tile_y as usize)
+        .unwrap_or(0);
 
     let records = city.mac_object_slot_records_mut();
     let record = &mut records[slot];
     record.kind = 1;
     record.lane = lane;
     record.state = state;
-    // Mac XTHG raw +3/+4 are map row/column; Rust's tile_x/tile_y labels
-    // therefore hold Y/X for this engine's record layout.
+    // Raw +3/+4 preserve the constructor's selected map-plane coordinates.
     record.tile_x = tile_x;
     record.tile_y = tile_y;
     record.height = height;
@@ -568,7 +576,11 @@ fn mac_budget_try_create_runway_kind1(
     record.saved_a = saved_xtxt;
     // Native export 114 leaves record +0x0b untouched.
 
-    city.set_text_overlay(x, y, (slot as u8).wrapping_add(0xc9));
+    city.set_text_overlay(
+        tile_x as usize,
+        tile_y as usize,
+        (slot as u8).wrapping_add(0xc9),
+    );
     city.mac_kind1_actor_counter = city.mac_kind1_actor_counter.wrapping_add(1);
     true
 }
@@ -605,10 +617,10 @@ fn mac_budget_try_create_runway_kind2(
     record.kind = 2;
     record.lane = 2;
     record.state = 0;
-    // Mac XTHG stores map row in +3 and column in +4; the shared record
-    // container names these bytes tile_x and tile_y for the PE layout.
-    record.tile_x = y as u8;
-    record.tile_y = x as u8;
+    // CODE 6 export 115 copies the caller's D7/D6 candidate pair directly
+    // into XTHG +3/+4, matching the XTXT proxy's map coordinate.
+    record.tile_x = x as u8;
+    record.tile_y = y as u8;
     record.height = 0;
     record.sub_x = 8;
     record.sub_y = 8;

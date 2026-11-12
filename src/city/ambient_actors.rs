@@ -25,12 +25,13 @@ impl City {
         direction: u8,
         mut crt: Option<&mut Win95CrtRand>,
     ) -> bool {
-        // PE SpawnShip / SpawnHelicopter refuse at one active; SpawnSailBoat when
-        // `0x4e99d0 >= 4`; SpawnAeroplane refuses when active airplanes reach two.
+        if kind == XTHG_SAILBOAT {
+            return self.pe_sailboat_budget < 4 && self.place_pe_sailboat(x, y, || direction);
+        }
+        // PE SpawnShip and SpawnHelicopter admit one each. SpawnAeroplane admits two.
         if (kind == XTHG_CARGO_SHIP && self.ambient_port_actor_count(XTHG_CARGO_SHIP) >= 1)
             || (kind == XTHG_HELICOPTER && self.ambient_port_actor_count(XTHG_HELICOPTER) >= 1)
             || (kind == XTHG_AIRPLANE && self.ambient_port_actor_count(XTHG_AIRPLANE) >= 2)
-            || (kind == XTHG_SAILBOAT && self.pe_sailboat_budget >= 4)
         {
             return false;
         }
@@ -59,17 +60,13 @@ impl City {
         {
             return false;
         }
-        // PE SpawnSailBoat (`0x4534a1` / `0x453491`) requires XTXT and XBLD exactly 0.
-        if kind == XTHG_SAILBOAT
-            && (self.text_overlay_at(x, y).unwrap_or(0) != 0 || self.building_at(x, y) != 0)
-        {
-            return false;
-        }
         // PE `0x4e99d4 != 0` (monster occupancy) refuses plane/heli spawn.
         if matches!(kind, XTHG_AIRPLANE | XTHG_HELICOPTER) && self.pe_monster_actor().is_some() {
             return false;
         }
-        let Some(slot) = self.alloc_ambient_port_actor(x, y, kind, direction, 0) else {
+        // Neither SpawnAeroplane arm writes slot byte +0xb.
+        let saved_b = (kind != XTHG_AIRPLANE).then_some(0);
+        let Some(slot) = self.alloc_ambient_port_actor(x, y, kind, direction, saved_b) else {
             return false;
         };
         if kind == XTHG_CARGO_SHIP {
@@ -185,29 +182,6 @@ impl City {
                 self.set_text_overlay(x, y, proxy);
             }
         }
-        if kind == XTHG_SAILBOAT {
-            // PE SpawnSailBoat initializes a separate state machine at
-            // sub-coordinate (4, 4), with zero height and no saved fields, then
-            // paints XTXT `slot-0x37` (`0x45353c`) — not an XTRF decrement.
-            if let Some(record) = self
-                .traffic_overlays
-                .as_mut()
-                .and_then(|table| table.get_mut(slot))
-            {
-                record.state = 0;
-                record.sub_x = 4;
-                record.sub_y = 4;
-                record.height = 0;
-                record.target_x = 0;
-                record.target_y = 0;
-                record.saved_a = 0;
-            }
-            if let Some(proxy) = xthg_proxy_for_slot(slot) {
-                self.set_text_overlay(x, y, proxy);
-            }
-            // PE SpawnSailBoat @ `0x45354e`: `inc word ptr [0x4e99d0]`.
-            self.pe_sailboat_budget = self.pe_sailboat_budget.saturating_add(1);
-        }
         if kind == XTHG_CARGO_SHIP {
             // PE SpawnShip @ `0x452ef9`: paint XTXT `slot-0x37` on `0x4CA600`
             // (same misread-as-XTRF pattern as SailBoat before the archaeology fix).
@@ -215,6 +189,51 @@ impl City {
                 self.set_text_overlay(x, y, proxy);
             }
         }
+        true
+    }
+
+    /// Native SpawnSailBoat leaves +8, +9 and +0xb in the reused slot.
+    /// The marina scanner checks its cap before calling this worker.
+    pub(crate) fn place_pe_sailboat(
+        &mut self,
+        x: usize,
+        y: usize,
+        direction: impl FnOnce() -> u8,
+    ) -> bool {
+        if x >= CITY_WIDTH
+            || y >= CITY_HEIGHT
+            || self.building_at(x, y) != 0
+            || self.text_overlay_at(x, y).unwrap_or(0) != 0
+        {
+            return false;
+        }
+        let table = self
+            .traffic_overlays
+            .get_or_insert_with(empty_overlay_table);
+        let Some((slot, record)) = table
+            .iter_mut()
+            .enumerate()
+            .skip(XTHG_FIRST_USABLE_SLOT)
+            .find(|(_, record)| record.kind == 0)
+        else {
+            return false;
+        };
+        *record = Win95OverlayRecord {
+            kind: XTHG_SAILBOAT,
+            lane: direction() % 8,
+            tile_x: x as u8,
+            tile_y: y as u8,
+            sub_x: 4,
+            sub_y: 4,
+            target_x: record.target_x,
+            target_y: record.target_y,
+            saved_b: record.saved_b,
+            ..Default::default()
+        };
+        if let Some(proxy) = xthg_proxy_for_slot(slot) {
+            self.set_text_overlay(x, y, proxy);
+        }
+        self.pe_sailboat_budget = self.pe_sailboat_budget.wrapping_add(1);
         true
     }
 
@@ -306,7 +325,7 @@ impl City {
         direction: u8,
         saved_b: u8,
     ) -> usize {
-        if let Some(slot) = self.alloc_ambient_port_actor(x, y, kind, direction, saved_b) {
+        if let Some(slot) = self.alloc_ambient_port_actor(x, y, kind, direction, Some(saved_b)) {
             return slot;
         }
 
@@ -413,7 +432,7 @@ impl City {
         y: usize,
         kind: u8,
         direction: u8,
-        saved_b: u8,
+        saved_b: Option<u8>,
     ) -> Option<usize> {
         if !matches!(
             kind,
@@ -442,7 +461,8 @@ impl City {
             .skip(XTHG_FIRST_USABLE_SLOT)
             .find_map(|(slot, record)| (record.kind == 0).then_some(slot))?;
         let height = xthg_spawn_height(kind);
-        self.traffic_overlays.as_mut().unwrap()[slot] = Win95OverlayRecord {
+        let record = &mut self.traffic_overlays.as_mut().unwrap()[slot];
+        *record = Win95OverlayRecord {
             kind,
             lane: direction % 8,
             state: 1,
@@ -454,7 +474,7 @@ impl City {
             target_x: x as u8,
             target_y: y as u8,
             saved_a: 0,
-            saved_b,
+            saved_b: saved_b.unwrap_or(record.saved_b),
         };
         self.mark_dirty(x, y);
         if kind == XTHG_CARGO_SHIP {

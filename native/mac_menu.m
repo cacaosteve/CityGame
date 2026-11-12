@@ -720,6 +720,10 @@ void sc2000_pump_events(void) {
     }
 }
 
+int citygame_app_is_active(void) {
+    return [NSApp isActive] ? 1 : 0;
+}
+
 void sc2000_activate_app(void) {
     @autoreleasepool {
         [NSApp activateIgnoringOtherApps:YES];

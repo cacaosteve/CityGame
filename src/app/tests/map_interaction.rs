@@ -328,3 +328,117 @@ fn power_pointer_drag_builds_on_first_press_motion_and_release_in_both_city_layo
         }
     }
 }
+
+#[test]
+fn win95_editor_raise_repeats_stationary_native_samples_until_release() {
+    let mut state = fixture(
+        EditTool::RaiseTerrain,
+        AppMode::EditNewMap,
+        EngineFidelity::Win95,
+    );
+    state.city.set_selected_water_height_word(0);
+    state.city.set_city_funds(100);
+    state.pe_process_crt = Win95CrtRand::new(1);
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            state.city.set_altitude(x, y, 10, 0);
+        }
+    }
+    state.city.set_text_overlay(20, 20, 0xc9);
+    let press = tile_screen(&state, (20, 20));
+    let mut painting = false;
+    let mut paint_tile = None;
+    begin_map_pointer_interaction(
+        &mut state,
+        press,
+        WINDOW,
+        SCALE,
+        &mut painting,
+        &mut paint_tile,
+        false,
+        |_, _| {},
+    );
+    assert!(painting);
+    assert!(state.hover_cost_overlay().is_none());
+    assert_eq!(state.pe_process_crt.seed(), 3_884_216_597);
+    assert_eq!(state.city.altitude_at(18, 22), 11);
+
+    // Motion changes hover without sampling the moved-to tile or the path.
+    let away = tile_screen(&state, (25, 25));
+    for pointer in [away, press] {
+        move_map_pointer_interaction(
+            &mut state,
+            pointer,
+            WINDOW,
+            SCALE,
+            painting,
+            &mut paint_tile,
+            false,
+            |_, _| {},
+        );
+    }
+    assert_eq!(state.pe_process_crt.seed(), 3_884_216_597);
+
+    assert!(state.tick_edit_map_height_hold(true));
+    assert!(state.tick_edit_map_height_hold(true));
+    assert_eq!(state.city.altitude_at(21, 20), 11);
+    assert_eq!(state.city.altitude_at(22, 20), 11);
+    assert_eq!(state.pe_process_crt.seed(), 1_844_513_277);
+    assert_eq!(state.city.city_funds(), 100);
+
+    state.release_left_mouse_drag(false);
+    assert!(!state.tick_edit_map_height_hold(true));
+    assert_eq!(state.pe_process_crt.seed(), 1_844_513_277);
+    assert_eq!(state.city.text_overlay_at(20, 20), Some(0xc9));
+
+    assert!(state.begin_edit_map_height_hold());
+    let seed = state.pe_process_crt.seed();
+    assert!(state.cancel_active_drag());
+    assert!(!state.tick_edit_map_height_hold(true));
+    assert_eq!(state.pe_process_crt.seed(), seed);
+}
+
+#[test]
+fn win95_editor_lower_pointer_motion_only_retargets_the_next_held_sample() {
+    let mut state = fixture(
+        EditTool::LowerTerrain,
+        AppMode::EditNewMap,
+        EngineFidelity::Win95,
+    );
+    state.pe_process_crt = Win95CrtRand::new(1);
+    let press = tile_screen(&state, (20, 20));
+    let mut painting = false;
+    let mut paint_tile = None;
+    begin_map_pointer_interaction(
+        &mut state,
+        press,
+        WINDOW,
+        SCALE,
+        &mut painting,
+        &mut paint_tile,
+        false,
+        |_, _| {},
+    );
+    assert!(painting);
+    assert!(state.hover_cost_overlay().is_none());
+    assert_eq!(state.pe_process_crt.seed(), 3_884_216_597);
+
+    let next = tile_screen(&state, (24, 24));
+    move_map_pointer_interaction(
+        &mut state,
+        next,
+        WINDOW,
+        SCALE,
+        painting,
+        &mut paint_tile,
+        false,
+        |_, _| {},
+    );
+    assert_eq!(state.hover_tile, Some((24, 24)));
+    assert_eq!(state.pe_process_crt.seed(), 3_884_216_597);
+    assert!(state.tick_edit_map_height_hold(true));
+    assert_eq!(state.pe_process_crt.seed(), 1_924_036_713);
+
+    state.release_left_mouse_drag(false);
+    assert!(!state.tick_edit_map_height_hold(true));
+}

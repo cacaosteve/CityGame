@@ -12,15 +12,11 @@ impl City {
         self.pe_w_sewer_bonus
     }
 
-    /// PE water-scan writer @ `0x46488c`/`0x4648a2`: compare served consumers
-    /// in `0x4CC4B8` against 2,000 times ceil(XBLD 0xF4 tile count / 4).
-    pub fn publish_pe_sewer_bonus(&mut self, served: u32, treatment_tiles: u32) {
-        let treatment_units = treatment_tiles.div_ceil(4);
-        let bonus = if served >= treatment_units.saturating_mul(2_000) {
-            1_u16
-        } else {
-            0
-        };
+    /// PE 0x464868 reads a signed census WORD, divides by four with
+    /// truncation toward zero, and compares the product as an unsigned DWORD.
+    pub fn publish_pe_sewer_bonus(&mut self, served: u32, treatment_tiles: u16) {
+        let threshold = (i32::from(treatment_tiles as i16) / 4 * 2_000) as u32;
+        let bonus = u16::from(served <= threshold);
         self.pe_w_sewer_bonus = bonus;
         // MISC `+0x1050` is Mac CODE 4 state slot 1044, not the PE snapshot.
         if self.kind != CityFileKind::MacCity && self.misc_u32_at(MISC_SEWER_BONUS_OFFSET).is_some()

@@ -161,14 +161,14 @@ pub(super) fn average_industry_tax_rate_for_rows(rows: &[IndustryStats; INDUSTRY
 
 pub(super) fn industry_ratio_values(counts: [u32; INDUSTRY_COUNT]) -> [i32; INDUSTRY_COUNT] {
     let mut ratios = [0_i32; INDUSTRY_COUNT];
-    let total = counts.iter().copied().sum::<u32>();
+    let total = counts.iter().map(|&count| u64::from(count)).sum::<u64>();
     if total == 0 {
         return ratios;
     }
 
     let mut assigned = 0_i32;
     for (index, count) in counts.iter().enumerate() {
-        ratios[index] = (count.saturating_mul(100) / total) as i32;
+        ratios[index] = (u64::from(*count) * 100 / total) as i32;
         assigned += ratios[index];
     }
     let mut remainder = 100_i32.saturating_sub(assigned);

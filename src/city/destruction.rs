@@ -5,12 +5,12 @@ use super::*;
 /// Ordinary selector-1 classes reach `0x459888` and consume two calls at
 /// `0x459DEB`/`0x459E19`; selector-1 network tiles `0x51..=0x5C` take a
 /// separate path. Selectors 3/4 (including plants `0xC9..=0xCF`) also reach
-/// `0x459888` and consume two calls per size×size cell. Selector 2 is
-/// coordinate/data-dependent: `FUN_00463C40(x-1, y) < 0x0D` reaches the generic
+/// `0x459888` and consume two calls per cell, repeated size times. Selector 2 is
+/// coordinate/data-dependent: `FUN_00463C40(x, y-1) < 0x0D` reaches the generic
 /// loop, while higher results take network-specific arms. This tile-only
 /// helper returns no selector-2 count; the app's hit-aware caller applies the
-/// coordinate gate for the generic route, while the high-class network arms
-/// remain separately unmodeled. The dedicated `0x3F..=0x42` / `0xDD..=0xE0`
+/// coordinate gate for the generic route. The high-class network walker has
+/// separate draw sites. The dedicated `0x3F..=0x42` / `0xDD..=0xE0`
 /// arms are excluded.
 pub(crate) fn pe_destroy_building_mode1_render_scatter_draw_count(building: u8) -> usize {
     if building < 6 || matches!(building, 0x3f..=0x42 | 0x51..=0x5c | 0xdd..=0xe0) {
@@ -20,8 +20,63 @@ pub(crate) fn pe_destroy_building_mode1_render_scatter_draw_count(building: u8) 
     match size {
         1 => 2,
         2 => 0,
-        3 | 4 => 2 * size * size,
+        3 | 4 => 2 * size * size * size,
         _ => 0,
+    }
+}
+
+/// PE ChooseAndPlace multi-tile XZON corners (`0x4370e9` / table `0x4dc4d0`).
+/// Returns `[NW, NE, SW, SE]` for `building_zone_bits_for_tile` (PE stamps NW,NE,SE,SW).
+pub(crate) fn pe_choose_and_place_corner_bits(rotation: u8) -> [u8; 4] {
+    // Words at 0x4dc4d0+[rot*8]: NW, NE, SE, SW → remap SE/SW for Rust index order.
+    const PE_NW_NE_SE_SW: [[u8; 4]; 4] = [
+        [0x10, 0x20, 0x40, 0x80],
+        [0x20, 0x40, 0x80, 0x10],
+        [0x40, 0x80, 0x10, 0x20],
+        [0x80, 0x10, 0x20, 0x40],
+    ];
+    let [nw, ne, se, sw] = PE_NW_NE_SE_SW[usize::from(rotation & 3)];
+    [nw, ne, sw, se]
+}
+
+/// Win95 `0x45b23c..0x45b4aa` probes XZON corners around the hit.
+pub(crate) fn pe_destroy_building_corner_origin(
+    rotation: u8,
+    x: usize,
+    y: usize,
+    size: usize,
+    corner_at: impl Fn((usize, usize)) -> u8,
+) -> Option<(usize, usize)> {
+    let [nw, ne, sw, se] = pe_choose_and_place_corner_bits(rotation);
+    let mut tile = (x, y);
+    if size >= 3 {
+        // Each successful probe moves the cursor before the next probe.
+        for (corner, offsets) in [
+            (nw, [(-1, -1), (0, -1), (-1, 0)]),
+            (ne, [(1, -1), (0, -1), (1, 0)]),
+            (se, [(1, 1), (0, 1), (1, 0)]),
+            (sw, [(-1, 1), (0, 1), (-1, 0)]),
+        ] {
+            for (dx, dy) in offsets {
+                if let (Some(px), Some(py)) =
+                    (tile.0.checked_add_signed(dx), tile.1.checked_add_signed(dy))
+                    && px < CITY_WIDTH
+                    && py < CITY_HEIGHT
+                    && corner_at((px, py)) == corner
+                {
+                    tile = (px, py);
+                }
+            }
+        }
+    }
+    // Native returns the low-X/high-Y corner. Our footprint takes min X/Y.
+    let (x, y) = tile;
+    match corner_at(tile) {
+        corner if corner == nw => Some((x, y)),
+        corner if corner == ne => Some((x.checked_sub(size - 1)?, y)),
+        corner if corner == se => Some((x.checked_sub(size - 1)?, y.checked_sub(size - 1)?)),
+        corner if corner == sw => Some((x, y.checked_sub(size - 1)?)),
+        _ => None,
     }
 }
 
@@ -99,7 +154,7 @@ impl City {
         microsims: &mut [MicrosimRecord],
     ) {
         // Plant selector 4 bypasses the earlier entry-draw branch; only the
-        // generic 16-cell, two-draw projected-scatter loop precedes map writes.
+        // generic four passes over 16 cells with two draws each precede map writes.
         for _ in 0..pe_destroy_building_mode1_render_scatter_draw_count(expected_building) {
             let _ = rng.random_u15();
         }

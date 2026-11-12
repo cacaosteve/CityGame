@@ -192,6 +192,7 @@ pub struct Win95OverlaySim {
     sim_rng: Win95CrtRand,
     /// PE cargo `0x401096(0x205)` plays queued since the last [`Self::take_cargo_sfx_plays`].
     cargo_sfx_plays: usize,
+    train_sfx_plays: usize,
 }
 
 impl Default for Win95OverlaySim {
@@ -207,6 +208,7 @@ impl Win95OverlaySim {
             ambient_tick_accumulator: 0.0,
             sim_rng: Win95CrtRand::new(0x9500_0EAF),
             cargo_sfx_plays: 0,
+            train_sfx_plays: 0,
         }
     }
 
@@ -218,6 +220,7 @@ impl Win95OverlaySim {
         self.tick_accumulator = 0.0;
         self.ambient_tick_accumulator = 0.0;
         self.cargo_sfx_plays = 0;
+        self.train_sfx_plays = 0;
     }
 
     /// Drain queued cargo Things-tick SFX plays (`0x205`).
@@ -225,6 +228,11 @@ impl Win95OverlaySim {
         let plays = self.cargo_sfx_plays;
         self.cargo_sfx_plays = 0;
         plays
+    }
+
+    /// Drain train Things-sweep sound requests (`0x20c`).
+    pub(crate) fn take_train_sfx_plays(&mut self) -> usize {
+        std::mem::take(&mut self.train_sfx_plays)
     }
 
     /// Advance overlay actors when the city has an `XTHG` table.

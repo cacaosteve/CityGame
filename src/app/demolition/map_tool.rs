@@ -1,6 +1,30 @@
 //! Surface and underground map-tool clear/refusal helpers.
 
+use super::super::network::pe_reshape::pe_surface_neighbor_shape;
+use super::super::terrain_editing::{
+    pe_raise_epilogue_surface_reshape_kind_44c7a0,
+    pe_raise_epilogue_underground_reshape_kind_44c9b0,
+};
+use super::super::underground::pe_reshape_underground_tile;
 use super::*;
+
+/// Win95 MapTool success tail. The surface sweep completes before the XUND sweep.
+pub(in crate::app) fn pe_maptool_epilogue_44378e(city: &mut City, x: usize, y: usize) {
+    for (nx, ny) in neighbor_tiles(x, y) {
+        if let Some(kind) = pe_raise_epilogue_surface_reshape_kind_44c7a0(city.building_at(nx, ny))
+        {
+            let tile = pe_surface_neighbor_shape(city, nx, ny, kind);
+            pe_place_tile_441f00(city, nx, ny, tile);
+        }
+    }
+    for (nx, ny) in neighbor_tiles(x, y) {
+        if let Some(kind) =
+            pe_raise_epilogue_underground_reshape_kind_44c9b0(city.underground_at(nx, ny))
+        {
+            pe_reshape_underground_tile(city, nx, ny, kind);
+        }
+    }
+}
 
 pub(in crate::app) fn pe_clear_xtxt_sign_label(city: &mut City, xtxt: u8) {
     city.pe_401dca_clear_xtxt_resources(xtxt);
@@ -110,12 +134,7 @@ pub(in crate::app) fn pe_maptool_underground_clear_subway_443427(
     let und = city.underground_at(x, y);
     if (city.tunnel_levels_at(x, y) & 0x1f) == 1 || und == UNDER_TILE_GREY_BOX_2 {
         // PE @ `0x44341e`: DestroyBuilding mode 1.
-        let building = city.building_at(x, y);
-        if matches!(building, 0x3f..=0x42) {
-            pe_destroy_building_elevated_arm_45994e(city, x, y);
-        } else {
-            pe_flood_destroy_tile_maybe_crt(city, crt, x, y);
-        }
+        pe_destroy_building_mode1_optional_crt(city, crt, x, y);
     }
     pe_place_xund_442370(city, x, y, 0);
     true
@@ -135,11 +154,7 @@ pub(in crate::app) fn pe_maptool_surface_destroy_building_443461(
     if building < 0x0d {
         return false;
     }
-    if matches!(building, 0x3f..=0x42) {
-        pe_destroy_building_elevated_arm_45994e(city, x, y);
-    } else {
-        pe_flood_destroy_tile_maybe_crt(city, crt, x, y);
-    }
+    pe_destroy_building_mode1_optional_crt(city, crt, x, y);
     true
 }
 

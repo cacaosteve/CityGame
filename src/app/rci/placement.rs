@@ -477,7 +477,8 @@ pub(in crate::app) fn construction_building_for_pop_optional(
     y: usize,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> Option<u8> {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return construction_building_for_pop(pop, x, y);
     }
     match process_crt {
@@ -528,7 +529,8 @@ pub(in crate::app) fn abandoned_building_for_pop_optional(
     y: usize,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> Option<u8> {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return abandoned_building_for_pop(pop, x, y);
     }
     match process_crt {
@@ -602,7 +604,8 @@ pub(in crate::app) fn rci_choose_and_place_for_city_optional(
     quality_band: usize,
     process_crt: Option<&mut Win95CrtRand>,
 ) -> Option<u8> {
-    if cfg!(test) {
+    #[cfg(test)]
+    if use_isolated_growth_rng() {
         return rci_choose_and_place_for_city(city, zone_id, pop, x, y, quality_band);
     }
     let Some(rng) = process_crt else {

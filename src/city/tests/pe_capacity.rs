@@ -41,8 +41,6 @@ fn yearly_stadium_signed_threshold_skips_cap_draw_for_high_bit_quotient() {
     let seed = 0x1357_2468;
 
     let mut expected_rng = super::Win95CrtRand::new(seed);
-    let mut expected_city = city.clone();
-    expected_city.run_pe_opinion_poll_with_rng(population, 100, 100, 100, &mut expected_rng);
     let mut expected_rows = Vec::new();
     for _ in [first, second] {
         // `CMP EAX, 25000; JLE` interprets this unsigned-DIV quotient as
@@ -92,14 +90,6 @@ fn yearly_school_and_hospital_signed_thresholds_skip_extra_draws() {
     .map(|text| usize::from(text - super::MIN_SIM_TEXT_ENTRIES));
     school_city.pe_age_cohorts[1] = 0x8000_0000;
     let mut expected_school_rng = seed;
-    let mut expected_school_city = school_city.clone();
-    expected_school_city.run_pe_opinion_poll_with_rng(
-        10_000,
-        100,
-        100,
-        100,
-        &mut expected_school_rng,
-    );
     let mut expected_school_students = Vec::new();
     for _ in school_slots {
         let students =
@@ -136,16 +126,8 @@ fn yearly_school_and_hospital_signed_thresholds_skip_extra_draws() {
         hospital_city.provision_microsim_for_building(209).unwrap(),
     ]
     .map(|text| usize::from(text - super::MIN_SIM_TEXT_ENTRIES));
-    let population = 0x8000_0000;
+    let population = 0x8000_0000_u32;
     let mut expected_hospital_rng = seed;
-    let mut expected_hospital_city = hospital_city.clone();
-    expected_hospital_city.run_pe_opinion_poll_with_rng(
-        population,
-        100,
-        100,
-        100,
-        &mut expected_hospital_rng,
-    );
     let mut expected_hospital_patients = Vec::new();
     for _ in hospital_slots {
         let patients =
@@ -330,9 +312,7 @@ fn yearly_llama_uses_truncated_sighting_ratios_and_wraps_pe_words() {
         population: u32,
         seed: u32,
     ) -> (super::Win95CrtRand, super::Win95CrtRand) {
-        let mut expected_city = city.clone();
-        let mut crt = super::Win95CrtRand::new(seed);
-        expected_city.run_pe_opinion_poll_with_rng(population, 100, 100, 100, &mut crt);
+        let crt = super::Win95CrtRand::new(seed);
         let inputs = super::YearlyMicrosimRngInputs {
             normal_population: population,
             population_load: population.saturating_add(city.pe_dw_arcology_population()),
@@ -350,8 +330,8 @@ fn yearly_llama_uses_truncated_sighting_ratios_and_wraps_pe_words() {
             city_funds: 0,
         };
         let schedule = super::yearly_microsim_rng_schedule(
-            &expected_city,
-            expected_city.microsims.as_ref().expect("microsim table"),
+            city,
+            city.microsims.as_ref().expect("microsim table"),
             crt,
             super::Win95Lfsr::new(1),
             inputs,
@@ -1080,6 +1060,7 @@ fn power_plant_demolition_draws_rubble_only_for_flat_xter_cells() {
     let mut city =
         City::new_blank("/tmp/sc2000-plant-mixed-terrain.sc2", "PlantTerrain").expect("blank");
     city.set_city_funds(0);
+    city.pe_w_city_rotation = 3;
     for dx in 0..4 {
         for dy in 0..4 {
             let x = 40 + dx;
@@ -1090,7 +1071,13 @@ fn power_plant_demolition_draws_rubble_only_for_flat_xter_cells() {
     }
     let text = city.provision_microsim_for_building(207).unwrap();
     let index = usize::from(text - super::MIN_SIM_TEXT_ENTRIES);
-    city.set_text_overlay(40, 40, text);
+    city.set_zone(40, 37, 0x80);
+    city.set_zone(43, 37, 0x10);
+    city.set_zone(43, 40, 0x20);
+    city.set_zone(40, 40, 0x40);
+    // The first XTXT hit is at the low-Y corner. Cleanup walks from high Y.
+    city.set_text_overlay(40, 37, text);
+    city.set_building(40, 36, 0x1d);
     assert!(city.set_microsim_stat0(index, 50));
 
     let seed = super::Win95CrtRand::new(0x44e6_0604);
@@ -1144,6 +1131,9 @@ fn power_plant_demolition_draws_rubble_only_for_flat_xter_cells() {
     );
 
     assert_eq!(crt, expected, "non-flat cells consume no rubble draw");
+    assert_eq!(city.building_at(40, 36), 0x1d);
+    let expired = city.microsim_at(index).unwrap();
+    assert_eq!((expired.tile_id, expired.stat0), (0, 51));
     for (x, y, rubble) in expected_cells {
         assert_eq!(city.building_at(x, y), rubble, "PlaceTile at ({x},{y})");
         assert_eq!(city.text_overlay_at(x, y), Some(0));
@@ -2001,8 +1991,6 @@ fn yearly_police_arrest_divisor_sign_extends_saved_prison_bonus_word() {
 
     let seed = super::Win95CrtRand::new(0x1357_2468);
     let mut expected_rng = seed;
-    let mut expected_city = city.clone();
-    expected_city.run_pe_opinion_poll_with_rng(0, 100, 100, 100, &mut expected_rng);
     let expected_divisor = (5 - i32::from(u16::MAX as i16)).max(1) as u32;
     let expected_arrests = 120 / expected_divisor + u32::from(expected_rng.random_u16_mask(0x0f));
 
@@ -3594,7 +3582,7 @@ fn mac_aged_plant_expiry_aligns_rotated_xzon_center_signatures() {
         )
         .expect("blank city");
         city.kind = CityFileKind::MacCity;
-        city.set_rotation(rotation as u8);
+        city.saved_rotation = rotation as u8;
         let slot = usize::from(
             city.provision_microsim_for_building(0xc9)
                 .expect("gas plant row")
@@ -5080,6 +5068,66 @@ fn provision_rejects_class_zero_and_unclassed_tiles() {
 }
 
 #[test]
+fn mac_aging_plant_poll_updates_later_mayor_rows_and_quickdraw() {
+    // Mac 1.2 CODE 3 plant/Mayor/Statue arms joined through CODE 7 export 234.
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        for (age, extra, growth, land, approval, statue, seed) in [
+            (47, 1, 1000, 40, 63, 39, 384_717_275),
+            (48, 0, 1000, 40, 63, 39, 384_717_275),
+            (48, 1, 1000, 40, 29, 26, 1_189_354_452),
+            (49, 1, 1000, 40, 29, 26, 1_189_354_452),
+            (48, 1, 99, 40, 63, 39, 384_717_275),
+            (48, 1, 1000, 40_000, 88, 26, 1_189_354_452),
+            (48, 1, 1000, 65_258, 63, 39, 384_717_275),
+        ] {
+            let mut city = City::new_blank("/tmp/mac-plant-poll.sc2", "Poll").unwrap();
+            city.kind = kind;
+            city.mac_mayor_approval = 63;
+            city.set_mac_power_service_summary(0);
+            for (offset, value) in [
+                (0x48, 10),
+                (0x4c, 25),
+                (0x0fa4, 12),
+                (0x1008, extra),
+                (0x102c, growth),
+            ] {
+                city.set_mac_state_misc_u32_at(offset, value);
+            }
+            city.set_budget_misc_u32_values(0x0780, &[7]);
+            for (index, score) in (4..).zip([10, 20, land, 30]) {
+                city.set_chunk_u32_values("XGRP", index * 52 * 4, &[score]);
+            }
+            city.set_microsim_tile_id(9, 0xc9);
+            city.set_microsim_stat0(9, age);
+            for (slot, age, countdown) in [(8, 7, 0), (10, 255, 1), (60, 7, 0)] {
+                city.set_microsim_tile_id(slot, 0xf3);
+                city.set_microsim_stat0(slot, age);
+                city.set_microsim_stat1(slot, 1955);
+                city.set_microsim_stat2(slot, 21);
+                city.set_microsim_stat3(slot, countdown);
+            }
+            city.set_microsim_tile_id(61, 0xdb);
+
+            let mut rng = MacToolboxRng::new(123);
+            city.refresh_mac_monthly_random_xmic_rows(100, 100, 100, 100, 100, false, &mut rng);
+
+            let row = |slot| {
+                let record = city.microsim_at(slot).unwrap();
+                (record.stat0, record.stat1, record.stat2, record.stat3)
+            };
+            let case = (kind, age, extra, growth, land);
+            assert_eq!(row(9).0, age + 1, "{case:?}");
+            assert_eq!(row(9).2, 5, "{case:?}");
+            assert_eq!(row(8), (7, 1955, 63, 0), "{case:?}");
+            assert_eq!(row(10), (0, 1955, approval, 0), "{case:?}");
+            assert_eq!(row(60), (7, 1955, approval, 0), "{case:?}");
+            assert_eq!(row(61).2, statue, "{case:?}");
+            assert_eq!(rng.seed(), seed, "{case:?}");
+        }
+    }
+}
+
+#[test]
 fn query_mayor_countdown_age_increments_as_wrapping_pe_byte() {
     let mut city = City::new_blank("/tmp/sc2000-mayor-query-age-wrap.sc2", "MayorAgeWrap")
         .expect("blank city");
@@ -5088,7 +5136,7 @@ fn query_mayor_countdown_age_increments_as_wrapping_pe_byte() {
     assert!(city.set_microsim_stat0(index, u8::MAX));
     assert!(city.set_microsim_stat3(index, 1));
 
-    city.recalculate_mayors_house_stats(100, 100, 100);
+    city.recalculate_mayors_house_stats(7, &mut super::Win95CrtRand::new(123));
 
     assert_eq!(
         city.microsim_at(index).map(|row| (row.stat0, row.stat3)),
@@ -5116,7 +5164,8 @@ fn recalculate_mayors_house_stats_ages_every_mayor_and_copies_approval() {
     );
 
     // Leftover `0x4caa74` is still 0: poll skips, Approval stays 0, countdown still ages.
-    city.recalculate_mayors_house_stats(100, 100, 100);
+    let mut rng = super::Win95CrtRand::new(123);
+    city.recalculate_mayors_house_stats(7, &mut rng);
     assert_eq!(city.pe_mayor_approval(), 0);
     assert_eq!(
         city.microsim_at(mayor_index)
@@ -5131,7 +5180,7 @@ fn recalculate_mayors_house_stats_ages_every_mayor_and_copies_approval() {
     );
 
     city.persist_pe_day22_population_leftover(10_000);
-    city.recalculate_mayors_house_stats(100, 100, 100);
+    city.recalculate_mayors_house_stats(7, &mut rng);
     let approval = city.pe_mayor_approval();
     assert!(approval > 0, "leftover>=100 should sample Approval");
     assert_eq!(
@@ -5557,6 +5606,7 @@ fn mac_transit_and_utility_rows_use_slot_census_and_clear_passengers_after_walk(
         city.kind = CityFileKind::MacCity;
         city.set_mac_state_misc_u32_at(0x002c, 560);
         city.set_mac_state_misc_u32_at(0x102c, 18_000);
+        city.set_mac_state_misc_u32_at(0x1008, 1);
         let (before, plant, after) = (20_usize, 21_usize, 22_usize);
         city.set_microsim_tile_id(before, tile);
         city.set_microsim_tile_id(plant, 0xc9);
@@ -5586,7 +5636,7 @@ fn mac_transit_and_utility_rows_use_slot_census_and_clear_passengers_after_walk(
                 let first_jitter = expected.random_u16() & 0xff;
                 expected.random_u16(); // first stadium grade
                 expected.random_u16(); // plant age jitter
-                for _ in 0..(128 + 16) {
+                for _ in 0..(100 + 128 + 16) {
                     expected.random_u16();
                 }
                 let second_jitter = expected.random_u16() & 0xff;

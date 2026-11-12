@@ -396,6 +396,7 @@ fn pe_train_turnaround_keeps_proxy_handoff_until_next_tile_crossing() {
         &mut crt,
         &mut lfsr,
         &mut game_rand,
+        &mut false,
     ));
 
     let overlays = city.traffic_overlays().unwrap();
@@ -554,4 +555,40 @@ fn pe_xthg_copy_train_follower_matches_fun_004029ff() {
     };
     pe_xthg_copy_train_follower(&mut car, &subway);
     assert_eq!(car.kind, XTHG_SUBWAY_TRAIN_CAR);
+}
+
+#[test]
+fn pe_train_turn_keeps_saved_lane_and_rolls_sound_even_when_blocked() {
+    for (candidate, expected) in [(44, (98, 9, 2)), (0, (97, 10, 4))] {
+        let mut city = City::new_blank("/tmp/pe-train-turn.sc2", "Train Turn").unwrap();
+        city.set_building(97, 8, 44);
+        city.set_building(97, 9, 44);
+        city.set_building(97, 10, 44);
+        city.set_building(98, 9, candidate);
+        let mut table = empty_overlay_table();
+        table[1] = Win95OverlayRecord {
+            kind: XTHG_TRAIN_ENGINE,
+            lane: 2,
+            tile_x: 97,
+            tile_y: 8,
+            sub_x: 97,
+            sub_y: 9,
+            ..Default::default()
+        };
+        city.set_traffic_overlays_for_test(table);
+        let mut sim = Win95OverlaySim::new();
+        let mut crt = Win95CrtRand::new(72_032);
+        let mut lfsr = Win95Lfsr::new(1);
+        let mut game_rand = Win95GameRand::new(1);
+
+        assert!(sim.tick_pe_train_engine_slot(&mut city, 1, &mut crt, &mut lfsr, &mut game_rand));
+        let after = city.traffic_overlays().unwrap()[1];
+        assert_eq!((after.tile_x, after.tile_y, after.lane), (97, 9, 2));
+        assert_eq!((after.sub_x, after.sub_y, after.target_x), expected);
+        assert_eq!(
+            (crt.seed(), lfsr.state(), game_rand.state()),
+            (2_533_413_539, 8, 1)
+        );
+        assert_eq!(sim.take_train_sfx_plays(), 1);
+    }
 }

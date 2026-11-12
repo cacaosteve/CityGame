@@ -5,20 +5,68 @@
 //! and simulation growth scheduling remain in their existing modules.
 
 use super::{
-    MARINA_BUILDING_ID, SMALL_PARK_BUILDING_ID, ToolPlacement, ToolPreview, ViewerState,
-    ZONE_RESIDENTIAL_DENSE, ZONE_RESIDENTIAL_LIGHT, building_has_internal_pipes,
-    building_network_access_kinds, building_requires_flat_land, building_requires_mixed_shoreline,
-    building_requires_saltwater, clear_xbit_powerable, is_power_plant_building, is_saltwater_tile,
-    neighbor_tiles, pe_fun_00464550, pe_fun_00467860, pe_place_tile_441f00,
-    stamp_power_plant_xbit_powerable, stamp_xbit_powerable, xbld_tile_size,
+    CityInfoDialog, MARINA_BUILDING_ID, SMALL_PARK_BUILDING_ID, SUBWAY_STATION_BUILDING_ID,
+    ToolPlacement, ToolPreview, UndergroundKind, ViewerState, ZONE_RESIDENTIAL_DENSE,
+    ZONE_RESIDENTIAL_LIGHT, building_has_internal_pipes, building_network_access_kinds,
+    building_requires_flat_land, building_requires_mixed_shoreline, building_requires_saltwater,
+    clear_xbit_powerable, is_power_plant_building, is_saltwater_tile, neighbor_tiles,
+    pe_fun_00464550, pe_fun_00467860, pe_place_tile_441f00, stamp_power_plant_xbit_powerable,
+    stamp_xbit_powerable, xbld_tile_size,
 };
 use crate::city::{
     CITY_HEIGHT, CITY_WIDTH, City, TileBits, XBIT_CHOOSE_AND_PLACE, ZONE_CORNER_ALL,
+    pe_choose_and_place_corner_bits,
 };
 use crate::engine_fidelity::EngineFidelity;
+use crate::mac_random::MacAppLfsrRng;
 use crate::ui::EditTool;
 use crate::win95_random::{Win95CrtRand, Win95Lfsr};
 use std::collections::HashSet;
+
+const BUS_DEPOT_BUILDING_ID: u8 = 0xec;
+const RAIL_DEPOT_BUILDING_ID: u8 = 0xed;
+
+fn mac_generic_building_tool(building: u8) -> Option<EditTool> {
+    match building {
+        BUS_DEPOT_BUILDING_ID => Some(EditTool::BusDepot),
+        RAIL_DEPOT_BUILDING_ID => Some(EditTool::RailDepot),
+        SUBWAY_STATION_BUILDING_ID => Some(EditTool::SubStation),
+        MARINA_BUILDING_ID => Some(EditTool::Marina),
+        0xdb => Some(EditTool::Statue),
+        0xdc => Some(EditTool::WaterPump),
+        0xeb => Some(EditTool::WaterTower),
+        0xf3 => Some(EditTool::MayorHouse),
+        0xf4 => Some(EditTool::WaterTreatment),
+        0xfa => Some(EditTool::Desalinization),
+        0xfb => Some(EditTool::ArcologyPlymouth),
+        0xfc => Some(EditTool::ArcologyForest),
+        0xfd => Some(EditTool::ArcologyDarco),
+        0xfe => Some(EditTool::ArcologyLaunch),
+        0xff => Some(EditTool::BraunLlamaDome),
+        0xc8 => Some(EditTool::PowerPlantWind),
+        0xc9 => Some(EditTool::PowerPlantGas),
+        0xca => Some(EditTool::PowerPlantOil),
+        0xcb => Some(EditTool::PowerPlantNuclear),
+        0xcc => Some(EditTool::PowerPlantSolar),
+        0xcd => Some(EditTool::PowerPlantMicrowave),
+        0xce => Some(EditTool::PowerPlantFusion),
+        0xcf => Some(EditTool::PowerPlantCoal),
+        0xd0 => Some(EditTool::CityHall),
+        0xd1 => Some(EditTool::Hospital),
+        0xd2 => Some(EditTool::Police),
+        0xd3 => Some(EditTool::FireStation),
+        0xd4 => Some(EditTool::Museum),
+        0xd5 => Some(EditTool::BigPark),
+        0xd6 => Some(EditTool::School),
+        0xd7 => Some(EditTool::Stadium),
+        0xd8 => Some(EditTool::Prison),
+        0xd9 => Some(EditTool::College),
+        0xda => Some(EditTool::Zoo),
+        0xf5 => Some(EditTool::Library),
+        SMALL_PARK_BUILDING_ID => Some(EditTool::SmallPark),
+        _ => None,
+    }
+}
 
 fn surrounding_tiles(x: usize, y: usize) -> impl Iterator<Item = (usize, usize)> {
     let min_x = x.saturating_sub(1);
@@ -30,6 +78,17 @@ fn surrounding_tiles(x: usize, y: usize) -> impl Iterator<Item = (usize, usize)>
     })
 }
 
+fn building_origin_within_edges(x: usize, y: usize, size: usize) -> bool {
+    // CODE 5 0x3a90 / PE 0x44057e and 0x4405c8. Coordinates here are
+    // footprint origins. Larger buildings shift back one tile from the click.
+    let max = match size {
+        0 | 1 => return x < CITY_WIDTH && y < CITY_HEIGHT,
+        2 => 125,
+        _ => 127 - size,
+    };
+    (1..=max).contains(&x) && (1..=max).contains(&y)
+}
+
 /// Win95 PlaceTile `0x441f00` (thunk `0x40178f`): stamp single-tile XBLD; no XTRF write.
 /// PE MapTool hydro orientation deltas @ `0x441408`–`0x44143a` stack words, indexed by
 /// neighbor-higher ALTM land mask (`0x441537`/`0x441577`/`0x4415c0`/`0x441600`):
@@ -37,8 +96,10 @@ fn surrounding_tiles(x: usize, y: usize) -> impl Iterator<Item = (usize, usize)>
 /// `0xC6 + delta`; rotation word `0x4c942c` bit0 (`city.rotation() & 1`) xors delta
 /// (`0x441606`/`0x441618`).
 pub(super) const PE_HYDRO_ORIENT_DELTA: [u8; 16] = [1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+// Mac CODE 5 0x422c indexes the WORD table copied from A5-0x627a.
+const MAC_HYDRO_ORIENT_DELTA: [u8; 16] = [1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1];
 
-pub(super) fn pe_hydro_building_id_441610(city: &City, x: usize, y: usize) -> u8 {
+fn hydro_higher_neighbor_mask(city: &City, x: usize, y: usize) -> usize {
     let local = city.altitude_at(x, y) & 0x1f;
     let mut mask = 0u8;
     if y > 0 && (city.altitude_at(x, y - 1) & 0x1f) > local {
@@ -53,25 +114,30 @@ pub(super) fn pe_hydro_building_id_441610(city: &City, x: usize, y: usize) -> u8
     if x > 0 && (city.altitude_at(x - 1, y) & 0x1f) > local {
         mask |= 0x08;
     }
-    let mut delta = PE_HYDRO_ORIENT_DELTA[usize::from(mask)];
-    // PE @ `0x441606`: `test byte [0x4c942c], 1` then `xor` the selected delta.
-    if city.rotation() & 1 != 0 {
-        delta ^= 1;
-    }
-    0xc6u8.wrapping_add(delta)
+    mask.into()
+}
+
+pub(super) fn pe_hydro_building_id_441610(city: &City, x: usize, y: usize) -> u8 {
+    let delta = PE_HYDRO_ORIENT_DELTA[hydro_higher_neighbor_mask(city, x, y)];
+    0xc6 + (delta ^ (city.rotation() & 1))
+}
+
+fn mac_hydro_building_id(city: &City, x: usize, y: usize) -> u8 {
+    let delta = MAC_HYDRO_ORIENT_DELTA[hydro_higher_neighbor_mask(city, x, y)];
+    0xc6 + (delta ^ (city.rotation() & 1))
 }
 
 pub(super) fn placeable_building_for_tool(tool: EditTool) -> Option<u8> {
     match tool {
         EditTool::Trees => Some(6),
-        EditTool::BusDepot => Some(236),
-        EditTool::RailDepot => Some(237),
-        EditTool::SubStation => Some(233),
+        EditTool::BusDepot => Some(BUS_DEPOT_BUILDING_ID),
+        EditTool::RailDepot => Some(RAIL_DEPOT_BUILDING_ID),
+        EditTool::SubStation => Some(SUBWAY_STATION_BUILDING_ID),
         EditTool::SmallPark => Some(13),
         EditTool::BigPark => Some(213),
         EditTool::Zoo => Some(218),
         EditTool::Stadium => Some(215),
-        EditTool::Marina => Some(248),
+        EditTool::Marina => Some(MARINA_BUILDING_ID),
         EditTool::PowerPlantCoal => Some(207),
         EditTool::PowerPlantHydro => Some(198),
         EditTool::PowerPlantOil => Some(202),
@@ -449,20 +515,6 @@ pub(super) fn footprint_origin(footprint: &[(usize, usize)]) -> Option<(usize, u
     Some((min_x, min_y))
 }
 
-/// PE ChooseAndPlace multi-tile XZON corners (`0x4370e9` / table `0x4dc4d0`).
-/// Returns `[NW, NE, SW, SE]` for `building_zone_bits_for_tile` (PE stamps NW,NE,SE,SW).
-pub(super) fn pe_choose_and_place_corner_bits(rotation: u8) -> [u8; 4] {
-    // Words at 0x4dc4d0+[rot*8]: NW, NE, SE, SW → remap SE/SW for Rust index order.
-    const PE_NW_NE_SE_SW: [[u8; 4]; 4] = [
-        [0x10, 0x20, 0x40, 0x80],
-        [0x20, 0x40, 0x80, 0x10],
-        [0x40, 0x80, 0x10, 0x20],
-        [0x80, 0x10, 0x20, 0x40],
-    ];
-    let [nw, ne, se, sw] = PE_NW_NE_SE_SW[usize::from(rotation & 3)];
-    [nw, ne, sw, se]
-}
-
 pub(super) fn building_zone_bits_for_tile(
     origin_x: usize,
     origin_y: usize,
@@ -516,6 +568,23 @@ pub(super) fn is_hydro_power_terrain(terrain: u8) -> bool {
 }
 
 impl ViewerState {
+    pub(super) fn player_building_origin(
+        &self,
+        x: usize,
+        y: usize,
+        building: u8,
+    ) -> Option<(usize, usize)> {
+        // CODE 5 0x3d80 shifts footprints larger than 2×2 back from the click.
+        if !self.engine_fidelity.uses_win95()
+            && mac_generic_building_tool(building).is_some()
+            && xbld_tile_size(building) > 2
+        {
+            Some((x.checked_sub(1)?, y.checked_sub(1)?))
+        } else {
+            Some((x, y))
+        }
+    }
+
     pub(super) fn building_placement_at(&self, x: usize, y: usize, building: u8) -> ToolPlacement {
         let size = usize::from(xbld_tile_size(building));
         let preview = ToolPreview::Building(building);
@@ -527,23 +596,44 @@ impl ViewerState {
             };
         };
 
-        // PE CityTool size==2 click edge @ `0x44057e`–`0x4405a6` (dialog @ `0x4405a8` skipped):
-        // x,y ≥ 1 and x+3,y+3 ≤ 0x80 — same reachable origins as 2×2 tiles in `1..=0x7e`.
-        // Rust `(x,y)` is PlaceTile-size post-`0x440c64` NW (PE click − 1 for size>1).
-        if size == 2 && (x < 1 || y < 1 || x + 3 > 0x80 || y + 3 > 0x80) {
+        if !building_origin_within_edges(x, y, size) {
             return ToolPlacement {
                 valid_tiles: Vec::new(),
                 invalid_tiles: footprint,
                 preview,
             };
         }
-        // PE CityTool size≠2 / size>1 click edge @ `0x4405c8`–`0x4405f0`: click ≥ 2 and
-        // click+size ≤ 0x80, then PlaceTile-size `dec x/y` @ `0x440c64`. On post-dec NW:
-        // nw ≥ 1 and nw+size ≤ 0x7f.
-        if size > 2 && (x < 1 || y < 1 || x + size > 0x7f || y + size > 0x7f) {
+
+        if !self.engine_fidelity.uses_win95() && mac_generic_building_tool(building).is_some() {
+            let marina = building == MARINA_BUILDING_ID;
+            if marina {
+                // CODE 5 0x3e12 counts water flags across the footprint.
+                let water_tiles = self.footprint_water_tile_count(&footprint);
+                if water_tiles == 0 || water_tiles == footprint.len() {
+                    return ToolPlacement {
+                        valid_tiles: Vec::new(),
+                        invalid_tiles: footprint,
+                        preview,
+                    };
+                }
+            }
+            // Mac CODE 5 0x3d54 admits eligible XBLD on military land.
+            // Marina bypasses the per-tile XTER and water rejection.
+            let (valid_tiles, invalid_tiles) = footprint.into_iter().partition(|&(tx, ty)| {
+                let existing = self.city.building_at(tx, ty);
+                existing < 0x1d
+                    && !matches!(existing, 5 | SMALL_PARK_BUILDING_ID)
+                    && (building != SMALL_PARK_BUILDING_ID || existing < SMALL_PARK_BUILDING_ID)
+                    && (marina
+                        || (self.city.terrain_at(tx, ty) == 0
+                            && !self
+                                .city
+                                .tile_bits_at(tx, ty)
+                                .is_some_and(TileBits::water_tile)))
+            });
             return ToolPlacement {
-                valid_tiles: Vec::new(),
-                invalid_tiles: footprint,
+                valid_tiles,
+                invalid_tiles,
                 preview,
             };
         }
@@ -695,7 +785,11 @@ impl ViewerState {
     }
 
     pub(super) fn hydro_power_placement_at(&self, x: usize, y: usize) -> ToolPlacement {
-        let building = pe_hydro_building_id_441610(&self.city, x, y);
+        let building = if self.engine_fidelity.uses_win95() {
+            pe_hydro_building_id_441610(&self.city, x, y)
+        } else {
+            mac_hydro_building_id(&self.city, x, y)
+        };
         let preview = ToolPreview::Building(building);
         if self.can_place_hydro_power_tile(x, y) {
             ToolPlacement::valid(preview, vec![(x, y)])
@@ -717,6 +811,23 @@ impl ViewerState {
         if placement.invalid_tiles.is_empty() {
             if !self.can_afford_tool_build_cost(EditTool::PowerPlantHydro, 1) {
                 return 0;
+            }
+            if !self.engine_fidelity.uses_win95() {
+                // CODE 5 0x40f0 debits before stamping, then allocates XMIC
+                // and refreshes power below the Mac weighted growth threshold.
+                let building = mac_hydro_building_id(&self.city, x, y);
+                self.debit_tool_build_cost(EditTool::PowerPlantHydro, 1);
+                stamp_xbit_powerable(&mut self.city, x, y);
+                pe_place_tile_441f00(&mut self.city, x, y, building);
+                self.city.set_zone(x, y, ZONE_CORNER_ALL);
+                if let Some(text) = self.provision_microsim_for_building_by_engine(building) {
+                    self.city.set_text_overlay(x, y, text);
+                }
+                self.mac_power_tool_post_place_recalc();
+                self.pending_traffic_redraw = true;
+                self.query_is_inspect = false;
+                self.refresh_status_line();
+                return 1;
             }
             // PE MapTool hydro @ `0x441640`: OR XBIT powerable `0x80`, then PlaceTile
             // (`0x40178f`→`0x441f00`) with neighbor-orient id `0xC6+delta` (`0x441610`);
@@ -756,6 +867,11 @@ impl ViewerState {
     }
 
     pub(super) fn place_building_at(&mut self, x: usize, y: usize, building: u8) -> usize {
+        if !self.engine_fidelity.uses_win95()
+            && let Some(tool) = mac_generic_building_tool(building)
+        {
+            return self.place_mac_generic_building(x, y, building, tool);
+        }
         let placement = self.building_placement_at(x, y, building);
         let size = usize::from(xbld_tile_size(building));
         if placement.invalid_tiles.is_empty() && placement.valid_tiles.len() == size * size {
@@ -823,6 +939,158 @@ impl ViewerState {
         }
     }
 
+    fn place_mac_generic_building(
+        &mut self,
+        x: usize,
+        y: usize,
+        building: u8,
+        tool: EditTool,
+    ) -> usize {
+        if !self.can_afford_tool_build_cost(tool, 1) {
+            return 0;
+        }
+        let size = usize::from(xbld_tile_size(building));
+        let click_offset = usize::from(size > 2);
+        let (click_x, click_y) = (x + click_offset, y + click_offset);
+        if matches!(building, 0xc9..=0xcb | 0xcf | 0xd8 | 0xf4)
+            && building_origin_within_edges(x, y, size)
+        {
+            // CODE 5 0x3b26 counts residential XZON before footprint validation,
+            // using the same window as PE. CODE 13 export 203 uses the Mac LFSR.
+            let residential =
+                pe_citytool_nimby_residential_count_440648(&self.city, click_x, click_y, size);
+            let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
+            if lfsr.bounded(200) < residential {
+                return 0;
+            }
+        }
+        let placement = self.building_placement_at(x, y, building);
+        if !placement.invalid_tiles.is_empty() || placement.valid_tiles.len() != size * size {
+            return 0;
+        }
+
+        // Mac CODE 5 0x39f2 attempts one microsim allocation before
+        // writing the footprint in x-major order.
+        let text = self
+            .city
+            .provision_mac_microsim_for_building(building, &mut self.mac_process_rng);
+        let corners = pe_choose_and_place_corner_bits(self.city.rotation());
+        let service_flags = if matches!(tool, EditTool::SmallPark | EditTool::BigPark) {
+            0x20
+        } else {
+            0xe0
+        };
+        for tx in x..x + size {
+            for ty in y..y + size {
+                let bits = self.city.tile_bits_at(tx, ty).map_or(0, TileBits::raw_bits);
+                self.city
+                    .set_tile_bits(tx, ty, TileBits::new((bits & 0x1f) | service_flags));
+                pe_place_tile_441f00(&mut self.city, tx, ty, building);
+                self.city.set_zone(
+                    tx,
+                    ty,
+                    building_zone_bits_for_tile(x, y, tx, ty, size, corners),
+                );
+                if let Some(text) = text {
+                    self.city.set_text_overlay(tx, ty, text);
+                }
+            }
+        }
+        self.debit_tool_build_cost(tool, 1);
+        super::budget::mac_budget_add_civic_placement(&mut self.city, building);
+        if tool == EditTool::Stadium && text.is_some() {
+            let mask = self.city.mac_state_misc_u32_at(0x1028).unwrap_or(0) as u16;
+            let available = !mask & 0x1f;
+            if available != 0 {
+                self.open_city_info_dialog(CityInfoDialog::StadiumTeam {
+                    x: click_x,
+                    y: click_y,
+                    available,
+                });
+                return size * size;
+            }
+        }
+        match tool {
+            EditTool::Statue => {
+                // CODE 5 0x3c9a removes power membership before the service tail.
+                clear_xbit_powerable(&mut self.city, click_x, click_y);
+            }
+            EditTool::WaterPump => {
+                // CODE 5 0x3c64 calls the normal Mac pipe connector (export 196).
+                super::underground::mac_place_underground_tile(
+                    &mut self.city,
+                    (x, y),
+                    UndergroundKind::Pipes,
+                );
+            }
+            EditTool::SubStation => {
+                // CODE 5 0x3c6e updates XUND and clears pipe membership before services.
+                self.place_mac_subway_transition_underground(x, y);
+            }
+            _ => {}
+        }
+        // The generic service tail tests the original click, which is one
+        // tile inside the written footprint for size 3 and larger.
+        self.finish_mac_building_services(click_x, click_y);
+        if tool == EditTool::RailDepot {
+            // CODE 5 0x310a calls export 120 immediately on placement success.
+            let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
+            super::mac_loop_scheduler::rail_consist::mac_spawn_rail_near_station(
+                &mut self.city,
+                x as i16,
+                y as i16,
+                || lfsr.bounded(4),
+                || self.mac_game_rng.bounded(2),
+            );
+        }
+        self.pending_traffic_redraw = true;
+        self.query_is_inspect = false;
+        self.refresh_status_line();
+        size * size
+    }
+
+    fn finish_mac_building_services(&mut self, x: usize, y: usize) {
+        if self
+            .city
+            .tile_bits_at(x, y)
+            .is_some_and(TileBits::powerable)
+        {
+            self.mac_power_tool_post_place_recalc();
+        }
+        if self.city.tile_bits_at(x, y).is_some_and(TileBits::piped) {
+            self.mac_pipe_tool_post_place_water_recalc();
+        }
+    }
+
+    pub(super) fn finish_mac_stadium_team(&mut self, team: u8) -> bool {
+        let Some(CityInfoDialog::StadiumTeam { x, y, available }) = self.city_info_dialog else {
+            return false;
+        };
+        if team >= 5 || available & (1 << team) == 0 {
+            return false;
+        }
+        let marker = self.city.text_overlay_at(x, y).unwrap_or(0);
+        let mask = self.city.mac_state_misc_u32_at(0x1028).unwrap_or(0) as u16;
+        if mask & (1 << team) != 0 {
+            return false;
+        }
+        // Both editions store the selected index and its label slot in XMIC.
+        if !self
+            .city
+            .pe_write_sports_team_index_to_microsim_483816(marker, u16::from(team))
+        {
+            return false;
+        }
+        self.city
+            .set_mac_state_misc_u32_at(0x1028, (mask | (1 << team)) as i16 as u32);
+        self.close_city_info_dialog();
+        self.finish_mac_building_services(x, y);
+        self.pending_traffic_redraw = true;
+        self.query_is_inspect = false;
+        self.refresh_status_line();
+        true
+    }
+
     pub(super) fn finish_reward_placement(&mut self, tool: EditTool) {
         if !matches!(
             tool,
@@ -833,8 +1101,14 @@ impl ViewerState {
         let Some(mask) = reward_mask_for_tool(tool) else {
             return;
         };
-        let available = self.city.rewards_available_mask();
-        self.city.set_rewards_available_mask(available & !mask);
+        if self.engine_fidelity.uses_win95() {
+            self.city
+                .set_rewards_available_mask(self.city.rewards_available_mask() & !mask);
+        } else {
+            // CODE 5 0x47ce ANDs the full latch with the low-byte clear mask.
+            self.city
+                .set_mac_civic_latch(self.city.mac_civic_latch() & (0xff - mask));
+        }
         self.apply_selected_tool(EditTool::Query);
         self.close_tool_menu();
         self.refresh_status_line();

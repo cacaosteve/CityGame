@@ -37,6 +37,9 @@ impl ViewerState {
             return (0, None);
         };
         let plan = self.highway_drag_plan_for_city(drag.start, drag.current);
+        if let Some(endpoint) = plan.mac_dry_endpoint {
+            return self.finish_mac_highway_dry_plan(&plan.path, endpoint);
+        }
         let placed = self.place_highway_plan(&plan);
         let neighbor_link = (placed == plan.path.len())
             .then_some(plan.neighbor_link)
@@ -44,7 +47,7 @@ impl ViewerState {
         if placed == plan.path.len()
             && let Some(candidate) = plan.water_bridge
         {
-            self.begin_win95_highway_water_bridge(candidate);
+            self.begin_highway_water_bridge(candidate);
         }
         (placed, neighbor_link)
     }
@@ -62,16 +65,13 @@ impl ViewerState {
         start: (usize, usize),
         endpoint: (usize, usize),
     ) -> HighwayDragPlan {
-        let fallback = highway_drag_path_for_fidelity(self.engine_fidelity, start, endpoint);
-        let fallback_plan = || HighwayDragPlan {
-            path: fallback.clone(),
-            terminal_direction: None,
-            neighbor_link: None,
-            water_bridge: None,
-        };
         if self.engine_fidelity != EngineFidelity::Win95 {
-            return fallback_plan();
+            return super::route::mac_highway_dry_plan(&self.city, start, endpoint);
         }
+        let fallback_plan = || HighwayDragPlan {
+            path: highway_drag_path(start, endpoint),
+            ..HighwayDragPlan::default()
+        };
         let Some(plan) = pe_highway_route_path_461ae0(&self.city, start, endpoint) else {
             return fallback_plan();
         };
@@ -161,6 +161,9 @@ impl ViewerState {
         // `0x44183f` XBLD `>= 0x0e` refuse; `0x44184d` XBLD `== 5` refuse;
         // `0x441869` XTER `!= 0` refuse. Not PlaceTile-size (no `0x0D`/military
         // / water-tile share on this path).
+        if x >= crate::city::CITY_WIDTH || y >= crate::city::CITY_HEIGHT {
+            return None;
+        }
         let building = self.city.building_at(x, y);
         if building >= 0x0e || building == 5 {
             return None;
@@ -178,11 +181,29 @@ impl ViewerState {
                 _ => {}
             }
         }
-        let compatible_road_mask = if self.engine_fidelity.uses_win95() {
-            pe_onramp_compatible_road_mask(highway_mask, road_mask)
-        } else {
-            mac_onramp_compatible_road_mask(highway_mask, road_mask)
-        };
+        if !self.engine_fidelity.uses_win95() {
+            // CODE 5 @ 0x4436 chooses the first surviving road bit in
+            // north, east, south, west order, using only the raw XBLD masks.
+            let compatible = mac_onramp_compatible_road_mask(highway_mask, road_mask);
+            let (road_side, road_x, road_y) =
+                directional_neighbor_tiles(x, y).find(|(side, _, _)| compatible & side != 0)?;
+            let (preferred, other) = if matches!(road_side, NETWORK_TOP | NETWORK_BOTTOM) {
+                (NETWORK_RIGHT, NETWORK_LEFT)
+            } else {
+                (NETWORK_TOP, NETWORK_BOTTOM)
+            };
+            let highway_side = if highway_mask & preferred != 0 {
+                preferred
+            } else {
+                other
+            };
+            return Some(OnrampPlan {
+                building: onramp_building_for_sides(highway_side, road_side)?,
+                rotate: matches!(road_side, NETWORK_TOP | NETWORK_BOTTOM),
+                road_tile: (road_x, road_y),
+            });
+        }
+        let compatible_road_mask = pe_onramp_compatible_road_mask(highway_mask, road_mask);
         if compatible_road_mask == 0 {
             return None;
         }
@@ -236,6 +257,25 @@ impl ViewerState {
         let Some(plan) = self.onramp_plan_at(x, y) else {
             return false;
         };
+        if !self.engine_fidelity.uses_win95() {
+            // CODE 5 @ 0x4458 compares unsigned cash and subtracts $25.
+            let funds = self.city.city_funds();
+            let cost = 25;
+            if (funds as u32) < cost {
+                return false;
+            }
+            self.city.set_city_funds(funds.wrapping_sub(cost as i32));
+            if plan.rotate {
+                let bits = self.city.tile_bits_at(x, y).unwrap_or_default();
+                self.city.set_tile_bits(x, y, bits.with_rotate(true));
+            }
+            pe_place_tile_441f00(&mut self.city, plan.road_tile.0, plan.road_tile.1, 0x2b);
+            pe_place_tile_441f00(&mut self.city, x, y, plan.building);
+            self.pending_traffic_redraw = true;
+            self.query_is_inspect = false;
+            self.refresh_status_line();
+            return true;
+        }
         // PE MapTool Onramp @ `0x44197b`–`0x4419a3`: debit `0x4dc260[tool_id]` (id 3 → 25)
         // immediately after mask AND, before PlaceTile arms.
         if !pe_maptool_onramp_funds_debit_44197b(&mut self.city, 3) {
@@ -295,6 +335,7 @@ impl ViewerState {
         path: &[(usize, usize)],
     ) -> ToolPlacement {
         self.highway_drag_placement_for_plan(&HighwayDragPlan {
+            mac_dry_endpoint: None,
             path: path.to_vec(),
             terminal_direction: None,
             neighbor_link: None,
@@ -308,6 +349,16 @@ impl ViewerState {
     ) -> ToolPlacement {
         let mut valid_tiles = Vec::new();
         let mut invalid_tiles = Vec::new();
+        if plan.mac_dry_endpoint.is_some() {
+            for &origin in &plan.path {
+                valid_tiles.extend(highway_segment_tiles(origin, NetworkAxis::GridX));
+            }
+            return ToolPlacement {
+                valid_tiles,
+                invalid_tiles,
+                preview: ToolPreview::Highway,
+            };
+        }
         for (index, &origin) in plan.path.iter().enumerate() {
             let axis = highway_axis_for_drag_plan_tile(self.engine_fidelity, plan, index);
             let segment = self.highway_segment_placement_at(origin, axis, index == 0);
@@ -574,6 +625,50 @@ impl ViewerState {
 
     pub(in crate::app) fn place_highway_plan(&mut self, plan: &HighwayDragPlan) -> usize {
         self.place_highway_path_with_terminal_direction(&plan.path, plan.terminal_direction)
+    }
+
+    fn finish_mac_highway_dry_plan(
+        &mut self,
+        path: &[(usize, usize)],
+        endpoint: (usize, usize),
+    ) -> (usize, Option<HighwayNeighborLinkCandidate>) {
+        let Some(&start) = path.first() else {
+            return (0, None);
+        };
+        let cost = path.len() as u32 * HIGHWAY_COST_PER_SEGMENT;
+        if !self.can_afford_build_cost(cost) {
+            return (0, None);
+        }
+        self.debit_build_cost(cost);
+        let (placed, terminal, direction) =
+            super::route::stamp_mac_highway_dry_route(&mut self.city, start, endpoint);
+        self.pending_traffic_redraw = true;
+        self.query_is_inspect = false;
+        self.refresh_status_line();
+
+        let next = pe_highway_route_step_coordinate_461ae0(terminal, direction);
+        if let Some(seed) = next
+            && super::water::pe_highway_route_footprint_has_water_xbit_461ae0(&self.city, seed)
+        {
+            if let Some(bridge) = mac_highway_water_bridge_candidate(&self.city, seed, 0, direction)
+            {
+                self.begin_highway_water_bridge(bridge);
+            }
+            return (placed, None);
+        }
+
+        // CODE 13 @ 0x20c9e also offers a link for a single footprint
+        // on the border, even when the saved direction points inland.
+        let link = next.is_none()
+            || (terminal == start
+                && super::route::pe_highway_origin_touches_outer_edge_461ae0(start));
+        (
+            placed,
+            link.then_some(HighwayNeighborLinkCandidate {
+                start,
+                endpoint: terminal,
+            }),
+        )
     }
 
     pub(in crate::app) fn place_highway_path_with_terminal_direction(

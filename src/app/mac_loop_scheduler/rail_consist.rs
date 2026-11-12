@@ -4,12 +4,12 @@ use super::rail_routes::{
     mac_actor_choose_route, mac_actor_route_candidate, mac_rail_current_cell_requires_teardown,
 };
 
-/// CODE 6 export 120 as called by the monthly station scan. D6 initially
-/// holds the scan column and D5 the zone nibble. The original checks those
-/// registers before calculating each candidate, including the preceding
-/// candidate on subsequent iterations. The return value here reports whether
-/// a train was actually constructed, not the native helper's leftover D0.
-/// The live CODE 8 monthly scan calls this with its shared CODE 13 game LCG.
+/// CODE 6 export 120, shared by the monthly station scan and Rail Depot
+/// placement. The original checks D5 and D6 before calculating each candidate.
+/// The scan starts with the zone nibble and scan column, while placement
+/// starts with the two in-bounds click coordinates. Both then check the
+/// preceding candidate on subsequent iterations. The boolean reports
+/// whether a train was constructed, independently of native D0.
 pub(in crate::app) fn mac_spawn_rail_near_station(
     city: &mut City,
     row: i16,
@@ -180,7 +180,6 @@ pub(super) fn mac_rail_handler_prefix(
         || tail >= XTHG_RECORD_COUNT
         || head_slot == middle
         || head_slot == tail
-        || middle == tail
     {
         return None;
     }
@@ -377,6 +376,71 @@ pub(super) fn mac_retire_rail_consist(
     middle: usize,
     tail: usize,
 ) -> bool {
+    // With one free usable XTHG slot, the native constructor writes both
+    // failed follower allocations through reserved slot zero. On teardown the
+    // original handler clears that aliased follower, then reuses the head slot
+    // as the kind-6 effect while retaining its XTXT proxy.
+    if head > 0 && head < XTHG_RECORD_COUNT && middle == 0 && tail == 0 {
+        let Some(records) = city.traffic_overlays() else {
+            return false;
+        };
+        let (Some(&head_record), Some(&slot_zero)) = (records.get(head), records.first())
+        else {
+            return false;
+        };
+        let (x, y) = (usize::from(head_record.tile_x), usize::from(head_record.tile_y));
+        if x >= CITY_HEIGHT || y >= CITY_WIDTH {
+            return false;
+        }
+        let mut effect = head_record;
+        effect.kind = 6;
+        effect.sub_x = 8;
+        effect.sub_y = 8;
+        effect.saved_b = 0;
+        let mut cleared_zero = slot_zero;
+        cleared_zero.kind = 0;
+        city.set_mac_object_slot_record(0, cleared_zero);
+        city.set_mac_object_slot_record(head, effect);
+        return true;
+    }
+    // With two free usable slots, the native constructor writes its third
+    // allocation through reserved slot zero. The next sweep follows
+    // head -> middle -> 0; if the head tile has disappeared, it clears both
+    // follower kinds and reuses the head record for the kind-6 effect. The
+    // existing XTXT proxies are retained by this native branch.
+    if head > 0
+        && head < XTHG_RECORD_COUNT
+        && middle > 0
+        && middle < XTHG_RECORD_COUNT
+        && middle != head
+        && tail == 0
+    {
+        let Some(records) = city.traffic_overlays() else {
+            return false;
+        };
+        let (Some(&head_record), Some(&middle_record), Some(&slot_zero)) =
+            (records.get(head), records.get(middle), records.first())
+        else {
+            return false;
+        };
+        let (x, y) = (usize::from(head_record.tile_x), usize::from(head_record.tile_y));
+        if x >= CITY_HEIGHT || y >= CITY_WIDTH {
+            return false;
+        }
+        let mut effect = head_record;
+        effect.kind = 6;
+        effect.sub_x = 8;
+        effect.sub_y = 8;
+        effect.saved_b = 0;
+        let mut cleared_zero = slot_zero;
+        cleared_zero.kind = 0;
+        let mut cleared_middle = middle_record;
+        cleared_middle.kind = 0;
+        city.set_mac_object_slot_record(0, cleared_zero);
+        city.set_mac_object_slot_record(middle, cleared_middle);
+        city.set_mac_object_slot_record(head, effect);
+        return true;
+    }
     if [head, middle, tail]
         .iter()
         .any(|&slot| slot >= XTHG_RECORD_COUNT)
@@ -449,7 +513,6 @@ pub(super) fn mac_move_rail_consist(
         || tail >= XTHG_RECORD_COUNT
         || head == middle
         || head == tail
-        || middle == tail
     {
         return false;
     }

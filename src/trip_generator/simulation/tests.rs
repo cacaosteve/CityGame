@@ -278,7 +278,19 @@ fn pe_pedestrian_transit_transfer_is_mode_nine_not_bus_or_subway() {
     city.set_building(40, 40, 29);
     assert_eq!(
         try_step(&city, TransitMode::TransitTransfer, 1, 40, 40),
-        Some((TransitMode::Pedestrian, 3, false))
+        Some((TransitMode::Road, 3, false))
+    );
+    city.set_building(40, 40, 0xfb);
+    for mode in [TransitMode::Bus, TransitMode::TransitTransfer] {
+        assert_eq!(try_step(&city, mode, 1, 40, 40), None);
+    }
+
+    city.set_building(40, 40, SUBWAY_STATION);
+    assert_eq!(try_step(&city, TransitMode::SubwayEnter, 1, 40, 40), None);
+    city.set_underground(40, 40, 1);
+    assert_eq!(
+        try_step(&city, TransitMode::SubwayEnter, 1, 40, 40),
+        Some((TransitMode::Subway, 1, false))
     );
 }
 
@@ -960,6 +972,45 @@ fn trip_uses_subway_between_stations() {
     assert!(result.used_subway);
     assert!(!result.used_rail);
     assert!(!result.used_bus);
+}
+
+#[test]
+fn pe_subway_transfer_congests_roads_after_the_exit_station() {
+    let mut city = blank_city();
+    city.set_zone(20, 20, 1 | ZONE_CORNER_ALL);
+    city.set_zone(20, 27, 3);
+    for (y, building) in [
+        (20, 0x70),
+        (21, 0xe9),
+        (24, 0xe9),
+        (25, 0x1d),
+        (26, 0x1d),
+        (27, 0x7c),
+    ] {
+        city.set_building(20, y, building);
+    }
+    city.set_underground(20, 22, 1);
+    city.set_underground(20, 23, 1);
+    let mut served = vec![false; CITY_TILES];
+    let mut rng = Win95CrtRand::new(1);
+
+    let stats = simulate_growth_lattice_trips_with_rng(
+        &mut city,
+        &mut served,
+        [(20, 20)],
+        |_, _| true,
+        true,
+        &mut rng,
+    );
+
+    // PE 0x457620 reaches the destination and writes exactly these two XTRF cells.
+    assert_eq!(stats.trips_succeeded, 1);
+    assert_eq!(stats.subway_passengers, 1);
+    assert_eq!(stats.tiles_bumped, 2);
+    assert_eq!(city.traffic_density_at(20, 24), Some(1));
+    assert_eq!(city.traffic_density_at(20, 26), Some(1));
+    assert_eq!(city.traffic_density_at(20, 22), Some(0));
+    assert_eq!(rng.seed(), 752_224_798);
 }
 
 #[test]

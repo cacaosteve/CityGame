@@ -8,15 +8,12 @@ use super::{
     BUDGET_SERVICE_COUNT, BUDGET_SERVICE_CURRENT_FIELD, BUDGET_SERVICE_FUNDING_FIELD,
     BUDGET_SERVICE_MISC_STRIDE, BUDGET_SERVICE_ROW_START, BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
     BUILDING_TILE_COUNT_VALUES, CityServiceCoverage, CityServiceOutcomes, DEFAULT_TAX_RATE,
-    LiveDensityMaps, MILITARY_TILE_COUNT_VALUES, MISC_ARCOLOGY_POPULATION_OFFSET,
-    MISC_BUILDING_TILE_COUNTS_OFFSET, MISC_CITY_CRIME_OFFSET, MISC_CITY_FAME_OFFSET,
-    MISC_CITY_POLLUTION_OFFSET, MISC_CITY_TRAFFIC_OFFSET, MISC_CITY_VALUE_OFFSET,
-    MISC_COMMERCIAL_TILE_COUNT_OFFSET, MISC_DIFFICULTY_OFFSET, MISC_GARBAGE_OFFSET,
+    LiveDensityMaps, MILITARY_TILE_COUNT_VALUES, MISC_BUILDING_TILE_COUNTS_OFFSET,
+    MISC_CITY_CRIME_OFFSET, MISC_CITY_FAME_OFFSET, MISC_CITY_POLLUTION_OFFSET,
+    MISC_CITY_TRAFFIC_OFFSET, MISC_CITY_VALUE_OFFSET, MISC_DIFFICULTY_OFFSET, MISC_GARBAGE_OFFSET,
     MISC_INDUSTRIAL_MIX_BONUS_OFFSET, MISC_INDUSTRIAL_MIX_POLLUTION_BONUS_OFFSET,
-    MISC_INDUSTRIAL_TILE_COUNT_OFFSET, MISC_LAND_VALUE_OFFSET, MISC_MILITARY_TILE_COUNTS_OFFSET,
-    MISC_NORMAL_POPULATION_OFFSET, MISC_OLD_ARRESTS_OFFSET, MISC_POPULATED_TILE_COUNT_OFFSET,
-    MISC_PRISON_BONUS_OFFSET, MISC_RESIDENTIAL_POPULATION_OFFSET,
-    MISC_RESIDENTIAL_TILE_COUNT_OFFSET, MISC_SEWER_BONUS_OFFSET, MISC_SPEED_OFFSET,
+    MISC_LAND_VALUE_OFFSET, MISC_MILITARY_TILE_COUNTS_OFFSET, MISC_NORMAL_POPULATION_OFFSET,
+    MISC_OLD_ARRESTS_OFFSET, MISC_PRISON_BONUS_OFFSET, MISC_SEWER_BONUS_OFFSET, MISC_SPEED_OFFSET,
     MISC_SPORTS_TEAMS_OFFSET, MISC_SUBWAY_COUNT_OFFSET, MISC_UNEMPLOYMENT_OFFSET,
     MISC_WORK_FORCE_PERCENT_OFFSET, MISC_YEAR_END_OFFSET, NEIGHBOR_CONNECTION_MISC_OFFSET,
     PopulationStats, ViewerState, budget_row_is_unset, budget_service_funding_misc_offset_for_city,
@@ -206,27 +203,6 @@ impl ViewerState {
                 self.city.pe_eq_workforce_percent(),
             ),
             (
-                MISC_RESIDENTIAL_POPULATION_OFFSET,
-                population.residential_population,
-            ),
-            (MISC_POPULATED_TILE_COUNT_OFFSET, population.populated_tiles),
-            (
-                MISC_RESIDENTIAL_TILE_COUNT_OFFSET,
-                population.residential_tiles,
-            ),
-            (
-                MISC_COMMERCIAL_TILE_COUNT_OFFSET,
-                population.commercial_tiles,
-            ),
-            (
-                MISC_INDUSTRIAL_TILE_COUNT_OFFSET,
-                population.industrial_tiles,
-            ),
-            (
-                MISC_ARCOLOGY_POPULATION_OFFSET,
-                population.arcology_population,
-            ),
-            (
                 NEIGHBOR_CONNECTION_MISC_OFFSET,
                 neighbor_connection_tiles_for_city(&self.city),
             ),
@@ -347,21 +323,27 @@ impl ViewerState {
                 self.city.set_budget_misc_u32_values(offset, &[100]);
             }
         }
-        for (index, row) in budget_service_rows_for_city(&self.city)
-            .into_iter()
-            .enumerate()
-        {
-            if budget_service_row_needs_live_defaults(&self.city, index, row.current) {
-                let mut values = [0_u32; BUDGET_SERVICE_MISC_STRIDE];
-                values[BUDGET_SERVICE_CURRENT_FIELD] = row.current;
-                values[BUDGET_SERVICE_FUNDING_FIELD] = row.funding;
-                values[BUDGET_SERVICE_YEAR_TO_DATE_FIELD] = 0;
-                for month in 0..12 {
-                    values[3 + month * 2] = 0;
-                    values[4 + month * 2] = row.funding;
-                }
-                if let Some(offset) = budget_service_misc_offset_for_city(&self.city, index, 0) {
-                    self.city.set_budget_misc_u32_values(offset, &values);
+        // Mac CODE 4 snapshots the saved current before rebuilding it at
+        // phase 0. Seeding a zero current from today's tiles here, including
+        // at phase 21, charges upkeep a month early and resets row history.
+        if self.engine_fidelity.uses_win95() {
+            for (index, row) in budget_service_rows_for_city(&self.city)
+                .into_iter()
+                .enumerate()
+            {
+                if budget_service_row_needs_live_defaults(&self.city, index, row.current) {
+                    let mut values = [0_u32; BUDGET_SERVICE_MISC_STRIDE];
+                    values[BUDGET_SERVICE_CURRENT_FIELD] = row.current;
+                    values[BUDGET_SERVICE_FUNDING_FIELD] = row.funding;
+                    values[BUDGET_SERVICE_YEAR_TO_DATE_FIELD] = 0;
+                    for month in 0..12 {
+                        values[3 + month * 2] = 0;
+                        values[4 + month * 2] = row.funding;
+                    }
+                    if let Some(offset) = budget_service_misc_offset_for_city(&self.city, index, 0)
+                    {
+                        self.city.set_budget_misc_u32_values(offset, &values);
+                    }
                 }
             }
         }

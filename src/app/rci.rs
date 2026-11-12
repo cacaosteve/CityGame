@@ -265,25 +265,22 @@ pub(super) fn rci_development_buildings_for_zone_and_pop(
     zone_id: u8,
     pop: u8,
 ) -> Option<&'static [u8]> {
-    match (zone_id, pop) {
-        (ZONE_RESIDENTIAL_LIGHT | ZONE_RESIDENTIAL_DENSE, 1) => {
-            Some(RESIDENTIAL_1X1_BUILDINGS.as_slice())
-        }
-        (ZONE_RESIDENTIAL_DENSE, 2) => Some(&RESIDENTIAL_2X2_BUILDINGS[0..4]),
-        (ZONE_RESIDENTIAL_DENSE, 3) => Some(&RESIDENTIAL_2X2_BUILDINGS[4..8]),
-        (ZONE_RESIDENTIAL_DENSE, 4) => Some(RESIDENTIAL_3X3_BUILDINGS.as_slice()),
-        (ZONE_COMMERCIAL_LIGHT | ZONE_COMMERCIAL_DENSE, 1) => {
-            Some(COMMERCIAL_1X1_BUILDINGS.as_slice())
-        }
-        (ZONE_COMMERCIAL_DENSE, 2) => Some(&COMMERCIAL_2X2_BUILDINGS[0..5]),
-        (ZONE_COMMERCIAL_DENSE, 3) => Some(&COMMERCIAL_2X2_BUILDINGS[5..10]),
-        (ZONE_COMMERCIAL_DENSE, 4) => Some(COMMERCIAL_3X3_BUILDINGS.as_slice()),
-        (ZONE_INDUSTRIAL_LIGHT | ZONE_INDUSTRIAL_DENSE, 1) => {
-            Some(INDUSTRIAL_1X1_BUILDINGS.as_slice())
-        }
-        (ZONE_INDUSTRIAL_DENSE, 2) => Some(&INDUSTRIAL_2X2_BUILDINGS[0..4]),
-        (ZONE_INDUSTRIAL_DENSE, 3) => Some(&INDUSTRIAL_2X2_BUILDINGS[4..8]),
-        (ZONE_INDUSTRIAL_DENSE, 4) => Some(INDUSTRIAL_3X3_BUILDINGS.as_slice()),
+    // PE ChooseAndPlace indexes by RCI kind and population level. The light
+    // zone size limit belongs to StartBuilding, so existing sites can finish
+    // or redevelop at their existing size after a density change.
+    match (rci_kind_for_zone(zone_id)?, pop) {
+        (RciKind::Residential, 1) => Some(RESIDENTIAL_1X1_BUILDINGS.as_slice()),
+        (RciKind::Residential, 2) => Some(&RESIDENTIAL_2X2_BUILDINGS[0..4]),
+        (RciKind::Residential, 3) => Some(&RESIDENTIAL_2X2_BUILDINGS[4..8]),
+        (RciKind::Residential, 4) => Some(RESIDENTIAL_3X3_BUILDINGS.as_slice()),
+        (RciKind::Commercial, 1) => Some(COMMERCIAL_1X1_BUILDINGS.as_slice()),
+        (RciKind::Commercial, 2) => Some(&COMMERCIAL_2X2_BUILDINGS[0..5]),
+        (RciKind::Commercial, 3) => Some(&COMMERCIAL_2X2_BUILDINGS[5..10]),
+        (RciKind::Commercial, 4) => Some(COMMERCIAL_3X3_BUILDINGS.as_slice()),
+        (RciKind::Industrial, 1) => Some(INDUSTRIAL_1X1_BUILDINGS.as_slice()),
+        (RciKind::Industrial, 2) => Some(&INDUSTRIAL_2X2_BUILDINGS[0..4]),
+        (RciKind::Industrial, 3) => Some(&INDUSTRIAL_2X2_BUILDINGS[4..8]),
+        (RciKind::Industrial, 4) => Some(INDUSTRIAL_3X3_BUILDINGS.as_slice()),
         _ => None,
     }
 }

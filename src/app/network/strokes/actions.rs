@@ -74,6 +74,8 @@ impl ViewerState {
                 let (placed_tiles, neighbor_link) =
                     self.place_win95_road_stroke_449bb0(drag.start, drag.current);
                 (placed_tiles, None, neighbor_link)
+            } else if self.uses_mac_surface_tool(drag.kind) {
+                self.place_mac_surface_stroke(drag)
             } else {
                 let path = network_commit_path_for_kind(drag.start, drag.current, drag.kind);
                 (self.place_network_path(&path, drag.kind), None, None)
@@ -98,9 +100,14 @@ impl ViewerState {
 
     pub(in crate::app) fn network_drag_cost(&self) -> Option<(NetworkKind, u32)> {
         let drag = self.network_drag?;
+        let per_tile = drag.kind.cost_per_tile()?;
+        if self.uses_mac_surface_tool(drag.kind) {
+            let path = self.mac_surface_preview(drag);
+            let cost = pe_network_surface_stroke_cost_448a90(&self.city, &path, per_tile);
+            return Some((drag.kind, cost));
+        }
         let path = self.network_drag_preview_path(drag);
         let placement = self.network_drag_placement_for_path(&path, drag.kind);
-        let per_tile = drag.kind.cost_per_tile()?;
         let selected_win95_power = drag.kind == NetworkKind::Power
             && network_kind_for_tool(self.tool) == Some(NetworkKind::Power)
             && self.engine_fidelity.uses_win95();
@@ -170,6 +177,9 @@ impl ViewerState {
             }
             return Vec::new();
         }
+        if self.uses_mac_surface_tool(drag.kind) {
+            return self.mac_surface_preview(drag);
+        }
         network_preview_path_for_kind(drag.start, drag.current, drag.kind)
     }
 
@@ -212,12 +222,19 @@ impl ViewerState {
         y: usize,
         kind: NetworkKind,
     ) -> usize {
+        let drag = NetworkDrag {
+            start: (x, y),
+            current: (x, y),
+            kind,
+        };
+        if self.uses_mac_surface_tool(kind) {
+            return self.place_mac_surface_stroke(drag).0;
+        }
         self.place_network_path(&[(x, y)], kind)
     }
 
     /// Replay the mutable Win95 Road selector-0 stroke from `FUN_00449BB0` /
-    /// `FUN_00448F50`, including the bridge-worker handoff at a rejected water
-    /// candidate after accepted dry coordinates have been written.
+    /// `FUN_00448F50`, including the bridge lookahead after the last dry write.
     pub(in crate::app) fn place_win95_road_stroke_449bb0(
         &mut self,
         start: (usize, usize),
@@ -227,7 +244,7 @@ impl ViewerState {
             let Some(direction) = pe_road_bridge_mode1_direction(&self.city, start) else {
                 return (0, None);
             };
-            return (self.begin_win95_road_bridge(start, direction), None);
+            return (self.begin_win95_road_bridge(start, direction, true), None);
         }
         let Some(plan) = pe_road_stroke_plan_449bb0(&self.city, start, end) else {
             return (0, None);
@@ -242,16 +259,6 @@ impl ViewerState {
             return (0, None);
         }
 
-        // The route reshape persists XTXT=0xfa on edge cells for the
-        // established off-map trip path. Keep pre-stroke values so the native
-        // paid-link gate can distinguish that compatibility marker from one
-        // that existed before this road drag.
-        let mut initial_xtxt = vec![0; CITY_TILES];
-        for y in 0..CITY_HEIGHT {
-            for x in 0..CITY_WIDTH {
-                initial_xtxt[y * CITY_WIDTH + x] = self.city.text_overlay_at(x, y).unwrap_or(0);
-            }
-        }
         self.debit_build_cost(cost);
 
         let Some(walk) = pe_road_stroke_walk_init_448bc0(&self.city, start, end) else {
@@ -260,7 +267,6 @@ impl ViewerState {
         let mut current = start;
         let mut direction = walk.direction;
         let mut applied_path = Vec::new();
-        let mut bridge_handoff = None;
 
         for _ in 0..(CITY_WIDTH + CITY_HEIGHT) {
             // PE asks for the next coordinate before editing/writing this one;
@@ -273,10 +279,6 @@ impl ViewerState {
                 direction,
             );
             direction = step.direction;
-            if let Some(seed) = step.water_bridge_candidate {
-                bridge_handoff = Some((seed, direction));
-            }
-
             pe_network_surface_edit_448e20(&mut self.city, current.0, current.1, direction);
 
             let existing = self.city.building_at(current.0, current.1);
@@ -285,13 +287,13 @@ impl ViewerState {
             {
                 let building = pe_place_roads_crossover_from_existing_44ae24(existing)
                     .unwrap_or_else(|| NetworkKind::Road.base_tile());
+                pe_place_tile_441f00(&mut self.city, current.0, current.1, building);
                 pe_place_network_clear_zone_type_nibble(
                     &mut self.city,
                     current.0,
                     current.1,
                     NetworkKind::Road,
                 );
-                pe_place_tile_441f00(&mut self.city, current.0, current.1, building);
                 applied_path.push(current);
                 self.refresh_road_neighbors_like_pe_44acc0(current.0, current.1);
             }
@@ -310,10 +312,7 @@ impl ViewerState {
         let neighbor_link = if lookahead.is_none()
             || (current == start && pe_network_route_origin_touches_outer_edge(current))
         {
-            Some(RoadNeighborLinkCandidate {
-                endpoint: current,
-                initial_xtxt: initial_xtxt[current.1 * CITY_WIDTH + current.0],
-            })
+            Some(RoadNeighborLinkCandidate { endpoint: current })
         } else {
             None
         };
@@ -325,8 +324,9 @@ impl ViewerState {
         self.refresh_reward_availability();
         self.query_is_inspect = false;
         self.refresh_status_line();
-        let bridge_tiles = bridge_handoff
-            .map(|(seed, direction)| self.begin_win95_road_bridge(seed, direction))
+        let bridge_tiles = lookahead
+            .filter(|&seed| pe_road_start_is_surface_water_449bb0(&self.city, seed))
+            .map(|seed| self.begin_win95_road_bridge(seed, direction, false))
             .unwrap_or(0);
         (
             applied_path.len().saturating_add(bridge_tiles),
@@ -334,8 +334,7 @@ impl ViewerState {
         )
     }
 
-    /// Replay the rooted Win95 Rail mode-1 cursor walk and hand the live
-    /// rejected water candidate to the shared selector-1 bridge worker.
+    /// Replay Win95 Rail mode 1, including the final bridge and edge lookahead.
     pub(in crate::app) fn place_win95_rail_stroke_449f50(
         &mut self,
         start: (usize, usize),
@@ -345,7 +344,7 @@ impl ViewerState {
             let Some(direction) = pe_road_bridge_mode1_direction(&self.city, start) else {
                 return Some((0, None));
             };
-            self.begin_win95_rail_bridge(start, direction);
+            self.begin_win95_rail_bridge(start, direction, true, None);
             return Some((0, None));
         }
         let Some(walk) = pe_road_stroke_walk_init_448bc0(&self.city, start, end) else {
@@ -364,22 +363,9 @@ impl ViewerState {
         }
         self.debit_build_cost(cost);
 
-        // The trip overlay helper marks a newly placed edge rail as connected
-        // immediately. PE instead asks about a neighbor connection after the
-        // route walk, and writes XTXT=0xfa only when the player accepts. Keep
-        // the pre-stroke XTXT plane so the endpoint prompt can see the native
-        // state rather than the temporary trip-routing marker.
-        let mut initial_xtxt = vec![0; CITY_TILES];
-        for y in 0..CITY_HEIGHT {
-            for x in 0..CITY_WIDTH {
-                initial_xtxt[y * CITY_WIDTH + x] = self.city.text_overlay_at(x, y).unwrap_or(0);
-            }
-        }
-
         let mut current = start;
         let mut direction = walk.direction;
         let mut applied_path = Vec::new();
-        let mut bridge_handoff = None;
         for _ in 0..(CITY_WIDTH + CITY_HEIGHT) {
             // PE probes the next mutable cursor before editing and writing the
             // current cell; the live writer's retile affects the next probe.
@@ -391,10 +377,6 @@ impl ViewerState {
                 direction,
             );
             direction = step.direction;
-            if let Some(seed) = step.water_bridge_candidate {
-                bridge_handoff = Some((seed, direction));
-            }
-
             pe_network_surface_edit_448e20(&mut self.city, current.0, current.1, direction);
             let existing = self.city.building_at(current.0, current.1);
             if pe_place_rails_coordinate_should_stamp_44b1a0(existing)
@@ -421,13 +403,11 @@ impl ViewerState {
         }
 
         let lookahead = pe_pipe_step_coordinate_44f50(current, direction);
-        let neighbor_link = if bridge_handoff.is_none()
-            && (lookahead.is_none()
-                || (current == start && pe_network_route_origin_touches_outer_edge(current)))
+        let neighbor_link = if lookahead.is_none()
+            || (current == start && pe_network_route_origin_touches_outer_edge(current))
         {
-            let initial = initial_xtxt[current.1 * CITY_WIDTH + current.0];
-            if initial != 0xfa && self.city.text_overlay_at(current.0, current.1) == Some(0xfa) {
-                self.city.set_text_overlay(current.0, current.1, initial);
+            if self.city.is_synthetic_trip_marker(current.0, current.1) {
+                self.city.set_text_overlay(current.0, current.1, 0);
             }
             Some(RailNeighborLinkCandidate { endpoint: current })
         } else {
@@ -441,10 +421,15 @@ impl ViewerState {
         self.refresh_reward_availability();
         self.query_is_inspect = false;
         self.refresh_status_line();
-        if let Some((seed, bridge_direction)) = bridge_handoff {
-            self.begin_win95_rail_bridge(seed, bridge_direction);
-        }
-        Some((applied_path.len(), neighbor_link))
+        let choosing_bridge = lookahead
+            .filter(|&seed| pe_road_start_is_surface_water_449bb0(&self.city, seed))
+            .is_some_and(|seed| {
+                self.begin_win95_rail_bridge(seed, direction, false, neighbor_link)
+            });
+        Some((
+            applied_path.len(),
+            if choosing_bridge { None } else { neighbor_link },
+        ))
     }
 
     /// Replay Win95 Power `FUN_0044A310`: shared mode-2 surface walk, per-cell
@@ -458,7 +443,8 @@ impl ViewerState {
             let Some(direction) = pe_road_bridge_mode1_direction(&self.city, start) else {
                 return 0;
             };
-            return self.begin_win95_power_bridge(start, direction);
+            self.begin_power_bridge(start, direction, false);
+            return 0;
         }
         let Some(walk) = pe_road_stroke_walk_init_448bc0(&self.city, start, end) else {
             return 0;
@@ -491,7 +477,7 @@ impl ViewerState {
             );
             direction = step.direction;
             pe_network_surface_edit_448e20(&mut self.city, current.0, current.1, direction);
-            if self.place_win95_power_line_coordinate_44a8a0(current) {
+            if self.place_power_line_coordinate(current) {
                 applied_path.push(current);
             }
             if let Some(next) = step.next {
@@ -519,9 +505,7 @@ impl ViewerState {
         self.refresh_reward_availability();
         self.query_is_inspect = false;
         self.refresh_status_line();
-        if let Some(seed) = bridge_seed {
-            self.begin_win95_power_bridge(seed, direction);
-        } else {
+        if !bridge_seed.is_some_and(|seed| self.begin_power_bridge(seed, direction, true)) {
             pe_powerline_post_place_power_recalc_43f396(&mut self.city, &mut self.pe_process_crt);
         }
         applied_path.len()
@@ -529,10 +513,7 @@ impl ViewerState {
 
     /// PE `FUN_0044A8A0`: powerable early return, base/crossover write, XBIT
     /// powerable flag, then center and cardinal-neighbor reshapes.
-    pub(in crate::app) fn place_win95_power_line_coordinate_44a8a0(
-        &mut self,
-        tile: (usize, usize),
-    ) -> bool {
+    pub(in crate::app) fn place_power_line_coordinate(&mut self, tile: (usize, usize)) -> bool {
         let (x, y) = tile;
         if self
             .city
@@ -551,7 +532,13 @@ impl ViewerState {
         };
         pe_place_tile_441f00(&mut self.city, x, y, building);
         stamp_xbit_powerable(&mut self.city, x, y);
-        self.refresh_power_neighbors_like_pe_44a8a0(x, y);
+        if self.engine_fidelity.uses_win95() {
+            self.refresh_power_neighbors_like_pe_44a8a0(x, y);
+        } else {
+            for (nx, ny) in std::iter::once(tile).chain(neighbor_tiles(x, y)) {
+                self.refresh_mac_power_tile(nx, ny);
+            }
+        }
         true
     }
 
@@ -738,9 +725,9 @@ impl ViewerState {
                     {
                         let building = pe_place_roads_crossover_from_existing_44ae24(existing)
                             .unwrap_or_else(|| kind.base_tile());
-                        pe_place_network_clear_zone_type_nibble(&mut self.city, x, y, kind);
                         // FUN_0044ACC0 writes the base/table tile before XZON and reshape.
                         pe_place_tile_441f00(&mut self.city, x, y, building);
+                        pe_place_network_clear_zone_type_nibble(&mut self.city, x, y, kind);
                         applied_path.push((x, y));
                         network_tile_was_written = true;
                     } else if pe_rail_coordinate_contract

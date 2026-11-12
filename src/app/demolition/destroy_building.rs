@@ -1,13 +1,14 @@
 //! PE DestroyStructure/DestroyBuilding worker paths and footprint helpers.
 
 use super::*;
+use crate::city::pe_destroy_building_corner_origin;
 
 pub(in crate::app) fn pe_flood_destroy_tile(city: &mut City, x: usize, y: usize) -> bool {
     pe_flood_destroy_tile_maybe_crt(city, None, x, y)
 }
 
 /// PE DestroyStructure with process CRT for DestroyBuilding PlaceTile rubble @ `0x45a01f`.
-/// Returns false when elevated `0x3f..=0x42` early-outs before DestroyBuilding.
+/// Returns whether the hit enters the DestroyBuilding damage path.
 pub(in crate::app) fn pe_flood_destroy_tile_with_crt(
     city: &mut City,
     crt: &mut Win95CrtRand,
@@ -45,6 +46,10 @@ pub(in crate::app) fn pe_flood_destroy_tile_mode_maybe_crt(
     }
     // OpenSC2K DisasterDamage: record class before the footprint is cleared.
     city.record_pe_disaster_damage_class_at(x, y);
+    // DestroyBuilding @ `0x458d8a` returns before cleanup for bare ground and rubble.
+    if old_building < 6 {
+        return false;
+    }
     // PE DestroyBuilding stadium arm @ `0x459f4e`/`0x459fb7`: while XBLD still live,
     // `cmp XBLD, 0xd7` then clear `wSportsTeams` bit from hit-tile XTXT microsim.
     if old_building == 215 {
@@ -121,9 +126,11 @@ pub(in crate::app) fn pe_flood_destroy_tile_mode_maybe_crt(
     if let Some(bit) = civic_bit {
         city.set_rewards_available_mask(city.rewards_available_mask() | (1 << bit));
     }
-    let footprint = selector2_lowclass_cleanup
+    let mut footprint = selector2_lowclass_cleanup
         .clone()
         .unwrap_or_else(|| pe_destroy_building_footprint(city, x, y));
+    // PE 0x459fc9 advances X outside the descending Y loop.
+    footprint.sort_unstable_by_key(|&(tx, ty)| (tx, std::cmp::Reverse(ty)));
     let origin_x = footprint.iter().map(|&(tx, _)| tx).min().unwrap_or(x);
     let origin_y = footprint.iter().map(|&(_, ty)| ty).min().unwrap_or(y);
     for (tx, ty) in footprint {
@@ -137,12 +144,8 @@ pub(in crate::app) fn pe_flood_destroy_tile_mode_maybe_crt(
         pe_destroy_building_clear_xtxt_45a0c4(city, tx, ty);
         // PE clears XBLD via PlaceTile (`0x441f00`) so `dwTileCount` stays coherent —
         // not a raw `set_building(0)` that skips the BSS census.
-        if old_building >= 6 {
-            if let Some(ref mut rng) = crt {
-                pe_destroy_building_placetile_45a01f(city, rng, tx, ty);
-            } else {
-                pe_place_tile_441f00(city, tx, ty, 0);
-            }
+        if let Some(ref mut rng) = crt {
+            pe_destroy_building_placetile_45a01f(city, rng, tx, ty);
         } else {
             pe_place_tile_441f00(city, tx, ty, 0);
         }
@@ -414,7 +417,7 @@ pub(in crate::app) fn pe_destroy_building_mode1_scatter_draw_count_for_hit(
 
     let (normalized_x, normalized_y) = pe_destroy_building_size2_snap_hit_45b1c0(building, x, y);
     if pe_highway_classify_463c40(city, normalized_x as isize, normalized_y as isize - 1) < 0x0d {
-        2 * size * size
+        2 * size * size * size
     } else {
         0
     }
@@ -517,13 +520,51 @@ pub(in crate::app) fn pe_destroy_building_clear_altm_tunnel_4599aa(
     city.clear_altm_tunnel_bits(x, y);
 }
 
-/// PE DestroyBuilding elevated arm @ `0x45994e`–`0x4599aa` (skip UI `0x4012c1`):
-/// PlaceTile(0), XZON `&= 0x0f`, ALTM `&= 0x3ff`. No XTXT/XBIT clear / FUN_00447020.
-pub(in crate::app) fn pe_destroy_building_elevated_arm_45994e(city: &mut City, x: usize, y: usize) {
+/// Clear the surface of a tunnel portal, preserving the zone type.
+pub(in crate::app) fn pe_clear_tunnel_portal_surface(city: &mut City, x: usize, y: usize) {
     pe_place_tile_441f00(city, x, y, 0);
     let zone = city.zone_at(x, y).map(|z| z.raw_bits()).unwrap_or(0);
     city.set_zone(x, y, zone & 0x0f);
+}
+
+/// Win95 DestroyBuilding at 0x4598bc follows the portal's XBLD direction.
+fn pe_destroy_tunnel_run(
+    city: &mut City,
+    mut crt: Option<&mut Win95CrtRand>,
+    x: usize,
+    y: usize,
+    (dx, dy): (isize, isize),
+) {
+    let run = std::iter::successors(offset_city_tile(x, y, dx, dy), |&(tx, ty)| {
+        offset_city_tile(tx, ty, dx, dy)
+    });
+    // The original walk assumes a second portal exists. With a malformed
+    // save, clear the initiating portal and leave other tunnel words alone.
+    let exit = run
+        .clone()
+        .find(|&(tx, ty)| tunnel_portal_direction(city.building_at(tx, ty)).is_some());
+    pe_clear_tunnel_portal_surface(city, x, y);
     pe_destroy_building_clear_altm_tunnel_4599aa(city, x, y);
+    if let Some(rng) = crt.as_deref_mut() {
+        // 0x4599db and 0x459a51 select scatter art at the initiating portal.
+        rng.random_u15();
+        rng.random_u15();
+    }
+    let Some(exit) = exit else {
+        return;
+    };
+    for (tx, ty) in run {
+        city.clear_altm_tunnel_bits(tx, ty);
+        if (tx, ty) == exit {
+            break;
+        }
+    }
+    pe_clear_tunnel_portal_surface(city, exit.0, exit.1);
+    if let Some(rng) = crt {
+        // 0x459b63 and 0x459bd7 select scatter art at the exit portal.
+        rng.random_u15();
+        rng.random_u15();
+    }
 }
 
 /// PE DestroyBuilding mode 0/1 shared elevated / `< 6` / `>= 6` arms with optional
@@ -538,14 +579,14 @@ pub(in crate::app) fn pe_destroy_building_optional_crt(
     mode1: bool,
 ) {
     let building = city.building_at(x, y);
-    if matches!(building, 0x3f..=0x42) {
-        pe_destroy_building_elevated_arm_45994e(city, x, y);
+    if let Some(direction) = tunnel_portal_direction(building) {
+        pe_destroy_tunnel_run(city, crt, x, y, direction);
     } else if building >= 6 {
         pe_flood_destroy_tile_mode_maybe_crt(city, crt, x, y, mode1);
     }
 }
 
-/// PE DestroyBuilding mode 0 (`0x401611` → `0x458140`, push 0) with optional CRT.
+/// PE DestroyBuilding at 0x458d40 with flag 0 and optional CRT.
 pub(in crate::app) fn pe_destroy_building_mode0_optional_crt(
     city: &mut City,
     crt: Option<&mut Win95CrtRand>,
@@ -555,7 +596,7 @@ pub(in crate::app) fn pe_destroy_building_mode0_optional_crt(
     pe_destroy_building_optional_crt(city, crt, x, y, false);
 }
 
-/// PE DestroyBuilding mode 1 (`0x402211` → `0x458d40` / `0x401611` push 1) with
+/// PE DestroyBuilding at 0x458d40 with flag 1 and
 /// optional process CRT rubble (`0x45a01f`).
 pub(in crate::app) fn pe_destroy_building_mode1_optional_crt(
     city: &mut City,
@@ -756,7 +797,7 @@ pub(in crate::app) fn pe_destroy_building_size2_snap_hit_45b1c0(
     (x & !1, (y & !1).saturating_add(1))
 }
 
-/// Win95 `0x402496` origin walk: size×size block of the same XBLD containing the hit tile.
+/// Win95 `0x402496` origin walk, with compatibility for cornerless saves.
 pub(in crate::app) fn pe_destroy_building_footprint(
     city: &City,
     x: usize,
@@ -770,8 +811,25 @@ pub(in crate::app) fn pe_destroy_building_footprint(
     if size <= 1 {
         return vec![(x, y)];
     }
-    // PE @ `0x45b1c0` snaps the hit before the size×size walk; search from the
-    // snapped tile so odd hits still resolve the same 2×2.
+    let highway = matches!(building, 0x49..=0x50 | 0x61..=0x6b);
+    if !highway
+        && let Some((origin_x, origin_y)) =
+            pe_destroy_building_corner_origin(city.rotation(), x, y, size, |(x, y)| {
+                city.zone_at(x, y).map_or(0, |zone| zone.raw_bits() & 0xf0)
+            })
+        && let Some(tiles) = building_footprint_from_origin(origin_x, origin_y, size)
+        && tiles.contains(&(x, y))
+    {
+        // Keep partial legacy fragments on the single-hit path.
+        if tiles
+            .iter()
+            .all(|&(tx, ty)| city.building_at(tx, ty) == building)
+        {
+            return tiles;
+        }
+        return vec![(x, y)];
+    }
+    // Preserve the existing inference when no usable corner was saved.
     let hit = (x, y);
     let (sx, sy) = pe_destroy_building_size2_snap_hit_45b1c0(building, x, y);
     let min_x = sx.saturating_sub(size - 1);

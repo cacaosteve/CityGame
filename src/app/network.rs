@@ -9,20 +9,24 @@ use crate::ui::EditTool;
 mod bridges;
 mod city_connections;
 mod highways;
+pub(super) mod pe_reshape;
 mod strokes;
 
+#[cfg(test)]
+pub(super) use city_connections::persist_pe_neighbor_connection_overlays;
 pub(super) use city_connections::{
     highway_neighbor_connection_tiles_for_city, neighbor_connection_tiles_for_city,
-    persist_pe_neighbor_connection_overlay, persist_pe_neighbor_connection_overlays,
-    rail_neighbor_connection_tiles_for_city, road_neighbor_connection_tiles_for_city,
+    persist_pe_neighbor_connection_overlay, rail_neighbor_connection_tiles_for_city,
+    road_neighbor_connection_tiles_for_city,
 };
 
 use bridges::network_bridge_building_for_tile;
 #[cfg(test)]
 pub(super) use bridges::{
-    pe_power_bridge_selector_cost_45b930, pe_power_bridge_span_plan, pe_rail_bridge_interior_tile,
+    pe_power_bridge_selector_cost_45b930, pe_rail_bridge_interior_tile,
     pe_rail_bridge_selector_cost, pe_rail_bridge_span_plan, pe_road_bridge_direction_mask,
     pe_road_bridge_interior_tile, pe_road_bridge_selector_mask, pe_road_bridge_span_plan,
+    power_bridge_span_plan,
 };
 pub(super) use bridges::{
     pe_road_bridge_selector_cost, pe_road_bridge_selector_name, pe_road_bridge_selectors,
@@ -31,18 +35,17 @@ pub(super) use bridges::{
 pub(super) use highways::{
     apply_highway_neighbor_link_confirmation, highway_axis_for_drag_plan_tile,
     highway_axis_for_path_tile, highway_building_for_axis, highway_building_for_mask,
-    highway_drag_path, highway_drag_path_for_fidelity, highway_neighbor_link_is_available,
-    mac_onramp_compatible_road_mask, onramp_building_for_sides,
-    pe_city_tool_place_highway_stamp_body_4626d0, pe_get_highway_tile_462910,
-    pe_get_highway_tile_classify_refuse_462956, pe_highway_gate_early_8000_4640a1,
-    pe_highway_gate_returns_4000_4642e7, pe_highway_gate_si0_fallthrough_464310,
-    pe_highway_neighbor_low_bit_462990, pe_highway_route_gate_low_word_464040,
-    pe_highway_route_path_461ae0, pe_highway_route_step_461ae0,
-    pe_highway_water_bridge_candidate_45c1e0, pe_highway_water_footprint_class_45c1e0,
-    pe_onramp_compatible_road_mask, pe_place_highway_atcoordinates_funds_debit_44c267,
-    pe_place_highway_tile_462ed0_class_4_to_7, pe_place_highway_tile_462ed0_class_8_to_c,
-    pe_place_highway_tile_462ed0_class_ge_0d, pe_place_highway_tile_462ed0_class_lt4,
-    pe_place_highway_tile_463b30,
+    highway_drag_path, highway_neighbor_link_is_available, mac_onramp_compatible_road_mask,
+    onramp_building_for_sides, pe_city_tool_place_highway_stamp_body_4626d0,
+    pe_get_highway_tile_462910, pe_get_highway_tile_classify_refuse_462956,
+    pe_highway_gate_early_8000_4640a1, pe_highway_gate_returns_4000_4642e7,
+    pe_highway_gate_si0_fallthrough_464310, pe_highway_neighbor_low_bit_462990,
+    pe_highway_route_gate_low_word_464040, pe_highway_route_path_461ae0,
+    pe_highway_route_step_461ae0, pe_highway_water_bridge_candidate_45c1e0,
+    pe_highway_water_footprint_class_45c1e0, pe_onramp_compatible_road_mask,
+    pe_place_highway_atcoordinates_funds_debit_44c267, pe_place_highway_tile_462ed0_class_4_to_7,
+    pe_place_highway_tile_462ed0_class_8_to_c, pe_place_highway_tile_462ed0_class_ge_0d,
+    pe_place_highway_tile_462ed0_class_lt4, pe_place_highway_tile_463b30,
 };
 pub(super) use highways::{
     highway_segment_tiles, pe_highway_classify_463c40, pe_highway_neighbor_link_origin_at,
@@ -73,6 +76,39 @@ pub(super) use strokes::{
     show_rail_neighbor_link_confirmation, show_road_neighbor_link_confirmation,
 };
 
+// CODE 13's native WORD slope table at A5-0x494e overlaps its
+// direction tables. The complete WORD reaches PlaceTile.
+pub(super) fn mac_connector_slope_offset(terrain: u8) -> Option<u16> {
+    const OFFSETS: [[u16; 8]; 3] = [
+        [2, 3, 4, 5, 257, 257, 257, 256],
+        [257, 257, 257, 256, 257, 257, 257, 256],
+        [257, 257, 257, 256, 257, 257, 257, 256],
+    ];
+    let column = match terrain & 0x0f {
+        class @ 1..=4 => class - 1,
+        class @ 9..=12 => class - 5,
+        _ => return None,
+    };
+    Some(OFFSETS.get(usize::from(terrain >> 4))?[usize::from(column)])
+}
+
+pub(super) fn mac_connector_terrain_open(terrain: u8, along_y: bool) -> bool {
+    // A5-0x4944 for Y and A5-0x48fe for X.
+    if along_y && terrain < 0x46 {
+        return !matches!(
+            terrain,
+            0x01 | 0x03 | 0x0f | 0x11 | 0x13 | 0x1f | 0x21 | 0x23 | 0x2f | 0x44 | 0x45
+        );
+    }
+    // The two tables are contiguous in the A5 image.
+    let terrain = if along_y { terrain - 0x46 } else { terrain };
+    terrain < 0x44
+        && !matches!(
+            terrain,
+            0x02 | 0x04 | 0x0f | 0x12 | 0x14 | 0x1f | 0x22 | 0x24 | 0x2f
+        )
+}
+
 /// PE network-stroke cost and terrain gates from FUN_00448A90 / FUN_00448E20.
 /// XTER low nibbles 5..=12 add $25; classes 5..=8 and 9..=12 use separate remaps.
 pub(super) const PE_NETWORK_SURFACE_COST_GATE_4E7B28: [u8; 16] =
@@ -95,7 +131,7 @@ pub(super) enum PeHighwayRouteStep461ae0 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PeHighwayWaterBridgeCandidate {
+pub(super) struct HighwayWaterBridgeCandidate {
     pub(super) seed: (usize, usize),
     pub(super) direction: u8,
     pub(super) span_count: usize,
@@ -103,8 +139,10 @@ pub(super) struct PeHighwayWaterBridgeCandidate {
     pub(super) mode: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct HighwayDragPlan {
+    /// Raw mouse endpoint for the Mac dry worker's direction before 2×2 snapping.
+    pub(super) mac_dry_endpoint: Option<(usize, usize)>,
     pub(super) path: Vec<(usize, usize)>,
     /// PE writes the saved direction before a late XBLD refusal; the caller
     /// then stamps the current origin using that newly selected direction.
@@ -114,7 +152,7 @@ pub(super) struct HighwayDragPlan {
     pub(super) neighbor_link: Option<HighwayNeighborLinkCandidate>,
     /// A dry route can hand its accepted direction and water seed to
     /// FUN_0045C1E0 mode 0; a water-start click enters mode 1 directly.
-    pub(super) water_bridge: Option<PeHighwayWaterBridgeCandidate>,
+    pub(super) water_bridge: Option<HighwayWaterBridgeCandidate>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,7 +164,6 @@ pub(super) struct HighwayNeighborLinkCandidate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RoadNeighborLinkCandidate {
     pub(super) endpoint: (usize, usize),
-    pub(super) initial_xtxt: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

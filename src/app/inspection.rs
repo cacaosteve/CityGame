@@ -4,15 +4,15 @@
 //! routing. Transit simulation and shared passenger counters stay in the parent.
 
 use super::{
-    BUS_DEPOT_BUILDING_ID, CityInfoDialog, RAIL_STATION_BUILDING_ID, RciKind,
+    BUS_DEPOT_BUILDING_ID, CityInfoDialog, PlacementSound, RAIL_STATION_BUILDING_ID, RciKind,
     SUBWAY_STATION_BUILDING_ID, TransitPassengerStats, UNDER_TILE_GREY_BOX_1,
     UNDER_TILE_GREY_BOX_2, UndergroundKind, ViewerState, ZONE_AIRPORT, ZONE_COMMERCIAL_DENSE,
     ZONE_COMMERCIAL_LIGHT, ZONE_INDUSTRIAL_DENSE, ZONE_INDUSTRIAL_LIGHT, ZONE_RESIDENTIAL_DENSE,
     ZONE_RESIDENTIAL_LIGHT, ZONE_SEAPORT, base_building_pipe_present,
-    budget_service_funding_percent_for_city, building_internal_pipe_present,
-    complete_building_count_for_city, format_number, is_abandoned_building, is_bridge_tile,
-    is_highway_tile, is_power_tile, is_rail_tile, is_road_tile, is_tunnel_tile, is_user_sign,
-    is_water_terrain, pe_power_recalc_seed, rci_building_kind, structural_internal_pipe_eligible,
+    building_internal_pipe_present, complete_building_count_for_city, format_number,
+    is_abandoned_building, is_bridge_tile, is_highway_tile, is_power_tile, is_rail_tile,
+    is_road_tile, is_tunnel_tile, is_user_sign, is_water_terrain, pe_power_recalc_seed,
+    raw_tax_rate_for_city, rci_building_kind, structural_internal_pipe_eligible,
     tile_power_status_text_with_entry_seed, tile_water_status_text_with_entry_seed,
     underground_building_pipe_overlay_tile, underground_building_pipe_tile,
     underground_render_tile, underground_tile_has_kind, water_pipe_network_tile, xbld_tile_size,
@@ -585,12 +585,16 @@ impl ViewerState {
         // Win95 `QuerySpecificItem` (`0x44d1fe`): overlay 0x6f re-runs the mayor
         // poll/countdown walker before the dialog is filled. First mayor is
         // typically overlay 61; 111 is XMIC index 60.
-        if self.city.text_overlay_at(x, y) == Some(QUERY_SPECIFIC_MAYOR_STATS_OVERLAY) {
-            self.city.recalculate_mayors_house_stats(
-                budget_service_funding_percent_for_city(&self.city, 3),
-                budget_service_funding_percent_for_city(&self.city, 2),
-                budget_service_funding_percent_for_city(&self.city, 0),
-            );
+        if self.engine_fidelity.uses_win95()
+            && self.city.text_overlay_at(x, y) == Some(QUERY_SPECIFIC_MAYOR_STATS_OVERLAY)
+        {
+            let tax_rate = raw_tax_rate_for_city(&self.city, 0);
+            if self
+                .city
+                .recalculate_mayors_house_stats(tax_rate, &mut self.pe_process_crt)
+            {
+                self.queue_disaster_extra_sounds(PlacementSound::Cheers, 1);
+            }
         }
         let building = self.city.building_at(x, y);
         let entry_seed = self.pe_process_crt.seed();

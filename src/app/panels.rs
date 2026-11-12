@@ -57,13 +57,19 @@ impl ViewerState {
             [0.0, 0.0, 0.0, 1.0],
             depth + 0.4,
         );
-        push_dialog_button(
-            solids,
-            city_info_close_rect(rect),
-            "Close",
-            false,
-            depth + 0.2,
-        );
+        if !matches!(dialog, CityInfoDialog::StadiumTeam { .. }) {
+            push_dialog_button(
+                solids,
+                city_info_close_rect(rect),
+                if matches!(dialog, CityInfoDialog::TunnelQuote { .. }) {
+                    "Cancel"
+                } else {
+                    "Close"
+                },
+                false,
+                depth + 0.2,
+            );
+        }
 
         match dialog {
             CityInfoDialog::Map => {
@@ -102,6 +108,34 @@ impl ViewerState {
             CityInfoDialog::Query { x, y } => {
                 self.push_query_panel(rect, solids, depth + 1.0, x, y)
             }
+            CityInfoDialog::TunnelQuote { cost, .. } => {
+                push_dialog_button(
+                    solids,
+                    road_bridge_choice_rect(rect, 0),
+                    &format!("Build tunnel for ${cost}"),
+                    false,
+                    depth + 0.2,
+                );
+            }
+            CityInfoDialog::StadiumTeam { available, .. } => {
+                for team in 0..5 {
+                    if available & (1 << team) != 0 {
+                        let fallback = format!("Team {}", team + 1);
+                        let label = self
+                            .city
+                            .label_at(0xfb + team)
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or(&fallback);
+                        push_dialog_button(
+                            solids,
+                            stadium_team_choice_rect(rect, team),
+                            label,
+                            false,
+                            depth + 0.2,
+                        );
+                    }
+                }
+            }
             CityInfoDialog::RoadBridge { .. } => unreachable!("road bridge chooser drawn above"),
             CityInfoDialog::RailBridge { .. } => unreachable!("rail bridge chooser drawn above"),
             CityInfoDialog::PowerBridge { .. } => unreachable!("power bridge chooser drawn above"),
@@ -116,7 +150,7 @@ impl ViewerState {
         rect: FloatRect,
         solids: &mut Vec<UiSolid>,
         depth: f32,
-        candidate: PeHighwayWaterBridgeCandidate,
+        candidate: HighwayWaterBridgeCandidate,
     ) {
         push_ui_rect(solids, rect, [0.64, 0.64, 0.64, 1.0], depth);
         push_ui_bevel(solids, rect, 3.0, false, depth + 0.1);
@@ -1164,7 +1198,7 @@ impl ViewerState {
         let services =
             ServiceStatus::for_city_with_entry_seed(&self.city, self.pe_process_crt.seed());
         let active_disaster_tiles = active_disaster_tiles_for_city(&self.city).len();
-        let available_rewards = self.city.rewards_available_mask();
+        let available_rewards = self.active_reward_mask();
         let pe_story = if edition == NewspaperEdition::Founding {
             None
         } else {

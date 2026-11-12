@@ -7,16 +7,17 @@
 
 use super::{
     AppMode, CITY_HEIGHT, CITY_WIDTH, City, DISASTER_SPREAD_MAX_TILES_PER_MONTH, DisasterKind,
-    EngineFidelity, MISC_CURRENT_DISASTER_TYPE_OFFSET, MISC_DISASTER_ACTIVE_OFFSET, PlacementSound,
-    ViewerState, XTHG_FIRST_USABLE_SLOT, disaster_kind_misc_type, disaster_spread_offsets,
-    ensure_budget_misc_defaults_before_extension, is_disaster_text_overlay, is_water_terrain,
-    next_disaster_marker, offset_city_tile, pe_aircrash_tick_city_with_lfsr,
-    pe_destroy_building_footprint, pe_disaster_overlay_tick_city_with_rng,
-    pe_disaster_xthg_tick_slots_in_order, pe_earthquake_shake_delta,
-    pe_explosion_tick_city_with_lfsr, pe_fb_overlay_scan_due, pe_fire_overlay_scan_due,
-    pe_flood_destroy_tile_with_crt, pe_flood_overlay_scan_due, pe_hurricane_wind_tick_with_rng,
-    pe_misc_mirror_storage_active, pe_monster_tick_city_with_rng, pe_riot_overlay_scan_due,
-    pe_tornado_tick_city_with_rng, persist_pe_city_mode_misc, xthg_proxy_for_slot,
+    EngineFidelity, MISC_CURRENT_DISASTER_TYPE_OFFSET, MISC_DISASTER_ACTIVE_OFFSET,
+    POLICE_STATION_BUILDING_ID, PlacementSound, ViewerState, XTHG_FIRST_USABLE_SLOT,
+    disaster_kind_misc_type, disaster_spread_offsets, ensure_budget_misc_defaults_before_extension,
+    is_disaster_text_overlay, is_water_terrain, next_disaster_marker, offset_city_tile,
+    pe_aircrash_tick_city_with_lfsr, pe_destroy_building_footprint,
+    pe_disaster_overlay_tick_city_with_rng, pe_disaster_xthg_tick_slots_in_order,
+    pe_earthquake_shake_delta, pe_explosion_tick_city_with_lfsr, pe_fb_overlay_scan_due,
+    pe_fire_overlay_scan_due, pe_flood_destroy_tile_with_crt, pe_flood_overlay_scan_due,
+    pe_hurricane_wind_tick_with_rng, pe_misc_mirror_storage_active, pe_monster_tick_city_with_rng,
+    pe_riot_overlay_scan_due, pe_tornado_tick_city_with_rng, persist_pe_city_mode_misc,
+    xthg_proxy_for_slot,
 };
 #[cfg(test)]
 use super::{DISASTER_DAMAGE_MAX_TILES_PER_MONTH, active_disaster_tiles_for_city};
@@ -379,17 +380,30 @@ impl ViewerState {
     }
 
     pub(super) fn tick_pe_disaster_xthg_actors_in_slot_order(&mut self) -> usize {
-        let (view_x, view_y) = self.disaster_target_tile();
+        // PE 0x45096c..0x4509b5 rolls the ambient sound gates before slot 1.
+        // The shared CRT advances even when effects playback is disabled.
+        if self.city.pe_attitude_score_at(0) as i32 > 35
+            && self.pe_process_crt.random_u15() & 0xff == 0
+        {
+            self.queue_disaster_extra_sounds(PlacementSound::Horns, 1);
+        }
+        if self.city.pe_dw_tile_count[POLICE_STATION_BUILDING_ID as usize] != 0
+            && self.city.pe_attitude_score_at(3) as i32 > 40
+            && self.pe_process_crt.random_u15() & 0xff == 0
+        {
+            self.queue_disaster_extra_sounds(PlacementSound::Police, 1);
+        }
+
         let (aircraft, monster, tornado, explosion, maxis_man_changed, train_changed) =
             pe_disaster_xthg_tick_slots_in_order(
                 &mut self.win95_overlay_sim,
                 &mut self.city,
-                view_x.min(255) as u8,
-                view_y.min(255) as u8,
                 &mut self.pe_process_crt,
                 &mut self.pe_process_lfsr,
                 &mut self.pe_process_game_rand,
             );
+        let train_sounds = self.win95_overlay_sim.take_train_sfx_plays();
+        self.queue_disaster_extra_sounds(PlacementSound::Train, train_sounds);
         if aircraft.mayday_sounds > 0 {
             self.queue_disaster_extra_sounds(PlacementSound::Mayday, aircraft.mayday_sounds);
         }
@@ -400,11 +414,7 @@ impl ViewerState {
             // Win95 `0x401096(0x1f8)` when kind-6 lane/`+1` is 0.
             self.queue_disaster_extra_sounds(PlacementSound::Explode, explosion.explode_sounds);
         }
-        if let Some(tile) = explosion.auto_goto_tile
-            && self.auto_goto_enabled
-        {
-            self.pending_disaster_auto_goto = Some(tile);
-        }
+        self.publish_pe_explosion_point(explosion.trigger_point);
         let disaster_changed = aircraft.changed()
             + monster.changed()
             + tornado.changed()
@@ -430,11 +440,7 @@ impl ViewerState {
             // Win95 `0x401096(0x1f8)` when kind-6 lane/`+1` is 0.
             self.queue_disaster_extra_sounds(PlacementSound::Explode, stats.explode_sounds);
         }
-        if let Some(tile) = stats.auto_goto_tile
-            && self.auto_goto_enabled
-        {
-            self.pending_disaster_auto_goto = Some(tile);
-        }
+        self.publish_pe_explosion_point(stats.trigger_point);
         let changed = stats.changed();
         if changed > 0 && !self.city.has_active_disaster() {
             self.persist_cleared_disaster_misc();
@@ -443,6 +449,15 @@ impl ViewerState {
             self.city.mark_all_dirty();
         }
         changed
+    }
+
+    fn publish_pe_explosion_point(&mut self, point: Option<(usize, usize)>) {
+        if let Some((x, y)) = point {
+            self.pe_idle_scheduler.pending_disaster_point = Some((x as i16, y as i16));
+            if self.auto_goto_enabled {
+                self.pending_disaster_auto_goto = Some((x, y));
+            }
+        }
     }
 
     pub(super) fn tick_pe_tornado_actors(&mut self) -> usize {
@@ -474,11 +489,11 @@ impl ViewerState {
     }
 
     pub(super) fn tick_pe_monster_actors(&mut self) -> usize {
-        let (view_x, view_y) = self.disaster_target_tile();
+        let (center_x, center_y) = self.city.pe_city_center();
         let stats = pe_monster_tick_city_with_rng(
             &mut self.city,
-            view_x.min(255) as u8,
-            view_y.min(255) as u8,
+            center_x,
+            center_y,
             &mut self.pe_process_crt,
             &mut self.pe_process_lfsr,
         );

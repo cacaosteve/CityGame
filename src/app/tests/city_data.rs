@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn pe_growth_counters_round_trip_mid_month_on_both_layouts() {
+    let initial = [18, 1, 2, 3, 4, 5, 6, 7];
+    let mut expected = initial;
+    expected[2] += crate::app::calendar::pe_growth_aggregate_weight(1) as u32;
+    for filename in ["growth-roundtrip.sc2", "growth-roundtrip.city"] {
+        let path = std::env::temp_dir().join(format!("{}-{filename}", std::process::id()));
+        let mut city = blank_city_layout_fixture(filename, "Partial month");
+        city.set_misc_u32_values(MISC_PE_GROWTH_AGGREGATE_OFFSET, &initial);
+        city.save(&path).unwrap();
+
+        let mut state = test_state(City::new_blank("unused.sc2", "Empty").unwrap());
+        state.load_city(&path, (800, 600), 1.0).unwrap();
+        assert_eq!(
+            *state.pe_growth_aggregate.slots(),
+            initial.map(|value| value as i32)
+        );
+        state.pe_growth_aggregate.add_normal_candidate(2, 1);
+        state.refresh_live_misc_current_values();
+        state.sim_calendar_day23_stats_dialogs();
+        let snapshot = state.city_save_snapshot((800, 600), 1.0);
+        assert_eq!(
+            snapshot.misc_u32_values(MISC_PE_GROWTH_AGGREGATE_OFFSET, 8),
+            expected
+        );
+        assert_eq!(
+            state
+                .city
+                .misc_u32_values(MISC_PE_GROWTH_AGGREGATE_OFFSET, 8),
+            initial
+        );
+        state.save_city(&path, (800, 600), 1.0).unwrap();
+
+        state.load_city(&path, (800, 600), 1.0).unwrap();
+        assert_eq!(
+            *state.pe_growth_aggregate.slots(),
+            expected.map(|value| value as i32)
+        );
+        state.sim_calendar_day0_budget_and_date_at(1900, 2, 0);
+        assert_eq!(*state.pe_growth_aggregate.slots(), [0; 8]);
+        assert_eq!(
+            state
+                .city_save_snapshot((800, 600), 1.0)
+                .misc_u32_values(MISC_PE_GROWTH_AGGREGATE_OFFSET, 8),
+            [0; 8]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn mac_engine_win_building_census_uses_saved_values_and_survives_edits() {
     let path = std::env::temp_dir().join(format!(
         "citygame-mac-win-buildings-{}.sc2",
@@ -25,16 +75,17 @@ fn mac_engine_win_building_census_uses_saved_values_and_survives_edits() {
     state.city.set_building(20, 20, 0xdd);
     pe_place_tile_441f00(&mut state.city, 21, 20, 0xee);
     assert!(state.city.mac_mark_military_zone_candidate(22, 20));
-    assert_eq!(state.city.mac_xbld_tile_count(0), 57);
+    assert!(state.city.mac_mark_military_zone_candidate(22, 20));
+    assert_eq!(state.city.mac_xbld_tile_count(0), 56);
     assert_eq!(state.city.mac_xbld_tile_count(0xdd), 21);
     assert_eq!(state.city.mac_xbld_tile_count(0xee), 31);
-    assert_eq!(state.city.mac_zone7_census_count(0), 6);
+    assert_eq!(state.city.mac_zone7_census_count(0), 7);
     state.city.save(&path).unwrap();
     state.load_city(&path, (800, 600), 1.0).unwrap();
-    assert_eq!(state.city.mac_xbld_tile_count(0), 57);
+    assert_eq!(state.city.mac_xbld_tile_count(0), 56);
     assert_eq!(state.city.mac_xbld_tile_count(0xdd), 21);
     assert_eq!(state.city.mac_xbld_tile_count(0xee), 31);
-    assert_eq!(state.city.mac_zone7_census_count(0), 6);
+    assert_eq!(state.city.mac_zone7_census_count(0), 7);
     let _ = std::fs::remove_file(path);
 }
 
@@ -355,15 +406,8 @@ fn win95_ui_extensions_preserve_mac_state_in_mac_layout_city() {
     assert_eq!(state.engine_fidelity, EngineFidelity::Win95);
     assert!(!state.no_disasters_enabled);
 
-    ensure_newspaper_list_misc_defaults_before_extension(
-        &mut state.city,
-        Some(&mut state.pe_process_crt),
-    );
-    ensure_default_city_options_for_engine(
-        &mut state.city,
-        EngineFidelity::Win95,
-        Some(&mut state.pe_process_crt),
-    );
+    ensure_newspaper_list_misc_defaults_before_extension(&mut state.city);
+    ensure_default_city_options_for_engine(&mut state.city, EngineFidelity::Win95);
 
     // These PE controls may change for the current viewer session, but their
     // Win95 MISC persistence must not overwrite the Mac CODE 4 state vector.
@@ -392,21 +436,12 @@ fn win95_ui_extensions_preserve_mac_state_in_mac_layout_city() {
     state.toggle_edit_map_option(EDIT_MAP_COAST_MISC_OFFSET);
     state.toggle_edit_map_option(EDIT_MAP_RIVER_MISC_OFFSET);
 
-    assert!(!set_city_newspaper_subscription_enabled_with_crt(
+    assert!(!set_city_newspaper_subscription_enabled(
         &mut state.city,
-        true,
-        Some(&mut state.pe_process_crt),
+        true
     ));
-    assert!(!set_city_newspaper_extra_enabled_with_crt(
-        &mut state.city,
-        false,
-        Some(&mut state.pe_process_crt),
-    ));
-    assert!(!set_city_newspaper_choice_with_crt(
-        &mut state.city,
-        5,
-        Some(&mut state.pe_process_crt),
-    ));
+    assert!(!set_city_newspaper_extra_enabled(&mut state.city, false));
+    assert!(!set_city_newspaper_choice(&mut state.city, 5));
     assert_eq!(newspaper_choice_for_city(&state.city), 0);
     state.city.queue_pe_newspaper_story(3, 0);
     assert!(!state.city.take_pe_newspaper_extra_popup_pending());
@@ -567,7 +602,7 @@ fn mac_fidelity_skips_win95_misc_defaults_that_overlap_native_state() {
         NEWSPAPER_STORY_LIST_MISC_DWORDS,
     );
 
-    ensure_default_city_options_for_engine(&mut city, EngineFidelity::Mac68k, None);
+    ensure_default_city_options_for_engine(&mut city, EngineFidelity::Mac68k);
     assert_eq!(
         city.misc_u32_at(NO_DISASTERS_MISC_OFFSET),
         Some(0xA000_0001 | NO_DISASTERS_MISC_OFFSET as u32),
@@ -602,8 +637,22 @@ fn mac_fidelity_skips_win95_misc_defaults_that_overlap_native_state() {
     state.open_city_info_dialog(CityInfoDialog::Newspaper(NewspaperEdition::Extra));
     assert!(!state.no_disasters_enabled);
     assert_eq!(state.city.misc_u32_at(NO_DISASTERS_MISC_OFFSET), Some(0));
+    let expected_after_toggle = |offset, value| {
+        if matches!(
+            offset,
+            MISC_NEWSPAPER_EXTRA_OFFSET | MISC_NEWSPAPER_SUBSCRIPTION_OFFSET
+        ) {
+            Some(0)
+        } else {
+            value
+        }
+    };
     for &(offset, value) in &original_option_slots {
-        assert_eq!(state.city.misc_u32_at(offset), value, "MISC {offset:#x}");
+        assert_eq!(
+            state.city.misc_u32_at(offset),
+            expected_after_toggle(offset, value),
+            "MISC {offset:#x}"
+        );
     }
     assert!(state.city_info_dialog.is_none());
 
@@ -612,7 +661,11 @@ fn mac_fidelity_skips_win95_misc_defaults_that_overlap_native_state() {
     let loaded = City::load(path).expect("reload preserved Mac MISC");
     assert_eq!(loaded.misc_u32_at(NO_DISASTERS_MISC_OFFSET), Some(0));
     for &(offset, value) in &original_option_slots {
-        assert_eq!(loaded.misc_u32_at(offset), value, "MISC {offset:#x}");
+        assert_eq!(
+            loaded.misc_u32_at(offset),
+            expected_after_toggle(offset, value),
+            "MISC {offset:#x}"
+        );
     }
     assert_eq!(
         loaded.misc_u32_values(MISC_NEWSPAPER_LIST_OFFSET, NEWSPAPER_LIST_MISC_DWORDS),
@@ -891,9 +944,8 @@ fn simulation_day22_increments_pe_city_garbage() {
     let population = live_population_stats_for_city(&state.city);
     let increment = pe_zone_pops_scaled_population(population);
     assert_eq!(increment, 12 + 9 * 64 + 4 * 36);
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
 
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert_eq!(state.city.misc_u32_at(MISC_GARBAGE_OFFSET), Some(increment));
     assert_eq!(state.city.pe_w_city_garbage, increment);
     assert_eq!(state.city.pe_dw_city_population(), increment);
@@ -904,7 +956,7 @@ fn simulation_day22_increments_pe_city_garbage() {
     );
     assert_eq!(state.city.pe_eq_leftover_births(), 0);
 
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert_eq!(
         state.city.misc_u32_at(MISC_GARBAGE_OFFSET),
         Some(increment.saturating_mul(2)),
@@ -1045,7 +1097,7 @@ fn pe_opinion_poll_weights_match_win95_layout() {
         20,  // *0x4cc484
         30,  // *0x4cc48c
         40,  // *0x4cc488 seed
-        100, // school funding → ×3
+        100, // residential tax factor → ×3
         12,  // unemployment
         25,  // crime ≤100 → 100-25
         10,  // pollution ≤70 → 70-10
@@ -1269,10 +1321,9 @@ fn pe_sim_mutable_inputs_use_misc_weather_slots() {
     city.set_misc_u32_at(MISC_HUMID_OFFSET, 0x1e);
     assert_eq!(pe_power_c8_random_modulus(&city), 4);
     assert_eq!(pe_power_cc_random_span(&city), 7);
+    city.set_altitude(10, 10, 0, 0);
     assert_eq!(pe_power_c8_pe_units(&city, 10, 10, 3), 1);
-    let mut land = vec![0_u8; CITY_TILES];
-    land[10 * CITY_HEIGHT + 10] = 20;
-    city.sync_land_value_from_slice(&land);
+    city.set_altitude(10, 10, 20, 0);
     assert_eq!(pe_power_c8_pe_units(&city, 10, 10, 3), (20 + 3) / 2);
     assert_eq!(pe_power_cc_pe_units(&city, 11), 9);
 }
@@ -1399,10 +1450,10 @@ fn win95_cache_publishers_preserve_mac_misc_when_running_a_mac_city() {
         MISC_RESIDENTIAL_POPULATION_OFFSET,
         MISC_REWARDS_AVAILABLE_OFFSET,
         MISC_BUILDING_TILE_COUNTS_OFFSET,
-        MISC_POPULATED_TILE_COUNT_OFFSET,
-        MISC_RESIDENTIAL_TILE_COUNT_OFFSET,
-        MISC_COMMERCIAL_TILE_COUNT_OFFSET,
-        MISC_INDUSTRIAL_TILE_COUNT_OFFSET,
+        MISC_PE_GROWTH_AGGREGATE_OFFSET,
+        MISC_PE_GROWTH_AGGREGATE_OFFSET + 8,
+        MISC_PE_GROWTH_AGGREGATE_OFFSET + 16,
+        MISC_PE_GROWTH_AGGREGATE_OFFSET + 24,
         MISC_UNEMPLOYMENT_OFFSET,
         MISC_MILITARY_TILE_COUNTS_OFFSET,
         MISC_ARCOLOGY_POPULATION_OFFSET,
@@ -2422,5 +2473,210 @@ fn mac_city_open_restores_cohorts_only_for_selected_win95_engine() {
             assert_eq!(state.city.pe_dw_city_population(), 0);
         }
     }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn city_open_replays_native_service_order_for_both_save_layouts() {
+    let cells = [
+        (40, 40, 0xcc, 0x88),
+        (41, 40, 0xdc, 0xa0),
+        (42, 40, 0x70, 0xa0),
+        (43, 40, 0x71, 0x20),
+        (70, 70, 0xdc, 0x78),
+        (71, 70, 0x72, 0x30),
+        (72, 70, 0xeb, 0x10),
+    ];
+    let native = [0xc0, 0xf0, 0xf0, 0x20, 0x20, 0x20, 0x10];
+    let plane = |city: &City| cells.map(|(x, y, _, _)| city.tile_bits_at(x, y).unwrap().raw_bits());
+    for extension in ["sc2", "city"] {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-open-services-{}.{}",
+            std::process::id(),
+            extension,
+        ));
+        let mut city = blank_city_layout_fixture(&path, "Open services");
+        for (x, y, building, bits) in cells {
+            city.set_building(x, y, building);
+            city.set_tile_bits(x, y, TileBits::new(bits));
+        }
+        city.set_zone(8, 8, ZONE_COMMERCIAL_LIGHT);
+        city.set_mac_state_misc_u32_at(0x0e40, 0);
+        city.set_mac_state_misc_u32_at(0x60, 150);
+        city.set_mac_state_misc_u32_at(0x64, 10);
+        city.set_mac_state_misc_u32_at(0x68, 2);
+        city.set_mac_state_misc_u32_at(0x6c, 4);
+        city.set_mac_state_misc_u32_at(0x1060, 37);
+        city.set_mac_state_misc_u32_at(0x1064, 53);
+        city.set_traffic_density(20, 20, 0x37);
+        for offset in [
+            MISC_BUS_PASSENGERS_OFFSET,
+            MISC_RAIL_PASSENGERS_OFFSET,
+            MISC_SUBWAY_PASSENGERS_OFFSET,
+        ] {
+            city.set_misc_u32_at(offset, 33);
+        }
+        ensure_default_city_options(&mut city);
+        city.save(&path).unwrap();
+        let before = City::load(&path).unwrap();
+        let traffic = before.traffic_density_slice();
+
+        for engine in [EngineFidelity::Win95, EngineFidelity::Mac68k] {
+            let mut state =
+                test_state(City::new_blank("/tmp/open-service-empty.sc2", "Empty").unwrap());
+            state.engine_fidelity = engine;
+            state.pe_process_crt = Win95CrtRand::new(1);
+            state.load_city(&path, (800, 600), 1.0).unwrap();
+            assert_eq!(state.city.traffic_density_slice(), traffic);
+            if engine.uses_win95() {
+                assert_eq!(plane(&state.city), native, "{extension}");
+                // The normal pre-open reset advances seed 1 by 20
+                // draws before the native service helper rolls hydro.
+                assert_eq!(state.city.pe_power_used_percent(), 40);
+                assert_eq!(state.city.pe_water_coverage_percent(), 100);
+                assert_eq!(state.city.pe_w_sewer_bonus(), 0);
+                assert_eq!(state.city.pe_w_city_developed_tiles, 8);
+                assert_eq!(state.pe_process_crt.seed(), 4_270_317_332);
+                assert_eq!(state.trip_bus_passengers, 0);
+                assert_eq!(state.trip_rail_passengers, 0);
+                assert_eq!(state.trip_subway_passengers, 0);
+                for (x, y) in [(20, 20), (21, 20), (35, 35), (36, 35), (4, 4)] {
+                    assert_eq!(state.city.tile_bits_at(x, y).unwrap().raw_bits(), 0x08);
+                }
+                let date = state.city.saved_date().unwrap();
+                for day in 1..=2 {
+                    state.handle_simulation_day_advanced(date.year, date.month, day);
+                    assert_eq!(state.city.city_age_days(), Some(u32::from(day)));
+                    assert_eq!(state.pe_process_crt.seed(), 3_104_592_263);
+                    assert_eq!(state.city.pe_power_used_percent(), 18);
+                    assert_eq!(state.city.pe_water_coverage_percent(), 100);
+                }
+                assert_eq!(state.city.pe_dw_city_land_value, 523);
+                assert_eq!(state.city.pe_dw_city_crime, 0);
+                assert_eq!(state.city.pe_dw_city_pollution, 6);
+                // Match the original's compact, x-major plane fingerprints.
+                let fingerprint = |plane: &[u8], stride| {
+                    (0..128)
+                        .step_by(stride)
+                        .flat_map(|x| (0..128).step_by(stride).map(move |y| (x, y)))
+                        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, (x, y)| {
+                            (hash ^ u64::from(plane[x * 128 + y]))
+                                .wrapping_mul(0x0000_0100_0000_01b3)
+                        })
+                };
+                for (plane, expected) in [
+                    (state.city.land_value_slice(), 0x3b8f_51b8_a425_8abc),
+                    (state.city.crime_density_slice(), 0xb93a_0c83_ce3b_6325),
+                    (state.city.pollution_density_slice(), 0x6dbd_83dc_c3db_dfab),
+                ] {
+                    assert_eq!(fingerprint(plane.unwrap(), 2), expected, "{extension}");
+                }
+                let xbit_fingerprint = |city: &City| {
+                    let xbit: Vec<_> = (0..128)
+                        .flat_map(|x| (0..128).map(move |y| (x, y)))
+                        .map(|(x, y)| city.tile_bits_at(x, y).unwrap().raw_bits())
+                        .collect();
+                    fingerprint(&xbit, 1)
+                };
+                assert_eq!(
+                    xbit_fingerprint(&state.city),
+                    0xd351_cb84_c571_ba9d,
+                    "{extension}"
+                );
+                assert_eq!(state.city.traffic_density_slice(), traffic);
+                for day in 3..=20 {
+                    state.handle_simulation_day_advanced(date.year, date.month, day);
+                    assert_eq!(state.city.city_age_days(), Some(u32::from(day)));
+                    assert_eq!(state.pe_process_crt.seed(), 3_104_592_263);
+                    assert_eq!(
+                        state.city.traffic_density_at(20, 20),
+                        Some(if day < 19 { 55 } else { 42 })
+                    );
+                }
+                assert_eq!(state.city.pe_traffic_count(), 42);
+                assert_eq!(
+                    fingerprint(state.city.traffic_density_slice().unwrap(), 2),
+                    0x4c8a_7ccb_df35_5e6f
+                );
+                assert_eq!(
+                    xbit_fingerprint(&state.city),
+                    0xbe33_72e7_4b53_16f5,
+                    "{extension}"
+                );
+                // Compare the retail day-21 weather output with its MIDI player
+                // already active. The full post-weather EQ/LE state is separate.
+                state.handle_simulation_day_advanced(date.year, date.month, 21);
+                let weather = weather_state_for_city(&state.city, date.month);
+                assert_eq!(
+                    (weather.heat, weather.wind, weather.humidity, weather.trend),
+                    (157, 20, 1, 1),
+                    "{extension}"
+                );
+            } else {
+                assert_eq!(plane(&state.city), plane(&before));
+                assert_eq!(state.city.mac_power_service_summary(), 37);
+                assert_eq!(state.city.mac_water_service_summary(), 53);
+                assert_eq!(state.city.tile_bits_at(20, 20).unwrap().raw_bits(), 0);
+            }
+        }
+
+        let startup = ViewerState::load_default_from_path_with_process_rng(
+            path.clone(),
+            Some(Win95CrtRand::new(1)),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(startup.city.traffic_density_slice(), traffic);
+        if startup.engine_fidelity.uses_win95() {
+            assert_eq!(plane(&startup.city), native);
+            assert_eq!(startup.pe_process_crt.seed(), 2_745_024);
+        } else {
+            assert_eq!(plane(&startup.city), plane(&before));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn win95_city_open_water_uses_the_saved_selector_before_display_rotation() {
+    let path =
+        std::env::temp_dir().join(format!("citygame-open-rotated-{}.sc2", std::process::id()));
+    let mut city = blank_city_layout_fixture(&path, "Rotated open");
+    city.set_mac_state_misc_u32_at(0x0e40, 0);
+    city.set_mac_state_misc_u32_at(0x68, 2);
+    city.saved_rotation = 1;
+    let cells = [(40, 42), (41, 42), (42, 42), (42, 41), (42, 40)];
+    for (index, (x, y)) in cells.into_iter().enumerate() {
+        city.set_building(x, y, if matches!(index, 0 | 4) { 0xdc } else { 0x70 });
+        city.set_tile_bits(x, y, TileBits::new(0xa0));
+    }
+    city.set_building(39, 42, 0xc6);
+    city.set_tile_bits(39, 42, TileBits::new(0x80));
+    city.save(&path).unwrap();
+
+    let mut state = test_state(City::new_blank("/tmp/open-rotated-empty.sc2", "Empty").unwrap());
+    state.load_city(&path, (800, 600), 1.0).unwrap();
+    assert_eq!(state.city.pe_w_city_rotation, 1);
+    assert_eq!(state.city.rotation(), 0);
+    assert_eq!(
+        cells.map(|(x, y)| state.city.tile_bits_at(x, y).unwrap().raw_bits()),
+        [0xf0, 0xf0, 0xf0, 0xe0, 0xf0],
+    );
+    state.rotate_view(1);
+    assert_eq!(state.city.pe_w_city_rotation, 2);
+    assert_eq!(state.city.rotation(), 1);
+
+    city.saved_rotation = 0;
+    city.pe_w_city_rotation = 4;
+    city.save(&path).unwrap();
+    state.load_city(&path, (800, 600), 1.0).unwrap();
+    assert_eq!(state.city.pe_w_city_rotation, 4);
+    assert_eq!(
+        cells.map(|(x, y)| state.city.tile_bits_at(x, y).unwrap().raw_bits()),
+        [0xe0; 5],
+    );
+    assert_eq!(state.city.pe_w_sewer_bonus(), 1);
     std::fs::remove_file(path).unwrap();
 }

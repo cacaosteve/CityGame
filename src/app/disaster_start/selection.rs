@@ -25,7 +25,80 @@ pub(in crate::app) fn ambient_disaster_for_month<R: AmbientDisasterRandom>(
     )
 }
 
-/// Live Win95 day-22 path: chance + kind/tile selection advance one process CRT stream.
+pub(super) enum PeDisasterProposal {
+    Queue(DisasterKind, Option<(i16, i16)>),
+    ToxicSpillWithoutTarget,
+}
+
+/// Phase 24 writes a selector and, for selected arms, a signed Point.
+pub(super) fn pe_monthly_disaster_proposal(
+    city: &City,
+    clock: GameClock,
+    crt: &mut Win95CrtRand,
+    lfsr: &mut Win95Lfsr,
+) -> Option<PeDisasterProposal> {
+    if !pe_ambient_disaster_age_ready(city, clock) {
+        return None;
+    }
+    let remainder = pe_ambient_disaster_chance_remainder(crt, city_difficulty_for_city(city))?;
+    let kind = match pe_ambient_weather_disaster_kind(city, remainder) {
+        Some(kind) => kind,
+        None if remainder == 0 => {
+            let kind = ambient_disaster_kind_roll(crt)?;
+            // The live type-4 arm writes X = -1 before looking at XPLT.
+            // The preview's pollution precheck would skip that write.
+            if kind != DisasterKind::ToxicSpill
+                && !ambient_disaster_kind_ready(city, crt, EngineFidelity::Win95, kind)
+            {
+                return None;
+            }
+            kind
+        }
+        None => return None,
+    };
+    let point = match kind {
+        DisasterKind::Hurricane | DisasterKind::Meltdown | DisasterKind::Microwave => None,
+        DisasterKind::ToxicSpill => {
+            let Some((x, y)) =
+                native_toxic_spill_target_tile(city, || usize::from(lfsr.random_mod(10)))
+            else {
+                return Some(PeDisasterProposal::ToxicSpillWithoutTarget);
+            };
+            Some((x as i16, y as i16))
+        }
+        DisasterKind::Rioters
+        | DisasterKind::MassRiot
+        | DisasterKind::Monster
+        | DisasterKind::PollutionAccident => {
+            let offset = if matches!(kind, DisasterKind::Rioters | DisasterKind::MassRiot) {
+                0x10
+            } else {
+                0x0f
+            };
+            let (cx, cy) = land_value_city_center(city);
+            let y = cy as i16 + (crt.random_u16() & 0x1f) as i16 - offset;
+            let x = cx as i16 + (crt.random_u16() & 0x1f) as i16 - offset;
+            Some((x, y))
+        }
+        DisasterKind::Fire
+        | DisasterKind::Flood
+        | DisasterKind::BlizzardFlood
+        | DisasterKind::Earthquake
+        | DisasterKind::Tornado
+        | DisasterKind::AirCrash => {
+            let y = (crt.random_u16() % 0x7e + 1) as i16;
+            let x = (crt.random_u16() % 0x7e + 1) as i16;
+            Some((x, y))
+        }
+        DisasterKind::NopAirCrash
+        | DisasterKind::HelicopterCrash
+        | DisasterKind::Volcano
+        | DisasterKind::Firestorm => return None,
+    };
+    Some(PeDisasterProposal::Queue(kind, point))
+}
+
+/// Preview with a single CRT stream for chance and target selection.
 /// Optional LFSR peeks Win95 air-crash tile placement (`Game_Random` @ `0x45e7d0`).
 pub(in crate::app) fn ambient_disaster_for_month_with_rng<R: AmbientDisasterRandom>(
     city: &City,
@@ -66,15 +139,15 @@ pub(in crate::app) fn ambient_disaster_select_with_remainder<R: AmbientDisasterR
 ) -> Option<(DisasterKind, (usize, usize))> {
     // Mac export_231 @ 0x35932 and PE 0x471ef6 share the weather-first branch:
     // remainder < 0x0F, weather 0x0A+ocean → hurricane type 0x10, weather 0x0B → tornado 0x07.
-    // Mac hurricane writes the type and exits with no tile; Mac tornado places `%0x7E+1`.
+    // Mac hurricane writes the type and exits with no tile. Both tornado arms draw two coordinates.
     if let Some(kind) = pe_ambient_weather_disaster_kind(city, remainder) {
+        let tile = weather_disaster_ambient_target_tile(city, rng, fidelity, kind);
         if fidelity.uses_win95()
             && kind == DisasterKind::Tornado
-            && !pe_xthg_disaster_slot_available(city)
+            && !pe_tornado_constructor_ready(city)
         {
             return None;
         }
-        let tile = weather_disaster_ambient_target_tile(city, rng, fidelity, kind);
         return Some((kind, tile));
     }
     if remainder != 0 {
@@ -175,10 +248,10 @@ pub(in crate::app) fn ambient_disaster_select_with_remainder<R: AmbientDisasterR
         let tile = mac_mod7e_plus_one_ambient_target_tile(city, rng, fidelity);
         let ok = if let Some(lfsr_ref) = lfsr.as_deref() {
             let mut peek = *lfsr_ref;
-            pe_flood_source_tile(city, tile.0, tile.1).is_some()
+            pe_flood_source_tile(city, tile.0 as isize, tile.1 as isize).is_some()
                 || !pe_flood_overlays_with_lfsr(city, tile.0, tile.1, &mut peek).is_empty()
         } else {
-            pe_flood_source_tile(city, tile.0, tile.1).is_some()
+            pe_flood_source_tile(city, tile.0 as isize, tile.1 as isize).is_some()
                 || !pe_flood_overlays(city, tile.0, tile.1).is_empty()
         };
         if !ok {
@@ -187,10 +260,10 @@ pub(in crate::app) fn ambient_disaster_select_with_remainder<R: AmbientDisasterR
         return Some((kind, tile));
     }
     if kind == DisasterKind::Tornado {
-        if fidelity.uses_win95() && !pe_xthg_disaster_slot_available(city) {
+        let tile = tornado_ambient_target_tile(rng, fidelity);
+        if fidelity.uses_win95() && !pe_tornado_constructor_ready(city) {
             return None;
         }
-        let tile = mac_mod7e_plus_one_ambient_target_tile(city, rng, fidelity);
         return Some((kind, tile));
     }
     if kind == DisasterKind::Earthquake {
@@ -461,6 +534,14 @@ pub(in crate::app) fn pe_meltdown_overlays_with_rng(
     rng: &mut Win95CrtRand,
     lfsr: &mut Win95Lfsr,
 ) -> std::collections::HashMap<(usize, usize), u8> {
+    // Native 0x45f380 adjusts the footprint's low-X/high-Y corner by (+1, -1).
+    let footprint = pe_destroy_building_footprint(city, origin_x, origin_y);
+    let (origin_x, origin_y) = if footprint.len() > 1 {
+        // The footprint is in row order from min X/Y to max X/Y.
+        (footprint[0].0 + 1, footprint[footprint.len() - 1].1 - 1)
+    } else {
+        (origin_x, origin_y)
+    };
     let mut tiles = pe_meltdown_apply_plant_destroy(city, Some(rng), origin_x, origin_y);
     for (tile, marker) in pe_meltdown_scatter_overlays_with_rng(city, origin_x, origin_y, rng, lfsr)
     {
@@ -520,7 +601,7 @@ pub(in crate::app) fn pe_meltdown_scatter_overlays_with_rng(
                 }
             } else {
                 // PE @ `0x45f411`: DestroyStructure(0,0), then `rand&1` water `0xfb` / dry PlaceTile `5`.
-                pe_flood_destroy_tile_with_crt(city, rng, x, y);
+                pe_flood_destroy_tile_mode_maybe_crt(city, Some(rng), x, y, false);
                 if rng.random_u16() & 1 != 0 {
                     if city
                         .tile_bits_at(x, y)
@@ -530,7 +611,7 @@ pub(in crate::app) fn pe_meltdown_scatter_overlays_with_rng(
                         city.set_text_overlay(x, y, 0xfb);
                         tiles.insert((x, y), 0xfb);
                     } else {
-                        // PE @ `0x45f471`: `push 5; call 0x40178f` → PlaceTile `0x441f00`.
+                        // PE @ `0x45f47d`: `push 5; call 0x40178f` → PlaceTile `0x441f00`.
                         pe_place_tile_441f00(city, x, y, 5);
                     }
                 }
@@ -808,25 +889,32 @@ pub(in crate::app) fn pe_xplt_microsim64_value(values: &[u8], mx: usize, my: usi
     cell
 }
 
-/// Win95 type-4 scan @ `0x471fe5`: hottest XPLT `>= 0x96` that passes `rand%10==0`,
-/// jittered `rand%10 + cell*2 - 5`. Scan is mx-major (`0x4ca828` column, then my).
-/// Last pick must land in `0..0x80`.
+/// Both native tables traverse the first coordinate outside the second.
+pub(in crate::app) fn native_toxic_spill_target_tile(
+    city: &City,
+    random_below_ten: impl FnMut() -> usize,
+) -> Option<(usize, usize)> {
+    toxic_spill_target_tile_scan(city, ToxicSpillScanOrder::ColumnMajor, random_below_ten)
+}
+
+/// Preview of the Win95 column-major scan. The live proposal runs the same
+/// scan with the process LFSR (`0x401cad(10)` at the gate and both jitters).
 pub(in crate::app) fn pe_toxic_spill_target_tile<R: AmbientDisasterRandom>(
     city: &City,
     rng: &mut R,
 ) -> Option<(usize, usize)> {
-    toxic_spill_target_tile_scan(city, rng, ToxicSpillScanOrder::ColumnMajor)
+    toxic_spill_target_tile_scan(city, ToxicSpillScanOrder::ColumnMajor, || {
+        rng.random_range(10)
+    })
 }
 
-/// Mac `export_231` type-4 arm @ `0x35ad6`: the XPLT row-pointer table
-/// (`A5-0x17c0` / `ffffe840`) is indexed by `my` in the outer loop (`D3`) with `mx` as
-/// the inner offset (`D4`) — row-major / my-major. Its bound-10 draws use the signed
-/// QuickDraw `_Random` result through `AmbientDisasterRandom::random_range`.
+/// Mac's native selector-4 scan also traverses X outside Y. This helper uses
+/// the caller-supplied QuickDraw-compatible RNG used by offline previews.
 pub(in crate::app) fn mac_toxic_spill_target_tile<R: AmbientDisasterRandom>(
     city: &City,
     rng: &mut R,
 ) -> Option<(usize, usize)> {
-    toxic_spill_target_tile_scan(city, rng, ToxicSpillScanOrder::RowMajor)
+    toxic_spill_target_tile_scan(city, ToxicSpillScanOrder::ColumnMajor, || rng.random_range(10))
 }
 
 pub(in crate::app) fn toxic_spill_target_tile_for_engine<R: AmbientDisasterRandom>(
@@ -843,16 +931,14 @@ pub(in crate::app) fn toxic_spill_target_tile_for_engine<R: AmbientDisasterRando
 
 #[derive(Clone, Copy)]
 enum ToxicSpillScanOrder {
-    /// PE: outer `mx`, inner `my`.
+    /// Native PE and Mac CODE 7: outer `mx` (X), inner `my` (Y).
     ColumnMajor,
-    /// Mac: outer `my` (row pointer), inner `mx`.
-    RowMajor,
 }
 
-fn toxic_spill_target_tile_scan<R: AmbientDisasterRandom>(
+fn toxic_spill_target_tile_scan(
     city: &City,
-    rng: &mut R,
     order: ToxicSpillScanOrder,
+    mut random_below_ten: impl FnMut() -> usize,
 ) -> Option<(usize, usize)> {
     let values = city.pollution_density_slice()?;
     if values.len() != CITY_TILES {
@@ -860,33 +946,24 @@ fn toxic_spill_target_tile_scan<R: AmbientDisasterRandom>(
     }
     let mut best = 0_u8;
     let mut last = None;
-    let visit =
-        |mx: usize, my: usize, best: &mut u8, last: &mut Option<(isize, isize)>, rng: &mut R| {
-            let cell = pe_xplt_microsim64_value(values, mx, my);
-            if cell < 0x96 || cell <= *best {
-                return;
-            }
-            // This adapter preserves signed QuickDraw modulo for Mac and CRT rand modulo for PE.
-            if rng.random_range(10) != 0 {
-                return;
-            }
-            *best = cell;
-            let x = (mx as isize) * 2 + rng.random_range(10) as isize - 5;
-            let y = (my as isize) * 2 + rng.random_range(10) as isize - 5;
-            *last = Some((x, y));
-        };
+    let mut visit = |mx: usize, my: usize, best: &mut u8, last: &mut Option<(isize, isize)>| {
+        let cell = pe_xplt_microsim64_value(values, mx, my);
+        if cell < 0x96 || cell <= *best {
+            return;
+        }
+        if random_below_ten() != 0 {
+            return;
+        }
+        *best = cell;
+        let x = (mx as isize) * 2 + random_below_ten() as isize - 5;
+        let y = (my as isize) * 2 + random_below_ten() as isize - 5;
+        *last = Some((x, y));
+    };
     match order {
         ToxicSpillScanOrder::ColumnMajor => {
             for mx in 0..CITY_WIDTH / 2 {
                 for my in 0..CITY_HEIGHT / 2 {
-                    visit(mx, my, &mut best, &mut last, rng);
-                }
-            }
-        }
-        ToxicSpillScanOrder::RowMajor => {
-            for my in 0..CITY_HEIGHT / 2 {
-                for mx in 0..CITY_WIDTH / 2 {
-                    visit(mx, my, &mut best, &mut last, rng);
+                    visit(mx, my, &mut best, &mut last);
                 }
             }
         }
@@ -914,6 +991,11 @@ pub(in crate::app) fn ambient_disaster_kind_for_city<R: AmbientDisasterRandom>(
     rng: &mut R,
     fidelity: EngineFidelity,
 ) -> Option<DisasterKind> {
+    let kind = ambient_disaster_kind_roll(rng)?;
+    ambient_disaster_kind_ready(city, rng, fidelity, kind).then_some(kind)
+}
+
+fn ambient_disaster_kind_roll<R: AmbientDisasterRandom>(rng: &mut R) -> Option<DisasterKind> {
     // Mac `export_231` @ `0x35d1c` and PE `rand() % 0x13` share a 19-slot table
     // indexed by disaster type id. Slots `0x00` / `0x05` / `0x0B` / `0x0C` / `0x11`
     // are immediate exits (`0x35d0c` on Mac). Slot `0x12` is Air Crash (Mac @
@@ -941,8 +1023,16 @@ pub(in crate::app) fn ambient_disaster_kind_for_city<R: AmbientDisasterRandom>(
         Some(DisasterKind::AirCrash),
     ];
     debug_assert_eq!(choices.len(), 0x13);
-    let kind = choices[toolbox_random_range(rng, choices.len())]?;
-    let ready = match kind {
+    choices[toolbox_random_range(rng, choices.len())]
+}
+
+fn ambient_disaster_kind_ready<R: AmbientDisasterRandom>(
+    city: &City,
+    rng: &mut R,
+    fidelity: EngineFidelity,
+    kind: DisasterKind,
+) -> bool {
+    match kind {
         DisasterKind::Fire => pe_fire_disaster_ready(city, rng),
         DisasterKind::Flood => pe_flood_disaster_ready(city),
         // Mac type 3 enters at 0x35a7e after the type-D-only comparison and
@@ -982,8 +1072,7 @@ pub(in crate::app) fn ambient_disaster_kind_for_city<R: AmbientDisasterRandom>(
         DisasterKind::AirCrash => aircrash_disaster_ready(city, fidelity),
         DisasterKind::NopAirCrash | DisasterKind::HelicopterCrash => false,
         DisasterKind::Volcano | DisasterKind::Firestorm => false,
-    };
-    ready.then_some(kind)
+    }
 }
 
 pub(in crate::app) fn ambient_disaster_target_tile<R: AmbientDisasterRandom>(

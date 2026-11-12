@@ -200,16 +200,10 @@ pub(in crate::app) fn mac_budget_decay_extent2_bridge_at(
             break;
         }
 
-        // The forward worker revisits the export-180 result and, for classes
-        // 0x0d/0x0e only, calls export 138 on the other three cells in this
-        // 2x2 footprint before stamping it. Classes 0x0f/0x10 skip these
-        // terrain mutations. Raw CODE 5 listing: 0x6c14..0x6c70, reached
-        // from the per-stride classifier branch at 0x6f66..0x6f82.
-        if code < 0x0f {
-            for (dx, dy) in [(0usize, 1usize), (1, 1), (1, 0)] {
-                nested_waits += mac_classify_terrain_tile(city, run_x + dx, run_y + dy, rng);
-            }
-        }
+        // The forward refresh at 0x6c14..0x6c70 uses A5+0x5b2
+        // (scene redraw bounds). The endpoint above uses A5+0x472
+        // (terrain classifier). Classifying the still-live forward
+        // footprint here would recursively remove the same bridge.
 
         // The caller supplies render flag 0xff. The base stamp consumes one
         // frame and one flip draw. Every extent-2 code adds three flips.
@@ -236,6 +230,12 @@ pub(in crate::app) fn mac_budget_decay_extent2_bridge_at(
         run_x = next_x;
         run_y = next_y;
     }
+    // CODE 5 0x7094..0x715c classifies the far 2×2 endpoint too.
+    if !matches!(root_building, 0x49 | 0x4a) {
+        for (dx, dy) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
+            nested_waits += mac_classify_terrain_tile(city, run_x + dx, run_y + dy, rng);
+        }
+    }
     nested_waits + u32::from(render)
 }
 
@@ -248,17 +248,10 @@ pub(in crate::app) fn mac_export180_bridge_connection_code(city: &City, x: usize
     if !((0x49..=0x50).contains(&building) || (0x61..=0x6b).contains(&building)) {
         return -1;
     }
-    if (0x61..=0x69).contains(&building) {
-        return i16::from(building - 0x5d);
-    }
-
     if city
         .zone_at(x, y)
         .is_some_and(|zone| zone.raw_bits() & 0xf0 == 0xf0)
     {
-        if (0x4b..=0x50).contains(&building) {
-            return i16::from(building & 1);
-        }
         for (cell_x, cell_y) in [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)] {
             let neighbor = city.building_at(cell_x, cell_y);
             if (0x4b..=0x50).contains(&neighbor) {
@@ -271,9 +264,18 @@ pub(in crate::app) fn mac_export180_bridge_connection_code(city: &City, x: usize
                 return if neighbor == 0x49 { 0x0d } else { 0x0e };
             }
         }
-        return -1;
+        let last = city.building_at(x, y + 1);
+        return if matches!(last, 0x49 | 0x4a) {
+            2 + i16::from(last & 1)
+        } else {
+            -1
+        };
     }
 
+    let code = i16::from(building) - 0x5d;
+    if code < 0x0d {
+        return code;
+    }
     if city
         .tile_bits_at(x, y + 1)
         .is_some_and(|bits| bits.raw_bits() & 0x02 != 0)
@@ -297,16 +299,14 @@ pub(in crate::app) fn mac_budget_decay_extent2_bridge_fallback(
             rng.random_u16();
         }
     }
-    // This is export 80's ordinary generic loop: the first test is XTER,
-    // and the later conditional clear/resource argument comes from XTXT.
-    // No direct XBLD clear follows PlaceTile. The native D5==2 arm bypasses
-    // its endpoint refresh for original XBLD 0x49/0x4a.
+    // The fallback first places rubble according to XTER and then invokes
+    // the terrain classifier on all four cells (0x7d94..0x7dfa). In gameplay
+    // the classifier clears that rubble. The 0x49/0x4a skip belongs only to
+    // the backward endpoint of the connected-run branch.
     mac_export80_remove_generic_rectangle(city, x, y, 2, root_building, rng);
     let mut nested_waits = 0;
-    if !matches!(root_building, 0x49 | 0x4a) {
-        for (tx, ty) in [(x, y), (x + 1, y), (x + 1, y - 1), (x, y - 1)] {
-            nested_waits += mac_classify_terrain_tile(city, tx, ty, rng);
-        }
+    for (tx, ty) in [(x, y), (x + 1, y), (x + 1, y - 1), (x, y - 1)] {
+        nested_waits += mac_classify_terrain_tile(city, tx, ty, rng);
     }
     nested_waits + if render { 2 } else { 0 }
 }
@@ -335,7 +335,7 @@ pub(in crate::app) fn mac_budget_decay_cardinal_portal_at(
     if city.zone_at(x, y).map(|zone| zone.raw_bits() & 0x0f) != Some(0) {
         return;
     }
-    if mac_cardinal_portal_vector(city.building_at(x, y)).is_none() {
+    if tunnel_portal_direction(city.building_at(x, y)).is_none() {
         return;
     }
 
@@ -356,7 +356,7 @@ pub(in crate::app) fn mac_budget_remove_cardinal_portal_run(
     y: usize,
     rng: &mut MacToolboxRng,
 ) -> bool {
-    let Some((dx, dy)) = mac_cardinal_portal_vector(city.building_at(x, y)) else {
+    let Some((dx, dy)) = tunnel_portal_direction(city.building_at(x, y)) else {
         return false;
     };
     // Export 80 clears the origin's tunnel metadata before its two redraws.
@@ -377,7 +377,7 @@ pub(in crate::app) fn mac_budget_remove_cardinal_portal_run(
         let cy = cursor.1 as usize;
         let next_building = city.building_at(cx, cy);
         city.clear_altm_tunnel_bits(cx, cy);
-        if mac_cardinal_portal_vector(next_building).is_some() {
+        if tunnel_portal_direction(next_building).is_some() {
             // Export 80 does two direct Random calls for each portal redraw.
             rng.random_u16();
             rng.random_u16();
@@ -390,16 +390,6 @@ pub(in crate::app) fn mac_budget_remove_cardinal_portal_run(
         cursor.1 += dy;
     }
     false
-}
-
-pub(in crate::app) fn mac_cardinal_portal_vector(building: u8) -> Option<(isize, isize)> {
-    match building {
-        0x3f => Some((-1, 0)),
-        0x40 => Some((0, -1)),
-        0x41 => Some((1, 0)),
-        0x42 => Some((0, 1)),
-        _ => None,
-    }
 }
 
 /// Mac CODE 8 highway upkeep callers (`0x361c8..0x362ac`): a funded
@@ -493,8 +483,13 @@ pub(in crate::app) fn mac_lower_and_classify_bridge_endpoint(
 
     super::pe_place_tile_441f00(city, x, y, 0); // CODE 5 export 105 / PlaceTile(0).
     let altitude = city.altm_at(x, y);
-    let land = altitude.land.wrapping_sub(1) & 0x1f;
-    city.set_altitude(x, y, land, altitude.water);
+    // The original uses a WORD decrement on the packed ALTM sample. When
+    // land is zero, the borrow crosses into water and tunnel bits (0x0000 ->
+    // 0xffff); decrementing only the five-bit land field loses that behavior.
+    let packed_altm = u16::from(altitude.land & 0x1f)
+        | (u16::from(altitude.water & 0x1f) << 5)
+        | (u16::from(altitude.tunnel_levels & 0x3f) << 10);
+    city.set_altm_word(x, y, packed_altm.wrapping_sub(1));
     city.set_tile_bits(x, y, TileBits::new(bits.raw_bits() | 0x04));
     let nested_waits = mac_classify_terrain_tile(city, x, y, rng);
     let updated = city.tile_bits_at(x, y).unwrap_or_default();

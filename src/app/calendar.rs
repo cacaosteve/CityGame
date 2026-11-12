@@ -98,12 +98,13 @@ pub(super) fn pe_growth_aggregate_weight(level: i16) -> i32 {
 }
 
 /// Win95 `wGrowthLevelByXbld` @ `SIMCITY.EXE` `0x004E7458`.
-/// The growth routine indexes this table with normalized `XBLD - 0x70`.
+/// The 88-word table covers `XBLD 0x70..=0xc7`; the growth routine indexes it
+/// with normalized `XBLD - 0x70`.
 #[allow(dead_code)]
 pub(super) const PE_GROWTH_LEVELS_BY_XBLD: &[i16] = &[
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2,
     3, 3, 3, 3, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 3, 3, 2, 2, 3, 3, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0,
 ];
 
 #[allow(dead_code)]
@@ -207,8 +208,8 @@ pub(super) fn pe_class2_growth_aggregate_inputs(city: &City, x: usize, y: usize)
     (class == 2).then_some(tile)
 }
 
-/// The transient PE `0x4CA428` growth block: total slot 0, six normal
-/// category slots, and the special-zone slot 7.
+/// The PE `0x4CA428` monthly growth block: total slot 0, six normal
+/// category slots, and the special-zone slot 7. Saves retain partial months.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct PeGrowthAggregate {
@@ -216,6 +217,22 @@ pub(super) struct PeGrowthAggregate {
 }
 
 impl PeGrowthAggregate {
+    /// Both native layouts store the eight weighted growth counters at MISC +0x5f0.
+    pub(super) fn from_saved_city(city: &City) -> Self {
+        let slots = city
+            .misc_i32_values(super::MISC_PE_GROWTH_AGGREGATE_OFFSET, 8)
+            .try_into()
+            .unwrap_or([0; 8]);
+        Self { slots }
+    }
+
+    pub(super) fn write_saved(&self, city: &mut City) {
+        city.set_misc_u32_values(
+            super::MISC_PE_GROWTH_AGGREGATE_OFFSET,
+            &self.slots.map(|slot| slot as u32),
+        );
+    }
+
     #[allow(dead_code)]
     pub(super) fn reset(&mut self) {
         self.slots = [0; 8];
@@ -344,9 +361,10 @@ pub(super) fn sim_calendar_all_growth_tiles() -> impl Iterator<Item = (usize, us
 #[cfg(test)]
 mod calendar_unit_tests {
     use super::{
-        CITY_PROGRESSION_REQUIREMENTS, PeGrowthAggregate, SIM_CALENDAR_DAYS_PER_MONTH,
-        SIM_DAY_DEMAND, SIM_DAY_DENSITY, SIM_DAY_TRAFFIC, pe_class0_growth_aggregate_inputs,
-        pe_class2_growth_aggregate_inputs, pe_growth_aggregate_weight, pe_growth_tile_class,
+        CITY_PROGRESSION_REQUIREMENTS, PE_GROWTH_LEVELS_BY_XBLD, PeGrowthAggregate,
+        SIM_CALENDAR_DAYS_PER_MONTH, SIM_DAY_DEMAND, SIM_DAY_DENSITY, SIM_DAY_TRAFFIC,
+        pe_class0_growth_aggregate_inputs, pe_class2_growth_aggregate_inputs,
+        pe_growth_aggregate_weight, pe_growth_level_for_xbld, pe_growth_tile_class,
         pe_growth_tile_inputs, pe_tile_has_special_growth_flag, sim_calendar_all_growth_tiles,
         sim_calendar_growth_phase, sim_calendar_growth_phase_tiles, sim_calendar_growth_phases,
     };
@@ -436,9 +454,18 @@ mod calendar_unit_tests {
         assert_eq!(pe_growth_tile_class(0xae), 0);
         assert_eq!(pe_growth_tile_class(0xc2), 1);
         assert_eq!(pe_growth_tile_class(0xc4), 2);
+        assert_eq!(pe_growth_tile_class(0xc5), 2);
         assert!(pe_tile_has_special_growth_flag(0x8a));
         assert!(!pe_tile_has_special_growth_flag(0x70));
         assert!(!pe_tile_has_special_growth_flag(0x88));
+    }
+
+    #[test]
+    fn pe_growth_level_table_includes_final_c5_tile() {
+        assert_eq!(PE_GROWTH_LEVELS_BY_XBLD.len(), 88);
+        assert_eq!(pe_growth_level_for_xbld(0xc4), 4);
+        assert_eq!(pe_growth_level_for_xbld(0xc5), 4);
+        assert_eq!(pe_growth_level_for_xbld(0xc6), 0);
     }
 
     #[test]
@@ -489,6 +516,11 @@ mod calendar_unit_tests {
         normal.add_xbld_candidate(1, 0x70);
         assert_eq!(normal.slots()[1], pe_growth_aggregate_weight(1));
         assert_eq!(normal.slots()[7], 0);
+
+        let mut final_special = PeGrowthAggregate::default();
+        final_special.add_xbld_candidate(1, 0xc5);
+        assert_eq!(final_special.slots()[7], pe_growth_aggregate_weight(4));
+        assert_eq!(final_special.slots()[1], 0);
 
         let mut vacant = PeGrowthAggregate::default();
         vacant.add_xbld_candidate(1, 0);

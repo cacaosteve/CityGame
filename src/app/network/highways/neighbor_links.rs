@@ -6,7 +6,6 @@
 use super::super::HighwayNeighborLinkCandidate;
 use super::{ViewerState, is_highway_tile};
 use crate::city::{CITY_HEIGHT, CITY_WIDTH, City};
-use crate::engine_fidelity::EngineFidelity;
 use sdl3::messagebox::{
     ButtonData, ClickedButton, MessageBoxButtonFlag, MessageBoxFlag, show_message_box,
 };
@@ -22,11 +21,9 @@ pub(in crate::app) fn highway_neighbor_link_is_available(
     state: &ViewerState,
     candidate: HighwayNeighborLinkCandidate,
 ) -> bool {
-    state.engine_fidelity == EngineFidelity::Win95
-        && state
-            .city
-            .text_overlay_at(candidate.start.0, candidate.start.1)
-            != Some(0xfa)
+    let (x, y) = candidate.start;
+    (state.city.text_overlay_at(x, y) != Some(0xfa)
+        || (!state.engine_fidelity.uses_win95() && state.city.is_synthetic_trip_marker(x, y)))
         && state.city.city_funds() >= 1_500
 }
 
@@ -42,10 +39,16 @@ pub(in crate::app) fn apply_highway_neighbor_link_confirmation(
     state
         .city
         .set_text_overlay(candidate.endpoint.0, candidate.endpoint.1, 0xfa);
-    state.city.pe_nonnetwork_neighbor_links =
-        state.city.pe_nonnetwork_neighbor_links.wrapping_add(1);
-    state.refresh_live_misc_current_values();
-    state.refresh_budget_service_rows_from_live_counts();
+    if state.engine_fidelity.uses_win95() {
+        state.city.pe_nonnetwork_neighbor_links =
+            state.city.pe_nonnetwork_neighbor_links.wrapping_add(1);
+        state.refresh_live_misc_current_values();
+        state.refresh_budget_service_rows_from_live_counts();
+    } else {
+        // CODE 13 @ 0x20d28 calls the read-only classifier, then increments
+        // the same saved non-road count as Mac rail.
+        state.city.mac_increment_rail_neighbor_link_count();
+    }
     state.refresh_status_line();
     true
 }

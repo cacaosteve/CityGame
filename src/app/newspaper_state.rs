@@ -31,6 +31,7 @@ pub(super) fn pe_newspaper_paper_list_identity_bytes() -> [u8; NEWSPAPER_LIST_MI
     recs
 }
 
+#[cfg(test)]
 fn pe_newspaper_shuffle_seed(city: &City) -> u32 {
     let mut seed = 0x4797_3000u32;
     for byte in city.name.bytes() {
@@ -59,7 +60,7 @@ pub(super) fn pe_newspaper_random_mod<R: PeNewspaperRandom>(rng: &mut R, modulus
     usize::from(rng.random_u16() & 0x7fff) % usize::from(modulus)
 }
 
-/// Win95 `0x47977c`: `_Random` pairwise byte swaps via `0x402a90`.
+/// Win95 `0x47977c`: CRT-driven pairwise byte swaps via `0x402a90`.
 pub(super) fn pe_newspaper_paper_list_shuffled_bytes<R: PeNewspaperRandom>(
     rng: &mut R,
 ) -> [u8; NEWSPAPER_LIST_MISC_DWORDS] {
@@ -100,6 +101,7 @@ pub(super) fn pe_newspaper_paper_list_misc_values_with_rng(
     values
 }
 
+#[cfg(test)]
 pub(super) fn pe_newspaper_paper_list_misc_values(
     city: &City,
 ) -> [u32; NEWSPAPER_LIST_MISC_DWORDS] {
@@ -120,4 +122,18 @@ pub(super) fn pe_newspaper_story_list_misc_values() -> [u32; NEWSPAPER_STORY_LIS
         values[rec + 5] = 0xFF;
     }
     values
+}
+
+pub(super) fn initialize_pe_newspaper_tables(
+    crt: &mut Win95CrtRand,
+) -> crate::city::PeNewspaperTables {
+    crate::city::PeNewspaperTables {
+        papers: pe_newspaper_paper_list_misc_values_with_rng(crt),
+        stories: pe_newspaper_story_list_misc_values(),
+    }
+}
+
+/// A deterministic isolated fallback for sessions without the startup snapshot.
+pub(super) fn default_pe_newspaper_tables() -> crate::city::PeNewspaperTables {
+    initialize_pe_newspaper_tables(&mut Win95CrtRand::new(Win95CrtRand::DEFAULT_SEED))
 }

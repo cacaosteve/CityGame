@@ -566,16 +566,8 @@ pub(super) fn pe_newspaper_gift_place_tree_483e68(
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return;
     }
-    let building = city.building_at(x, y);
-    if building != 0 {
-        if matches!(building, 0x3f..=0x42) {
-            pe_destroy_building_elevated_arm_45994e(city, x, y);
-        } else if building >= 6 {
-            // This call pushes mode 0 at `0x483e7f`; preserve its rubble draw
-            // without entering the mode-1 generic render-scatter loop.
-            pe_destroy_building_mode0_optional_crt(city, Some(crt), x, y);
-        }
-    }
+    // 0x483e7f pushes flag 0 for DestroyBuilding before planting the tree.
+    pe_destroy_building_mode0_optional_crt(city, Some(crt), x, y);
     pe_place_tile_441f00(city, x, y, 5);
 }
 

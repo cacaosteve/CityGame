@@ -136,8 +136,8 @@ pub(in crate::app) fn budget_row_is_unset(city: &City, row_index: usize) -> bool
     .is_none()
 }
 
-/// Mac CODE 3 reads the active-document tax DWORD without the UI clamp.
-pub(in crate::app) fn mac_raw_tax_rate_for_city(city: &City, tax_index: usize) -> u32 {
+/// Return the active-document tax DWORD before the UI clamp.
+pub(in crate::app) fn raw_tax_rate_for_city(city: &City, tax_index: usize) -> u32 {
     if budget_row_is_unset(city, tax_index) {
         return DEFAULT_TAX_RATE;
     }

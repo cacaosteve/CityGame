@@ -25,10 +25,7 @@ fn mac_native_phase1_cgms_differential_probe() {
     let mut input_xbld = Vec::with_capacity(crate::city::CITY_TILES);
     for x in 0..crate::city::CITY_WIDTH {
         for y in 0..crate::city::CITY_HEIGHT {
-            input_xbit.push(
-                city.tile_bits_at(x, y)
-                    .map_or(0, |bits| bits.raw_bits()),
-            );
+            input_xbit.push(city.tile_bits_at(x, y).map_or(0, |bits| bits.raw_bits()));
             input_xbld.push(city.building_at(x, y));
         }
     }
@@ -69,25 +66,38 @@ fn mac_native_phase1_cgms_differential_probe() {
     let mut trace = String::from("map_x,map_y,xbld,seed_before,seed_after,units\n");
     for (x, y, building, seed_before, seed_after, units) in source_trace {
         use std::fmt::Write as _;
-        let units = if units == u32::MAX { "trap".to_owned() } else { units.to_string() };
-        writeln!(trace, "{x},{y},{building},{seed_before},{seed_after},{units}")
-            .expect("append Rust power source trace");
+        let units = if units == u32::MAX {
+            "trap".to_owned()
+        } else {
+            units.to_string()
+        };
+        writeln!(
+            trace,
+            "{x},{y},{building},{seed_before},{seed_after},{units}"
+        )
+        .expect("append Rust power source trace");
     }
     std::fs::write(output.join("source_trace.csv"), trace)
         .expect("write Rust phase-1 source trace");
     let mut trace = String::from("root_x,root_y,map_x,map_y,remaining,xbld,xbit_before\n");
     for (root_x, root_y, x, y, remaining, building, xbit) in flood_trace {
         use std::fmt::Write as _;
-        writeln!(trace, "{root_x},{root_y},{x},{y},{remaining},{building},{xbit}")
-            .expect("append Rust power flood trace");
+        writeln!(
+            trace,
+            "{root_x},{root_y},{x},{y},{remaining},{building},{xbit}"
+        )
+        .expect("append Rust power flood trace");
     }
-    std::fs::write(output.join("flood_trace.csv"), trace)
-        .expect("write Rust phase-1 flood trace");
-    let mut trace = String::from("root_x,root_y,capacity,consumers,available,energy_conservation\n");
+    std::fs::write(output.join("flood_trace.csv"), trace).expect("write Rust phase-1 flood trace");
+    let mut trace =
+        String::from("root_x,root_y,capacity,consumers,available,energy_conservation\n");
     for (x, y, capacity, consumers, available, energy_conservation) in component_trace {
         use std::fmt::Write as _;
-        writeln!(trace, "{x},{y},{capacity},{consumers},{available},{energy_conservation}")
-            .expect("append Rust power component trace");
+        writeln!(
+            trace,
+            "{x},{y},{capacity},{consumers},{available},{energy_conservation}"
+        )
+        .expect("append Rust power component trace");
     }
     std::fs::write(output.join("component_trace.csv"), trace)
         .expect("write Rust phase-1 component trace");

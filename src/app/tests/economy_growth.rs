@@ -6,8 +6,7 @@ fn day22_impeaches_mayor_when_funds_below_negative_100000() {
     city.set_city_funds(-100_000);
     let mut state = test_state(city);
     let population = live_population_stats_for_city(&state.city);
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert!(
         !state.announced_bankruptcy,
         "PE gate is strict: funds < -100000 (equal is solvent)"
@@ -15,15 +14,13 @@ fn day22_impeaches_mayor_when_funds_below_negative_100000() {
 
     state.city.set_city_funds(-100_001);
     let population = live_population_stats_for_city(&state.city);
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert!(state.announced_bankruptcy);
     assert_eq!(state.query_line, "Mayor Impeached - City Bankrupt");
 
     state.query_line.clear();
     let population = live_population_stats_for_city(&state.city);
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
     assert_eq!(state.query_line, "", "bankruptcy announces once per load");
 }
 
@@ -98,6 +95,10 @@ fn mac_engine_speed_uses_four_native_selectors_and_persists_them() {
     assert_eq!(state.city.misc_u32_at(MISC_SPEED_OFFSET), Some(0xcafe_0004));
 
     state.open_january_budget_review();
+    assert_eq!(state.traffic.speed(), GameSpeed::Cheetah);
+    assert_eq!(state.city.misc_u32_at(MISC_SPEED_OFFSET), Some(0xcafe_0004));
+    state.close_city_info_dialog();
+    state.apply_state_app_command(&AppCommand::SetSpeed(GameSpeed::Paused));
     assert_eq!(state.traffic.speed(), GameSpeed::Paused);
     assert_eq!(state.city.misc_u32_at(MISC_SPEED_OFFSET), Some(0xcafe_0001));
 
@@ -632,7 +633,7 @@ fn mac_growth_selector_matches_recovered_a5_table_for_all_entries() {
         }
     }
     assert_eq!(mac_growth_level_for_xbld(0xc5), 4);
-    assert_eq!(pe_growth_level_for_xbld(0xc5), 0);
+    assert_eq!(pe_growth_level_for_xbld(0xc5), 4);
     assert_eq!(mac_growth_level_for_xbld(0x6f), 0);
     assert_eq!(mac_growth_level_for_xbld(0xc8), 0);
 }
@@ -1447,14 +1448,18 @@ fn mac_rci_zone_eight_and_nine_special_type_selectors_follow_word_comparisons() 
     counts[0xe3] = 21;
     assert_eq!(select(9, &counts), Some(0xf2));
 
-    // Zone 8's D-register WORD addition/division and selector ordering choose
-    // e1 before ea when both doubled counts remain below the threshold.
+    // Zone 8 chooses dd when ee/4 is greater than or equal to the threshold.
+    // Equality is native's default-to-runway path.
     counts = [0; 256];
     counts[0xdd] = 25;
     counts[0xde] = 25; // threshold = 10
-    counts[0xee] = 44; // ee / 4 = 11.
+    counts[0xee] = 40; // ee / 4 = threshold.
     counts[0xe1] = 4; // 2*e1 = 8 < 10
     counts[0xea] = 1;
+    assert_eq!(select(8, &counts), Some(0xdd));
+
+    // Once ee/4 drops below the threshold, the ordered alternatives apply.
+    counts[0xee] = 36; // ee / 4 = 9 < threshold.
     assert_eq!(select(8, &counts), Some(0xe1));
 
     // The 68k ADD.W wraps before division, and a selector threshold is WORD
@@ -1867,7 +1872,7 @@ fn pe_raise_land_inc_443c60_clears_flatten_mark_before_funds() {
     let mut city = City::new_blank("/tmp/sc2000-raise-mark.sc2", "RaiseMark").expect("blank");
     city.set_altitude(20, 20, 5, 0);
     city.set_tile_bits(20, 20, TileBits::new(0).with_flatten_mark(true));
-    assert!(pe_raise_land_inc_443c60(&mut city, 20, 20, 2).is_none());
+    assert_eq!(pe_raise_land_inc_443c60(&mut city, 20, 20, 2), Some(0));
     assert_eq!(city.altitude_at(20, 20), 5);
     assert!(!city.tile_bits_at(20, 20).unwrap().flatten_mark());
     city.set_tile_bits(20, 20, TileBits::new(0).with_flatten_mark(true));
@@ -2973,7 +2978,7 @@ fn simulation_service_refresh_keeps_power_computed_without_xbit_power_flag() {
     let mut state = test_state(city);
 
     state.city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut state.city, 10, 10, 4);
+    pe_seed_power_plant_altitude_for_test(&mut state.city, 10, 10, 4);
     state.city.set_zone(11, 10, 1);
     state
         .city
@@ -3084,7 +3089,7 @@ fn win95_service_snapshots_do_not_extend_short_misc() {
 
     // Runtime service values still update when a truncated Win95 record has
     // no viewer-extension slots, but the missing snapshots stay absent.
-    state.persist_water_used_percent();
+    state.sim_calendar_day20_water();
     assert_eq!(state.city.misc_u32_at(MISC_WATER_USED_PERCENT_OFFSET), None);
     assert_eq!(state.city.misc_u32_at(MISC_SEWER_BONUS_OFFSET), None);
 
@@ -3183,8 +3188,7 @@ fn publish_pe_growth_aggregate_adds_garbage_and_skips_day22_census_overwrite() {
     assert_eq!(state.city.pe_eq_leftover_deaths(), scaled);
 
     let population = live_population_stats_for_city(&state.city);
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let _ = state.sim_calendar_day22_scenario(population);
 
     assert_eq!(
         state.city.pe_dw_city_population(),
@@ -3212,9 +3216,7 @@ fn pe_monthly_condition_story_queues_on_power_used_over_98() {
         .city
         .set_misc_u32_at(MISC_POWER_USED_PERCENT_OFFSET, 0x63);
     // Transit arm would also match on a blank city; power arm must win first.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x2e));
 }
 
@@ -3231,16 +3233,14 @@ fn pe_monthly_condition_story_queues_police_prison_shortage_0x30() {
     state
         .city
         .set_misc_u32_at(MISC_POWER_USED_PERCENT_OFFSET, 0x62);
-    // Keep pe_dw through day22: pe_zone_pops_ready skips census stand-in overwrite.
+    // Set the live population used by the phase-24 chooser.
     state.city.set_pe_zone_pops([2_000, 0, 0]);
     state.city.persist_pe_day22_population_leftover(20_000);
     // Cover transit so arm 1 does not win: 300 subway tiles > 200.
     // PE transit arm @ `0x471c13` reads `dwTileCount[0xe9]`, not a map rescan.
     state.city.pe_dw_tile_count[SUBWAY_STATION_BUILDING_ID as usize] = 300;
     // 0 police/prison <= 1 → story 0x30.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_dw_city_population(), 20_000);
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x30));
 }
@@ -3265,9 +3265,7 @@ fn pe_monthly_condition_police_uses_dw_tile_count_like_471c65() {
     stamp_complete_building_for_test(&mut state.city, 30, 30, 210, 3);
     stamp_complete_building_for_test(&mut state.city, 34, 30, 210, 3);
     state.city.pe_dw_tile_count[210] = 0;
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x30));
 }
 
@@ -3293,9 +3291,7 @@ fn pe_monthly_condition_story_queues_water_coverage_0x32() {
     stamp_complete_building_for_test(&mut state.city, 40, 30, FIRE_STATION_BUILDING_ID, 3);
     stamp_complete_building_for_test(&mut state.city, 44, 30, FIRE_STATION_BUILDING_ID, 3);
     state.city.set_pe_water_coverage_percent(0x63);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x32));
 }
 
@@ -3321,9 +3317,7 @@ fn pe_monthly_condition_story_skips_water_coverage_at_98() {
     stamp_complete_building_for_test(&mut state.city, 44, 30, FIRE_STATION_BUILDING_ID, 3);
     state.city.set_pe_water_coverage_percent(0x62);
     // Water fails; pop 20000/25000=0 so 0 hospitals → hospital story 0x33.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x32));
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x33));
 }
@@ -3351,9 +3345,7 @@ fn pe_monthly_condition_story_queues_hospital_shortage_0x33() {
     stamp_complete_building_for_test(&mut state.city, 44, 30, FIRE_STATION_BUILDING_ID, 3);
     state.city.set_pe_water_coverage_percent(0x62);
     // 0 hospitals <= 25000/25000=1 → story 0x33.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x33));
 }
 
@@ -3382,9 +3374,7 @@ fn pe_monthly_condition_story_skips_hospital_when_above_demand() {
     stamp_complete_building_for_test(&mut state.city, 50, 30, HOSPITAL_BUILDING_ID, 3);
     stamp_complete_building_for_test(&mut state.city, 54, 30, HOSPITAL_BUILDING_ID, 3);
     // Hospital covered; 0 schools <= pop/20000=1 → school story 0x34.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x33));
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x34));
 }
@@ -3414,9 +3404,7 @@ fn pe_monthly_condition_story_queues_school_shortage_0x34() {
     stamp_complete_building_for_test(&mut state.city, 50, 30, HOSPITAL_BUILDING_ID, 3);
     stamp_complete_building_for_test(&mut state.city, 54, 30, HOSPITAL_BUILDING_ID, 3);
     // 0 schools <= 1 → story 0x34.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(state.city.pe_newspaper_story_id_at(0), Some(0x34));
 }
 
@@ -3446,9 +3434,7 @@ fn pe_monthly_condition_story_skips_school_when_above_demand() {
     stamp_complete_building_for_test(&mut state.city, 60, 30, SCHOOL_BUILDING_ID, 3);
     stamp_complete_building_for_test(&mut state.city, 64, 30, SCHOOL_BUILDING_ID, 3);
     // Industrial tax 0 → seaport arm does not fire; later arms not invented.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x34));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x35));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x3b));
@@ -3480,9 +3466,7 @@ fn pe_monthly_condition_recreation_uses_dw_tile_count_like_471e13() {
     state.city.pe_dw_tile_count[BIG_PARK_BUILDING_ID as usize] = 0;
     let mut preview = state.pe_process_crt;
     let expected = 0x2eu16.saturating_add(u16::from(preview.random_u15() & 3).saturating_add(9));
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(
         state.city.pe_newspaper_story_id_at(0),
         Some(u32::from(expected))
@@ -3514,12 +3498,10 @@ fn pe_monthly_condition_story_queues_recreation_shortage_0x37_to_0x3a() {
     pe_monthly_condition_cover_through_school(&mut state);
     let res = budget_row_misc_offset(0, BUDGET_SERVICE_CURRENT_FIELD).expect("res tax");
     state.city.set_misc_u32_at(res, 2_000); // /1000 = 2; 0 recreation < 2
-    // Predict CRT pick before day22 consumes it (chooser is first CRT consumer here).
+    // Predict CRT pick before phase 24 consumes it (chooser is first CRT consumer here).
     let mut preview = state.pe_process_crt;
     let expected = 0x2eu16.saturating_add(u16::from(preview.random_u15() & 3).saturating_add(9));
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_eq!(
         state.city.pe_newspaper_story_id_at(0),
         Some(u32::from(expected))
@@ -3536,9 +3518,7 @@ fn pe_monthly_condition_story_skips_recreation_when_parks_cover_tax() {
     state.city.set_misc_u32_at(res, 2_000); // threshold 2
     // Big park 3×3 → /3 = 3 units >= 2.
     stamp_complete_building_for_test(&mut state.city, 70, 30, BIG_PARK_BUILDING_ID, 3);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert!(
         !matches!(state.city.pe_newspaper_story_id_at(0), Some(0x37..=0x3a)),
         "recreation covered"
@@ -3569,9 +3549,7 @@ fn pe_monthly_condition_story_skips_school_below_pop_8000_after_cover() {
     stamp_complete_building_for_test(&mut state.city, 50, 30, HOSPITAL_BUILDING_ID, 3);
     // school demand 7999/20000=0 → need >0 schools to pass arm.
     stamp_complete_building_for_test(&mut state.city, 60, 30, SCHOOL_BUILDING_ID, 3);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x34));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x33));
 }
@@ -3595,9 +3573,7 @@ fn pe_monthly_condition_story_skips_hospital_below_pop_3000() {
     stamp_complete_building_for_test(&mut state.city, 30, 30, 210, 3);
     stamp_complete_building_for_test(&mut state.city, 40, 30, FIRE_STATION_BUILDING_ID, 3);
     state.city.set_pe_water_coverage_percent(0x62);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x33));
 }
 
@@ -3618,9 +3594,7 @@ fn pe_monthly_condition_story_skips_at_power_used_98() {
         state.city.set_building(x, 10, SUBWAY_STATION_BUILDING_ID);
     }
     // 5 stations > 0 → skip transit; pop < 1000 → no story.
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x2e));
 }
 
@@ -3636,9 +3610,7 @@ fn pe_monthly_condition_story_skips_when_weather_trend_severe() {
     state
         .city
         .set_misc_u32_at(MISC_POWER_USED_PERCENT_OFFSET, 0x63);
-    let population = PopulationStats::default();
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-    let _ = state.sim_calendar_day22_scenario(false, population, outcomes);
+    state.run_pe_phase24_disaster_chooser();
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x2e));
     assert_ne!(state.city.pe_newspaper_story_id_at(0), Some(0x2f));
 }
@@ -3655,9 +3627,8 @@ fn simulation_day22_requires_population_strictly_above_threshold() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
 
-    let day22 = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let day22 = state.sim_calendar_day22_scenario(population);
 
     assert!(!day22.status_announced);
     assert_eq!(
@@ -3682,9 +3653,7 @@ fn simulation_day22_progression_uses_pe_dw_not_census_total() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let outcomes = live_city_service_outcomes_for_city(&state.city);
-
-    let day22 = state.sim_calendar_day22_scenario(false, population, outcomes);
+    let day22 = state.sim_calendar_day22_scenario(population);
 
     assert_eq!(state.city.pe_dw_city_population(), 2_001);
     assert!(day22.status_announced);
@@ -3705,11 +3674,7 @@ fn simulation_day22_progression_uses_pe_dw_not_census_total() {
         populated_tiles: 1,
         ..PopulationStats::default()
     };
-    let _ = low.sim_calendar_day22_scenario(
-        false,
-        fat_census,
-        live_city_service_outcomes_for_city(&low.city),
-    );
+    let _ = low.sim_calendar_day22_scenario(fat_census);
     assert_eq!(low.city.misc_u32_at(MISC_CITY_PROGRESSION_OFFSET), Some(0));
     assert_eq!(low.city.pe_dw_city_population(), 1_999);
 }
@@ -4172,8 +4137,8 @@ fn simulation_month_skips_eq_le_until_growth_aggregate_population() {
     assert_eq!(state.city.pe_eq_leftover_deaths(), 0);
     assert_eq!(
         state.city.rewards_available_mask() & 0b0_1111,
-        0b0_1111,
-        "month 1 rewards still use coverage EQ, not empty-table zeros"
+        0,
+        "monthly service publication does not grant milestone rewards"
     );
 }
 
@@ -4440,20 +4405,22 @@ fn january_eq_le_pro_reading_preserves_cohort_population() {
 }
 
 #[test]
-fn january_opinion_poll_uses_unemployment_weight_slot() {
+fn pe_opinion_poll_uses_unemployment_weight_slot() {
     let mut low = City::new_blank("/tmp/sc2000-test.sc2", "unemp0").expect("blank city");
     low.provision_microsim_for_building(243).expect("mayor");
     low.set_pe_unemployment_percent(0);
+    low.set_pe_dw_city_population(10_000);
     let mut low_rng = Win95CrtRand::new(0x4725_1001);
-    low.run_pe_opinion_poll_with_rng(10_000, 100, 100, 100, &mut low_rng);
+    low.run_pe_opinion_poll_with_rng(100, &mut low_rng);
     let low_unemp = low.pe_mayor_approval();
 
     let mut high = City::new_blank("/tmp/sc2000-test.sc2", "unemp100").expect("blank city");
     let mayor = high.provision_microsim_for_building(243).expect("mayor");
     let mayor_index = usize::from(mayor - MIN_SIM_TEXT_ENTRIES);
     high.set_pe_unemployment_percent(100);
+    high.set_pe_dw_city_population(10_000);
     let mut high_rng = Win95CrtRand::new(0x4725_1001);
-    high.run_pe_opinion_poll_with_rng(10_000, 100, 100, 100, &mut high_rng);
+    high.run_pe_opinion_poll_with_rng(100, &mut high_rng);
     let high_unemp = high.pe_mayor_approval();
     // The extra unemployment weight changes the CRT remainder divisor, so a
     // particular sequence of 100 draws need not be monotonically ordered.
@@ -4601,7 +4568,7 @@ fn january_hospital_patients_divides_by_hospital_footprints() {
     );
     let record = city.microsim_at(hospital_index).expect("hospital row");
     // PE: two 3×3 hospitals → (18/9)*25=50; 7000/50=140+jitter, below the ÷30 cap of 233.
-    assert_eq!(record.stat1, 141, "pop / (2*25) patients + CRT jitter");
+    assert_eq!(record.stat1, 149, "pop / (2*25) patients + CRT jitter");
 }
 
 #[test]
@@ -4625,7 +4592,7 @@ fn january_police_crimes_divide_by_police_tiles() {
     );
     let record = city.microsim_at(police_index).expect("police row");
     assert_eq!(record.stat2, 9_496 / 9, "dwCityCrime / police tiles");
-    assert_eq!(record.stat3, 9_496 / 9 / 5 + 1);
+    assert_eq!(record.stat3, 9_496 / 9 / 5 + (41 & 0xf));
 }
 
 #[test]
@@ -5060,7 +5027,7 @@ fn growth_tick_aggregate_skips_vacant_visited_xbld() {
 }
 
 #[test]
-fn growth_tick_aggregate_credits_eligible_tile_before_footprint_refusal() {
+fn growth_tick_aggregate_credits_eligible_tile_before_nonflat_redevelopment() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     stamp_zoned_building_footprint_for_test(&mut city, (20, 20), 2, ZONE_COMMERCIAL_DENSE, 0xAA);
     // Rotation zero's XZONCornerCheck source is SW, visited in phase (0, 1).
@@ -5072,15 +5039,16 @@ fn growth_tick_aggregate_credits_eligible_tile_before_footprint_refusal() {
 
     state.sim_calendar_one_growth_tick(0, 1);
 
-    assert_eq!(state.city.building_at(20, 20), 0xAA);
-    assert_eq!(state.city.building_at(21, 20), 0xAA);
+    let rebuilt = state.city.building_at(20, 20);
+    assert!(COMMERCIAL_2X2_BUILDINGS.contains(&rebuilt));
+    assert_eq!(state.city.building_at(21, 20), rebuilt);
     let level = pe_growth_level_for_xbld(0xAA);
     let weight = pe_growth_aggregate_weight(level);
     assert!(weight > 0, "fixture must use a weighted XBLD level");
     assert_eq!(
         state.pe_growth_aggregate.slots()[7],
         weight,
-        "PE records the eligible flag-2 tile before the later footprint refusal"
+        "PE records the eligible flag-2 tile before replacing the footprint"
     );
     assert_eq!(
         state.pe_growth_aggregate.slots()[4],
@@ -5456,10 +5424,19 @@ fn destroy_tunnel_structure_skips_invent_budget_misc_refresh() {
     values[BUDGET_SERVICE_CURRENT_FIELD] = 0xB22;
     city.set_misc_u32_values(offset, &values);
     city.set_building(20, 20, 0x3f);
+    city.set_building(17, 20, 0x41);
+    for x in 17..=20 {
+        city.set_tunnel_levels(x, 20, 1);
+    }
     let mut state = test_state(city);
     let mut crt = Win95CrtRand::new(1);
     state.destroy_tunnel_structure_at(20, 20, &mut crt);
-    assert_ne!(state.city.building_at(20, 20), 0x3f);
+    assert_eq!(state.city.building_at(20, 20), 0);
+    assert_eq!(state.city.building_at(17, 20), 0);
+    for x in 17..=20 {
+        assert_eq!(state.city.tunnel_levels_at(x, 20), 0);
+    }
+    assert_eq!(crt.seed(), 3_884_216_597);
     assert_eq!(
         state.city.misc_u32_at(offset),
         Some(0xB22),
@@ -5600,7 +5577,7 @@ fn mac_scan_zone_nine_square_census_changes_later_selector() {
 }
 
 #[test]
-fn mac_monthly_road_rail_crossover_uses_rail_budget_and_preserves_xtrf() {
+fn mac_monthly_road_rail_crossover_uses_road_budget_and_preserves_xtrf() {
     fn crossover_fixture(road_funding: u32, rail_funding: u32) -> City {
         let mut city = City::new_blank(
             "/tmp/sc2000-mac-monthly-road-rail-crossover.sc2",
@@ -5620,25 +5597,25 @@ fn mac_monthly_road_rail_crossover_uses_rail_budget_and_preserves_xtrf() {
     }
 
     let seed = 0x3608_4abc;
-    let mut rail_funded = crossover_fixture(0, 100);
+    let mut road_funded = crossover_fixture(100, 0);
     let mut rng = MacToolboxRng::new(seed);
-    mac_budget_accumulate_monthly_rci_scan_partition(&mut rail_funded, 0, 0, &mut rng);
-    assert_eq!(rail_funded.building_at(20, 20), 0x45);
+    mac_budget_accumulate_monthly_rci_scan_partition(&mut road_funded, 0, 0, &mut rng);
+    assert_eq!(road_funded.building_at(20, 20), 0x45);
     assert_eq!(
         rng.seed(),
         seed,
-        "fully funded Mac rail upkeep consumes no draws"
+        "fully funded Mac road upkeep consumes no draws"
     );
 
-    let mut rail_underfunded = crossover_fixture(100, 0);
+    let mut road_underfunded = crossover_fixture(0, 100);
     let mut expected_rng = MacToolboxRng::new(seed);
     expected_rng.random_u16();
     expected_rng.random_u16();
     let mut rng = MacToolboxRng::new(seed);
-    mac_budget_accumulate_monthly_rci_scan_partition(&mut rail_underfunded, 0, 0, &mut rng);
-    assert!(is_rubble_tile(rail_underfunded.building_at(20, 20)));
-    assert!(!rail_underfunded.tile_bits_at(20, 20).unwrap().powerable());
-    assert_eq!(rail_underfunded.traffic_density_at(20, 20), Some(0x44));
+    mac_budget_accumulate_monthly_rci_scan_partition(&mut road_underfunded, 0, 0, &mut rng);
+    assert!(is_rubble_tile(road_underfunded.building_at(20, 20)));
+    assert!(!road_underfunded.tile_bits_at(20, 20).unwrap().powerable());
+    assert_eq!(road_underfunded.traffic_density_at(20, 20), Some(0x44));
     assert_eq!(rng.seed(), expected_rng.seed());
 }
 
@@ -6069,12 +6046,12 @@ fn fully_funded_highways_do_not_decay() {
 }
 
 #[test]
-fn simulation_day23_refreshes_population_and_industry_misc() {
+fn simulation_day23_preserves_growth_counters_and_industry_misc() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(20, 20, RESIDENTIAL_1X1_BUILDINGS[0]);
     city.set_building(21, 20, INDUSTRIAL_1X1_BUILDINGS[0]);
     city.set_misc_u32_at(MISC_NORMAL_POPULATION_OFFSET, 999);
-    city.set_misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET, 99);
+    city.set_misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET, 99);
     let mut industry = vec![0_u32; INDUSTRY_VALUES];
     industry[0] = 7;
     city.set_misc_u32_values(INDUSTRY_MISC_OFFSET, &industry);
@@ -6089,8 +6066,8 @@ fn simulation_day23_refreshes_population_and_industry_misc() {
         state.city.misc_u32_at(MISC_NORMAL_POPULATION_OFFSET),
         Some(999)
     );
-    assert_ne!(
-        state.city.misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET),
+    assert_eq!(
+        state.city.misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET),
         Some(99)
     );
     assert_eq!(
@@ -6426,14 +6403,10 @@ fn mac68k_day21_uses_mac_service_history_without_pe_publishers() {
     let pe_crt_before = state.pe_process_crt_seed();
     let _ = state.sim_calendar_day21_demand_and_graphs();
 
-    assert_eq!(state.city.misc_u32_at(RCI_DEMAND_MISC_OFFSET), Some(111));
     assert_eq!(
-        state.city.misc_u32_at(RCI_DEMAND_MISC_OFFSET + 4),
-        Some(222)
-    );
-    assert_eq!(
-        state.city.misc_u32_at(RCI_DEMAND_MISC_OFFSET + 8),
-        Some(333)
+        state.city.misc_i32_values(RCI_DEMAND_MISC_OFFSET, 3),
+        [-489, -378, 2000],
+        "Mac publishes its own demand even when PE publishers are disabled"
     );
     assert_eq!(state.city.pe_w_city_garbage, 444);
     assert_eq!(state.city.misc_u32_at(MISC_GARBAGE_OFFSET), Some(444));
@@ -6737,10 +6710,16 @@ fn mac_monthly_scan_feeds_day21_budget_and_native_growth_scalar() {
             "phase 21 publishes ten times the weighted-counter sum on {expected_kind:?}"
         );
         assert_eq!(state.city.mac_rci_counter(0), 77);
-        assert_eq!(state.city.mac_population_change_balances, [770, 0]);
-        assert!(
-            (0..60).all(|index| state.city.budget_misc_u32_at(0x7c + index * 4) == Some(0)),
-            "fresh-city scan publishes positive growth while all cohort lanes remain empty"
+        assert_eq!(state.city.mac_population_change_balances, [0, 0]);
+        assert_eq!(
+            state
+                .city
+                .misc_u32_values(0x7c, 60)
+                .into_iter()
+                .step_by(3)
+                .sum::<u32>(),
+            770,
+            "the native fresh-city refill puts all 770 residents into cohorts"
         );
         if expected_kind == CityFileKind::MacCity {
             assert_eq!(state.city.mac_state_misc_u32_at(0x0040), Some(770));
@@ -7029,42 +7008,117 @@ fn mac68k_day21_publishes_native_rci_budget_currents_only() {
 }
 
 #[test]
-fn day21_industry_mix_construction_boost_uses_pe_dw_not_census() {
-    // PE industry-mix construction overflow compares rci_zone_people against
-    // `dwCityPopulation` (`0x4CAA74`). When day-21 pZonePops is ready, that
-    // argument is pe_dw — not live census normal_population.
-    fn construction_pop_after_day21(pe_dw: u32) -> i32 {
-        let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
-        city.set_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 100);
-        stamp_complete_building_for_test(&mut city, 10, 10, 0xae, 3);
-        city.set_pe_zone_pops([5, 5, 5]); // rci people = 150
-        city.persist_pe_day22_population_leftover(pe_dw);
-        let mut values = vec![0_u32; INDUSTRY_VALUES];
-        for index in 0..INDUSTRY_COUNT {
-            let base = index * INDUSTRY_FIELD_COUNT;
-            values[base] = 0;
-            values[base + 1] = 50;
-            values[base + 2] = 0;
+fn pe_day21_eq_le_and_graph_match_native_worker_replay() {
+    let fingerprint = |words: &[u32]| {
+        words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            })
+    };
+    for layout in ["sc2", "city"] {
+        for (influx, crt_seed, construction, cohort_hash, graph_hash) in [
+            (
+                0,
+                3_386_963_152,
+                499,
+                0xf27d_e1f2_60b3_9d14,
+                0xfb60_1850_237c_4d1a,
+            ),
+            (
+                90,
+                3_355_440_100,
+                924,
+                0x8251_aaae_cc31_3646,
+                0xea34_593e_e2e9_110f,
+            ),
+        ] {
+            let path = format!("/tmp/pe-day21-{layout}.{layout}");
+            let mut city = blank_city_layout_fixture(path, "Day 21");
+            city.prepare_pe_fidelity_from_saved_city();
+            city.set_saved_date_and_day(
+                CityDate {
+                    year: 1900,
+                    month: 1,
+                },
+                21,
+            );
+            for (offset, value) in [
+                (MISC_NATIONAL_POPULATION_OFFSET, 12_000),
+                (MISC_NATIONAL_VALUE_OFFSET, 3_600),
+                (MISC_NATIONAL_TAX_OFFSET, 3),
+                (MISC_NATIONAL_TREND_OFFSET, 1),
+                (MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 100),
+                (0x0fa0, 0x140),
+            ] {
+                city.set_misc_u32_at(offset, value);
+            }
+            city.set_misc_u32_values(0x06d8, &[0; 16]);
+            city.pe_dw_city_pollution = 9_134;
+            city.set_pe_power_used_percent(40);
+            city.set_pe_water_coverage_percent(65);
+            city.pe_dw_tile_count[209] = 18;
+            city.pe_dw_tile_count[214] = 18;
+            city.pe_dw_tile_count[217] = 16;
+            for (index, population) in [
+                1_000, 1_240, 960, 876, 2_701, 2_690, 2_809, 3_021, 2_567, 2_345, 1_900, 787, 192,
+                112, 10, 0, 0, 0, 0, 300,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                city.test_add_pe_eq_cohort(index, population);
+            }
+            let mut industry = [0; INDUSTRY_VALUES];
+            for index in 0..INDUSTRY_COUNT {
+                let base = index * INDUSTRY_FIELD_COUNT;
+                if matches!(index, 0 | 4) {
+                    industry[base] = 1_000;
+                } else {
+                    industry[base + 1] = 2_000;
+                }
+            }
+            city.set_misc_u32_values(INDUSTRY_MISC_OFFSET, &industry);
+            let history = (0..XGRP_VALUES as u32).collect::<Vec<_>>();
+            city.set_chunk_u32_values(XGRP_CHUNK_NAME, 0, &history);
+            city.persist_pe_day22_population_leftover(30_000 - influx);
+            let mut state = test_state(city);
+            for category in [1, 3, 5] {
+                for _ in 0..1_000 {
+                    state.pe_growth_aggregate.add_normal_candidate(category, 1);
+                }
+            }
+            for _ in 0..27 {
+                state.pe_growth_aggregate.add_special_candidate(1);
+            }
+            state.publish_pe_growth_aggregate();
+            assert_eq!(state.city.pe_eq_leftover_deaths(), influx);
+
+            // Enter at the native EQ/LE call with the same RNG state and
+            // funding as the worker replay. History then consumes its outputs.
+            let mut crt = Win95CrtRand::new(17);
+            let mut lfsr = Win95Lfsr::new(29);
+            state
+                .city
+                .advance_pe_eq_le_calendar_month(120, 91, 83, 1_000, &mut crt, &mut lfsr);
+            assert_eq!(crt.seed(), crt_seed);
+            assert_eq!(lfsr.state(), 21_912);
+            assert_eq!(
+                state
+                    .city
+                    .misc_u32_values(INDUSTRY_MISC_OFFSET, INDUSTRY_VALUES)
+                    [4 * INDUSTRY_FIELD_COUNT + 2],
+                construction
+            );
+            let cohorts = state.city.misc_u32_values(0x007c, 60);
+            assert_eq!(fingerprint(&cohorts), cohort_hash);
+
+            state.refresh_xgrp_history(PopulationStats::default(), CityServiceOutcomes::default());
+            let history = state.city.chunk_u32_values(XGRP_CHUNK_NAME, 0, XGRP_VALUES);
+            assert_eq!(fingerprint(&history), graph_hash);
         }
-        values[4 * INDUSTRY_FIELD_COUNT] = 100;
-        values[4 * INDUSTRY_FIELD_COUNT + 1] = 0;
-        city.set_misc_u32_values(INDUSTRY_MISC_OFFSET, &values);
-        // Map census (not MISC 0x102c / pe_dw) must sit above rci people (150)
-        // so a mistaken census compare would never construction-boost.
-        let census = live_population_stats_for_city(&city).normal_population;
-        assert!(census > 400, "map census must exceed rci people ({census})");
-        let mut state = test_state(city);
-        let _ = state.sim_calendar_day21_demand_and_graphs();
-        state
-            .city
-            .misc_i32_values(INDUSTRY_MISC_OFFSET, INDUSTRY_VALUES)[4 * INDUSTRY_FIELD_COUNT + 2]
     }
-    let boosted = construction_pop_after_day21(10);
-    let not_boosted = construction_pop_after_day21(10_000);
-    assert!(
-        boosted > not_boosted,
-        "pe_dw below rci people should construction-boost; pe_dw above should not (got {boosted} vs {not_boosted})"
-    );
 }
 
 #[test]
@@ -7095,7 +7149,7 @@ fn sim_calendar_day1_power_uses_live_game_clock_for_capacity() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
     stamp_power_plant_xbit_powerable(&mut city, &[(10, 10)]);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     city.set_zone(11, 10, 1);
 
     let mut state = test_state(city);
@@ -7117,7 +7171,7 @@ fn sim_calendar_day1_power_advances_pe_process_crt() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
     stamp_power_plant_xbit_powerable(&mut city, &[(10, 10)]);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.game_clock = GameClock::new_with_day(1900, 6, 1);
     state.pe_process_crt = init_pe_process_crt(&state.city, state.game_clock);
@@ -7133,7 +7187,7 @@ fn growth_tick_power_maps_use_process_crt_seed_not_city_name() {
     // power maps must share pe_process_crt.seed(), not pe_power_recalc_seed.
     let mut city = City::new_blank("/tmp/sc2000-growth-power.sc2", "GrowthPower").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0xa5a5_5a5a);
     let process = state.pe_process_crt_seed();
@@ -7148,7 +7202,7 @@ fn microsim_growth_tick_power_maps_use_process_crt_seed_not_city_name() {
     // train/marina/arco growth tick must not use pe_power_recalc_seed.
     let mut city = City::new_blank("/tmp/sc2000-micro-power.sc2", "MicroPower").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0xb1b1_1b1b);
     let process = state.pe_process_crt_seed();
@@ -7162,7 +7216,7 @@ fn day2_density_power_maps_use_process_crt_seed_not_city_name() {
     // CRT plant network (FUN_004679B0), not city-name pe_power_recalc_seed.
     let mut city = City::new_blank("/tmp/sc2000-day2-power.sc2", "Day2Power").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0xc3c3_3c3c);
     let process = state.pe_process_crt_seed();
@@ -7303,7 +7357,7 @@ fn growth_tick_rci_development_services_use_process_crt_seed_not_city_name() {
     // FUN_004679B0 process CRT (same seed as sibling growth power maps).
     let mut city = City::new_blank("/tmp/sc2000-rci-power.sc2", "RciPower").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0xd4d4_4d4d);
     let process = state.pe_process_crt_seed();
@@ -7318,7 +7372,7 @@ fn develop_rci_zones_power_maps_use_process_crt_seed_not_city_name() {
     // share FUN_004679B0 process CRT with the live growth tick.
     let mut city = City::new_blank("/tmp/sc2000-batch-rci.sc2", "BatchRci").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0xe5e5_5e5e);
     let process = state.pe_process_crt_seed();
@@ -7333,7 +7387,7 @@ fn day2_density_water_maps_use_process_crt_seed_not_city_name() {
     // sibling police/fire power maps (same entry seed).
     let mut city = City::new_blank("/tmp/sc2000-day2-water.sc2", "Day2Water").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x1717_7171);
     let process = state.pe_process_crt_seed();
@@ -7349,7 +7403,7 @@ fn decline_unserved_rci_power_maps_use_process_crt_seed_not_city_name() {
     // Unserved RCI decline powered checks share growth-tick process CRT.
     let mut city = City::new_blank("/tmp/sc2000-decline-power.sc2", "DeclinePwr").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x3939_9393);
     let process = state.pe_process_crt_seed();
@@ -7364,7 +7418,7 @@ fn january_year_roll_water_coverage_uses_process_crt_seed_not_city_name() {
     // FUN_004679B0 process CRT (not city-name pe_power_recalc_seed).
     let mut city = City::new_blank("/tmp/sc2000-jan-water.sc2", "JanWater").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     city.set_saved_date_and_day(
         CityDate {
             year: 1900,
@@ -7386,7 +7440,7 @@ fn live_city_service_outcomes_power_maps_use_process_crt_seed_not_city_name() {
     // process CRT (same seed as growth-tick RCI development services).
     let mut city = City::new_blank("/tmp/sc2000-svc-power.sc2", "SvcPower").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x5b5b_b5b5);
     let process = state.pe_process_crt_seed();
@@ -7474,10 +7528,14 @@ fn mac68k_day20_clears_water_work_bit_and_keeps_unpiped_tower_service() {
 }
 
 #[test]
-fn mac_monthly_arcology_uses_saved_xbit_water_result_for_population_and_map() {
+fn mac_annual_arcology_uses_saved_xbit_water_result_for_population_and_map() {
     let mut city = City::new_blank("/tmp/sc2000-mac-arco-water-worker.sc2", "MacArcoWater")
         .expect("blank city");
     city.kind = CityFileKind::MacCity;
+    city.set_saved_date(CityDate {
+        year: 1900,
+        month: 12,
+    });
     city.set_mac_state_misc_u32_at(0x102c, 8_000);
     city.set_mac_state_misc_u32_at(0x68, 4);
     city.set_mac_state_misc_u32_at(912 * 4, 0);
@@ -7514,7 +7572,7 @@ fn mac_monthly_arcology_uses_saved_xbit_water_result_for_population_and_map() {
 
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
-    state.sim_calendar_day0_budget_and_date_at(1900, 1, 1);
+    state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
     let served_arcology = state.city.tile_bits_at(41, 40).expect("served arcology");
     let geometry_only_arcology = state.city.tile_bits_at(61, 60).expect("other arcology");
@@ -7526,7 +7584,7 @@ fn mac_monthly_arcology_uses_saved_xbit_water_result_for_population_and_map() {
 }
 
 #[test]
-fn mac_monthly_xmic_callers_preserve_raw_funding_dwords() {
+fn mac_january_xmic_caller_preserves_raw_funding_dwords() {
     let mut city = City::new_blank(
         "/tmp/sc2000-mac-monthly-raw-xmic-funding.sc2",
         "MacRawXmicFunding",
@@ -7536,7 +7594,7 @@ fn mac_monthly_xmic_callers_preserve_raw_funding_dwords() {
     city.set_saved_date_and_day(
         CityDate {
             year: 1900,
-            month: 1,
+            month: 12,
         },
         1,
     );
@@ -7594,7 +7652,7 @@ fn mac_monthly_xmic_callers_preserve_raw_funding_dwords() {
 
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
-    state.sim_calendar_day0_budget_and_date_at(1900, 2, 1);
+    state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
     let library_row = state.city.microsim_at(library).expect("library row");
     assert_eq!(library_row.stat1, 0, "the raw low funding word is zero");
@@ -7805,7 +7863,7 @@ fn service_status_line_power_maps_use_process_crt_seed_not_city_name() {
     // Status-line ServiceStatus shortages/capacity share FUN_004679B0 process CRT.
     let mut city = City::new_blank("/tmp/sc2000-status-crt.sc2", "StatusCrt").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x7d7d_d7d7);
     let process = state.pe_process_crt_seed();
@@ -7821,7 +7879,7 @@ fn city_service_coverage_power_maps_use_process_crt_seed_not_city_name() {
     // FUN_004679B0 process CRT (same seed as live ServiceStatus).
     let mut city = City::new_blank("/tmp/sc2000-cov-crt.sc2", "CovCrt").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x8e8e_e8e8);
     let process = state.pe_process_crt_seed();
@@ -7900,7 +7958,7 @@ fn power_service_summary_counts_only_powered_consumers_as_served() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
 
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 4);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 4);
     city.set_zone(11, 10, 1);
     city.set_zone(12, 10, 1);
     city.set_zone(13, 10, 1);
@@ -7927,7 +7985,7 @@ fn power_service_summary_counts_only_powered_consumers_as_served() {
 fn pe_power_service_summary_counts_xbld_band_consumers_only() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 30);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 30);
     stamp_power_plant_xbit_powerable(&mut city, &[(10, 10)]);
     city.set_zone(11, 10, 1);
     city.set_building(12, 10, 0x70);
@@ -7978,7 +8036,7 @@ fn power_service_maps_mark_only_consumers_served_by_connected_capacity() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
 
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 4);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 4);
     city.set_zone(11, 10, 1);
     city.set_zone(12, 10, 1);
     city.set_zone(13, 10, 1);
@@ -8326,10 +8384,10 @@ fn live_population_stats_ignore_stale_saved_misc_counts() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     for (offset, value) in [
         (MISC_WORK_FORCE_PERCENT_OFFSET, 66),
-        (MISC_POPULATED_TILE_COUNT_OFFSET, 99),
-        (MISC_RESIDENTIAL_TILE_COUNT_OFFSET, 33),
-        (MISC_COMMERCIAL_TILE_COUNT_OFFSET, 44),
-        (MISC_INDUSTRIAL_TILE_COUNT_OFFSET, 55),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET, 99),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET + 8, 33),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET + 16, 44),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET + 24, 55),
         (MISC_ARCOLOGY_POPULATION_OFFSET, 88_000),
         (MISC_NORMAL_POPULATION_OFFSET, 999),
     ] {
@@ -8339,7 +8397,7 @@ fn live_population_stats_ignore_stale_saved_misc_counts() {
     let saved = population_stats_for_city(&city);
     assert_eq!(saved.normal_population, 999);
     assert_eq!(saved.arcology_population, 88_000);
-    assert_eq!(saved.populated_tiles, 99);
+    assert_eq!(saved.populated_tiles, 0);
     assert_eq!(saved.work_force, (999 + 88_000) * 66 / 100);
 
     assert_eq!(
@@ -8361,14 +8419,14 @@ fn live_population_stats_count_complete_arcologies_from_map() {
 }
 
 #[test]
-fn refresh_live_misc_rewrites_stale_population_counters_to_live_census() {
+fn refresh_live_misc_preserves_saved_growth_counters() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     for (offset, value) in [
         (MISC_WORK_FORCE_PERCENT_OFFSET, 66),
-        (MISC_POPULATED_TILE_COUNT_OFFSET, 99),
-        (MISC_RESIDENTIAL_TILE_COUNT_OFFSET, 33),
-        (MISC_COMMERCIAL_TILE_COUNT_OFFSET, 44),
-        (MISC_INDUSTRIAL_TILE_COUNT_OFFSET, 55),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET, 99),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET + 8, 33),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET + 16, 44),
+        (MISC_PE_GROWTH_AGGREGATE_OFFSET + 24, 55),
         (MISC_ARCOLOGY_POPULATION_OFFSET, 88_000),
         (MISC_NORMAL_POPULATION_OFFSET, 999),
     ] {
@@ -8403,25 +8461,27 @@ fn refresh_live_misc_rewrites_stale_population_counters_to_live_census() {
         "live census refresh preserves the published Win95 workforce summary"
     );
     assert_eq!(
-        state.city.misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET),
-        Some(live.populated_tiles)
+        state.city.misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET),
+        Some(99)
     );
     assert_eq!(
-        state.city.misc_u32_at(MISC_RESIDENTIAL_TILE_COUNT_OFFSET),
-        Some(live.residential_tiles)
+        state.city.misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET + 8),
+        Some(33)
     );
     assert_eq!(
-        state.city.misc_u32_at(MISC_COMMERCIAL_TILE_COUNT_OFFSET),
-        Some(live.commercial_tiles)
+        state.city.misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET + 16),
+        Some(44)
     );
     assert_eq!(
-        state.city.misc_u32_at(MISC_INDUSTRIAL_TILE_COUNT_OFFSET),
-        Some(live.industrial_tiles)
+        state.city.misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET + 24),
+        Some(55)
     );
     assert_eq!(
         state.city.misc_u32_at(MISC_ARCOLOGY_POPULATION_OFFSET),
-        Some(live.arcology_population)
+        Some(88_000),
+        "display capacity must not replace the native arcology resident total"
     );
+    assert_eq!(state.city.pe_dw_arcology_population(), 88_000);
     assert_eq!(
         state.city.misc_u32_at(MISC_NORMAL_POPULATION_OFFSET),
         Some(live.normal_population)
@@ -9794,6 +9854,7 @@ fn pe_service_coverage_uses_raw_funding_and_signed_prison_word() {
     let mut city =
         City::new_blank("/tmp/sc2000-pe-raw-service-funding.sc2", "test").expect("blank city");
     city.set_building(24, 20, 211);
+    city.set_zone(24, 20, 0x80);
     city.set_tile_bits(24, 20, TileBits::new(0xc0));
     set_budget_funding_for_test(&mut city, 1, 120);
     let power_maps = power_service_maps(&city);
@@ -10075,6 +10136,10 @@ fn mac_phase0_prison_gate_feeds_phase2_police_coverage() {
     // uninitialized Mac census, then switches to the native Mac document
     // layout and supplies the two source-owned census entries explicitly.
     city.kind = CityFileKind::MacCity;
+    city.set_saved_date(CityDate {
+        year: 1900,
+        month: 12,
+    });
     city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_BASE + 0xd2 * 4, 1);
     city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_BASE + 0xd8 * 4, 16);
     city.set_mac_state_misc_u32_at(0x102c, 10_000);
@@ -10108,9 +10173,9 @@ fn mac_phase0_prison_gate_feeds_phase2_police_coverage() {
 
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
-    // CODE 14 phase 0 runs the slot-ordered CODE 3 XMIC pass. The prison
-    // row is later than police and publishes the gate consumed in phase 2.
-    state.sim_calendar_day0_budget_and_date_at(1900, 1, 1);
+    // At the December-to-January rollover, phase 0 runs the CODE 3 XMIC
+    // pass. The prison row publishes the gate consumed in phase 2.
+    state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
     assert_eq!(
         state
             .city
@@ -10446,6 +10511,7 @@ fn pe_service_coverage_projects_positive_tile_coordinates_by_floor_division() {
     let mut city =
         City::new_blank("/tmp/pe-service-projection.sc2", "Service").expect("blank city");
     city.set_building(25, 21, 210);
+    city.set_zone(25, 21, 0x80);
     city.set_tile_bits(25, 21, TileBits::new(0xc0));
     set_budget_funding_for_test(&mut city, 0, 20);
     let power = power_service_maps(&city);
@@ -10562,7 +10628,7 @@ fn pe_service_coverage_adds_ordinance_baseline_only_for_developed_tiles() {
 }
 
 #[test]
-fn pe_service_coverage_reads_same_tile_xbit_powerable_and_powered_bits() {
+fn pe_service_coverage_reads_xzon_corner_and_same_tile_xbit_powered_bit() {
     let mut city = City::new_blank("/tmp/sc2000-pe-service.sc2", "test").expect("blank city");
     city.set_building(24, 20, 210);
     let center = density_map_index(24, 20);
@@ -10580,17 +10646,21 @@ fn pe_service_coverage_reads_same_tile_xbit_powerable_and_powered_bits() {
     let ineligible = coverage(&city);
     assert_eq!(ineligible[center], 0);
 
-    city.set_tile_bits(24, 20, TileBits::new(0x80));
+    city.set_tile_bits(24, 20, TileBits::new(0xc0));
+    assert_eq!(coverage(&city)[center], 0);
+
+    city.set_zone(24, 20, 0x80);
+    city.set_tile_bits(24, 20, TileBits::new(0));
     let unpowered = coverage(&city);
     assert_eq!(unpowered[center], 125);
 
-    city.set_tile_bits(24, 20, TileBits::new(0xc0));
+    city.set_tile_bits(24, 20, TileBits::new(0x40));
     let powered = coverage(&city);
     assert_eq!(powered[center], 250);
 }
 
 #[test]
-fn pe_service_coverage_accumulates_each_eligible_station_tile() {
+fn pe_service_coverage_accumulates_each_marked_station_corner() {
     let make_coverage = |city: &City| {
         let power_maps = power_service_maps(city);
         let services = rci_development_services_for_city_with_power(city, &power_maps);
@@ -10605,21 +10675,21 @@ fn pe_service_coverage_accumulates_each_eligible_station_tile() {
     let mut one_tile =
         City::new_blank("/tmp/sc2000-pe-service-single.sc2", "test").expect("blank city");
     one_tile.set_building(25, 21, 210);
+    one_tile.set_zone(25, 21, 0x80);
     one_tile.set_tile_bits(25, 21, TileBits::new(0xc0));
     set_budget_funding_for_test(&mut one_tile, 0, 20);
     let one = make_coverage(&one_tile);
 
     let mut full_footprint = one_tile.clone();
-    for y in 20..=22 {
-        for x in 24..=26 {
-            full_footprint.set_building(x, y, 210);
-            full_footprint.set_tile_bits(x, y, TileBits::new(0xc0));
-        }
-    }
-    let nine = make_coverage(&full_footprint);
+    stamp_complete_building_for_test(&mut full_footprint, 24, 20, 210, 3);
+    seed_service_coverage_footprint_for_test(&mut full_footprint, 24, 20, 3, true);
     let center = density_map_index(24, 20);
     assert_eq!(one[center], 50);
-    assert!(nine[center] > one[center]);
+    assert_eq!(make_coverage(&full_footprint), one);
+
+    stamp_complete_building_for_test(&mut full_footprint, 27, 20, 210, 3);
+    seed_service_coverage_footprint_for_test(&mut full_footprint, 27, 20, 3, true);
+    assert!(make_coverage(&full_footprint)[center] > one[center]);
 }
 
 #[test]
@@ -10769,6 +10839,8 @@ fn mac_phase21_industry_demand_matches_68020_word_overflow() {
     let expected = [-8192_i32, 1384, 8191, 0, 0, 0, 8191, -8191, -1384, 8191, 75];
     let mut city = City::new_blank("/tmp/mac-industry-phase21.city", "Industry").unwrap();
     city.kind = CityFileKind::MacCity;
+    // Use a target equal to the seeded row total to isolate WORD smoothing.
+    city.set_mac_rci_counter(5, 1155);
     for (index, value) in prior.into_iter().enumerate() {
         let base = INDUSTRY_MISC_OFFSET + index * INDUSTRY_FIELD_COUNT * 4;
         city.set_mac_state_misc_u32_at(base, value as u32);
@@ -10793,6 +10865,7 @@ fn mac_phase21_industry_demand_uses_both_city_layouts_and_survives_save() {
         ("mac-industry-cross-layout.city", CityFileKind::MacCity),
     ] {
         let mut city = blank_city_layout_fixture(name, "Industry");
+        city.set_mac_rci_counter(5, 1155);
         for index in 0..INDUSTRY_COUNT {
             let base = INDUSTRY_MISC_OFFSET + index * INDUSTRY_FIELD_COUNT * 4;
             city.set_misc_u32_at(base, 20_000);
@@ -10904,6 +10977,10 @@ fn win95_industry_panel_and_editor_use_shared_mac_layout_rows() {
     assert_eq!(
         rows, native_rows,
         "shared saved rows decode through WORD lanes"
+    );
+    assert_eq!(
+        rows.map(|row| row.ratio),
+        [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 10]
     );
 
     ensure_industry_misc_defaults_before_extension(&mut city);
@@ -11250,10 +11327,6 @@ fn monthly_simulation_persists_live_stats_to_misc() {
         Some(72)
     );
     assert_eq!(
-        state.city.misc_u32_at(MISC_RESIDENTIAL_POPULATION_OFFSET),
-        Some(population.residential_population)
-    );
-    assert_eq!(
         state
             .city
             .misc_u32_values(MISC_BUILDING_TILE_COUNTS_OFFSET, BUILDING_TILE_COUNT_VALUES),
@@ -11264,22 +11337,6 @@ fn monthly_simulation_persists_live_stats_to_misc() {
             .city
             .misc_u32_values(MISC_MILITARY_TILE_COUNTS_OFFSET, MILITARY_TILE_COUNT_VALUES),
         military_tile_counts_for_city(&state.city).to_vec()
-    );
-    assert_eq!(
-        state.city.misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET),
-        Some(population.populated_tiles)
-    );
-    assert_eq!(
-        state.city.misc_u32_at(MISC_RESIDENTIAL_TILE_COUNT_OFFSET),
-        Some(population.residential_tiles)
-    );
-    assert_eq!(
-        state.city.misc_u32_at(MISC_COMMERCIAL_TILE_COUNT_OFFSET),
-        Some(population.commercial_tiles)
-    );
-    assert_eq!(
-        state.city.misc_u32_at(MISC_INDUSTRIAL_TILE_COUNT_OFFSET),
-        Some(population.industrial_tiles)
     );
     assert_eq!(
         state.city.misc_u32_at(MISC_NORMAL_POPULATION_OFFSET),
@@ -11662,32 +11719,34 @@ fn simulation_january_month_keeps_budget_status_line() {
 
 #[test]
 fn mac_native_auto_budget_turns_off_after_negative_annual_settlement() {
-    let mut city =
-        City::new_blank("/tmp/sc2000-mac-negative-budget.sc2", "MacBudget").expect("blank city");
-    city.kind = CityFileKind::MacCity;
-    city.set_saved_date(CityDate {
-        year: 1900,
-        month: 12,
-    });
-    city.set_city_funds(-1);
-    city.set_mac_state_misc_u32_at(AUTO_BUDGET_MISC_OFFSET, AUTO_BUDGET_ENABLED_VALUE);
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/citygame-negative-budget.sc2", "MacBudget").unwrap();
+        city.kind = kind;
+        city.set_saved_date(CityDate {
+            year: 1900,
+            month: 12,
+        });
+        city.set_city_funds(1);
+        let expense = budget_row_misc_offset_for_city(&city, 5, 2).unwrap();
+        city.set_budget_misc_u32_values(expense, &[24]);
+        assert!(set_auto_budget_enabled_for_engine(
+            &mut city,
+            EngineFidelity::Mac68k,
+            true,
+        ));
 
-    let mut state = test_state(city);
-    state.engine_fidelity = EngineFidelity::Mac68k;
-    state.traffic.set_speed(GameSpeed::Llama);
-    state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.traffic.set_speed(GameSpeed::Llama);
+        state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
-    assert_eq!(
-        state
-            .city
-            .mac_state_misc_u32_at(AUTO_BUDGET_MISC_OFFSET)
-            .map(|value| value as u8),
-        Some(0),
-        "native Auto-Budget is cleared after the negative year-end cash result"
-    );
-    assert!(!state.menu_checks.auto_budget);
-    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
-    assert_eq!(state.traffic.speed(), GameSpeed::Paused);
+        assert_eq!(state.city.city_funds(), -1);
+        assert!(!mac_auto_budget_enabled_for_city(&state.city));
+        assert!(!state.menu_checks.auto_budget);
+        assert_eq!(state.city_info_dialog, None);
+        assert_eq!(state.traffic.speed(), GameSpeed::Llama);
+        assert_eq!(state.query_line, "Fiscal crisis: Auto-Budget turned off");
+    }
 }
 
 #[test]
@@ -11993,7 +12052,7 @@ fn win95_population_stats_use_shared_saved_population_on_mac_layout() {
     )
     .expect("blank Win-layout city");
     win_city.set_misc_u32_at(MISC_NORMAL_POPULATION_OFFSET, 90_000);
-    win_city.set_misc_u32_at(MISC_POPULATED_TILE_COUNT_OFFSET, 4_000);
+    win_city.set_misc_u32_at(MISC_PE_GROWTH_AGGREGATE_OFFSET, 4_000);
     stamp_complete_building_for_test(&mut win_city, 20, 20, 0xae, 3);
     let mac = population_stats_for_city_with_fidelity(&win_city, EngineFidelity::Mac68k);
     let live = live_population_stats_for_city(&win_city);
@@ -12313,7 +12372,7 @@ fn auto_budget_preserves_manual_service_funding_when_revenue_covers_expense() {
 fn population_panel_fame_uses_process_crt_counters_when_misc_missing() {
     let mut city = City::new_blank("/tmp/sc2000-pop-fame.sc2", "PopFame").expect("blank");
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     city.set_zone(20, 20, ZONE_RESIDENTIAL_LIGHT | ZONE_CORNER_ALL);
     city.set_building(20, 20, RESIDENTIAL_1X1_BUILDINGS[0]);
     city.clear_traffic_density_for_test();
@@ -12463,7 +12522,7 @@ fn xgrp_history_water_percent_uses_pe_coverage_bss_not_used_percent() {
     city.set_pe_water_coverage_percent(0x2a);
     // Used-% would differ if XGRP still read dwWaterUsedPercentage / CRT seed.
     city.set_building(10, 10, 200);
-    pe_seed_power_plant_xval_for_test(&mut city, 10, 10, 18);
+    pe_seed_power_plant_altitude_for_test(&mut city, 10, 10, 18);
     let mut state = test_state(city);
     state.pe_process_crt = Win95CrtRand::new(0x6c6c_c6c6);
     let used =
@@ -12604,6 +12663,9 @@ fn pe_rci_demand_uses_and_refreshes_saved_previous_residential_zone_population()
     );
 
     let mut state = test_state(loaded);
+    state.refresh_live_misc_current_values();
+    state.sim_calendar_day23_stats_dialogs();
+    assert_eq!(state.city.pe_dw_residential_population, 120);
     state
         .refresh_live_rci_demand_values(PopulationStats::default(), CityServiceOutcomes::default());
     assert_eq!(state.city.pe_dw_residential_population, 200);
@@ -14114,6 +14176,187 @@ fn mac_phase21_native_demand_finalizer_matches_flint_68020_trace() {
 }
 
 #[test]
+fn mac_phase21_publishes_flint_demand_industry_and_cohorts_on_both_layouts() {
+    const COHORT_TABLE: usize = 0x7c;
+    let input = include_str!(
+        "../../../tests/fixtures/simulation/mac/mac_phase21_scheduler_cohort_transition.csv"
+    )
+    .lines()
+    .nth(1)
+    .unwrap()
+    .split(',')
+    .collect::<Vec<_>>();
+    let lanes = [10, 11, 12].map(|column| {
+        input[column]
+            .split(':')
+            .map(|word| u32::from_str_radix(word, 16).unwrap())
+            .collect::<Vec<_>>()
+    });
+    let packed: [u32; 60] = std::array::from_fn(|i| lanes[i % 3][i / 3]);
+    // Original CODE 8 shrinking case and a second replay with a larger
+    // industrial scan total that distributes growth and changes both modifiers.
+    let cases = [
+        (
+            996,
+            [-1436, -1975, -1977, 0x111, 0x222, 0x333, 0x444, 0x555],
+            [246, 23, 7, 1, 192, 486, 11, 33, 7, 29, 25],
+            [1, 5],
+            [60, 59, 86],
+            0x80b0_5d7e_b35a_f67d,
+            2_109_433_906,
+        ),
+        (
+            2936,
+            [-1046, -1624, -2000, 0x111, 0x222, 0x333, 0x444, 0x555],
+            [282, 23, 40, 1, 341, 621, 191, 214, 73, 471, 156],
+            [0, 0],
+            [63, 59, 85],
+            0xa177_4b11_cff2_a01b,
+            64_747_698,
+        ),
+    ];
+    for (
+        name,
+        (
+            dense_industry,
+            expected,
+            population_rows,
+            [pollution, mix],
+            cohort_summary,
+            cohort_hash,
+            outgoing_seed,
+        ),
+    ) in ["mac-rci-phase21.city", "mac-rci-phase21.sc2"]
+        .into_iter()
+        .flat_map(|name| cases.into_iter().map(move |case| (name, case)))
+    {
+        let mut city = blank_city_layout_fixture(name, "Flint");
+        let kind = city.kind;
+        city.set_misc_u32_at(MISC_RESIDENTIAL_POPULATION_OFFSET, 1508);
+        city.set_misc_u32_at(MISC_DIFFICULTY_OFFSET, 2);
+        city.set_mac_state_misc_u32_at(MISC_NORMAL_POPULATION_OFFSET, 31_410);
+        city.set_mac_state_misc_u32_at(MISC_INDUSTRIAL_MIX_BONUS_OFFSET, 5);
+        city.set_mac_state_misc_u32_at(0x1024, 13);
+        city.set_mac_state_misc_u32_at(0x1050, 1);
+        city.set_mac_state_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 86);
+        // Reproduce the draw-count inputs from the bounded Flint replay. The
+        // first map sample lands in water and the four neighbor rows are active.
+        city.set_tile_bits(94, 107, TileBits::new(0x04));
+        city.set_misc_u32_values(
+            0x06d8,
+            &[
+                7, 2852, 2945, 0, 36, 473, 461, 0, 32, 1947, 2064, 0, 11, 313, 188, 0,
+            ],
+        );
+        city.set_misc_u32_at(0x01f0 + 0xd5 * 4, 36);
+        city.set_misc_u32_at(0x01f0 + 0xd7 * 4, 16);
+        for (tile, count) in [(0xd6, 63), (0xd9, 16), (0xd1, 27)] {
+            city.set_misc_u32_at(0x01f0 + tile * 4, count);
+        }
+        for service in [2, 3, 4] {
+            set_budget_funding_for_city_test(&mut city, service, 100);
+        }
+        city.set_misc_u32_values(COHORT_TABLE, &packed);
+        city.prepare_mac_fidelity_from_saved_city();
+        for (index, count) in [578, 1023, 102, 442, 64, dense_industry]
+            .into_iter()
+            .enumerate()
+        {
+            city.set_mac_rci_counter(index + 1, count);
+        }
+        for (index, value) in [-1424_i32, -2000, -2000, 0x111, 0x222, 0x333, 0x444, 0x555]
+            .into_iter()
+            .enumerate()
+        {
+            city.set_misc_u32_at(RCI_DEMAND_MISC_OFFSET + index * 4, value as u32);
+        }
+        for index in 0..3 {
+            let offset = tax_rate_misc_offset_for_city(&city, index).unwrap();
+            city.set_budget_misc_u32_values(offset, &[7]);
+        }
+        for ordinance in [
+            ORDINANCE_INCOME_TAX,
+            ORDINANCE_SALES_TAX,
+            ORDINANCE_ANNUAL_CARNIVAL,
+            ORDINANCE_HOMELESS_SHELTER,
+            ORDINANCE_POLLUTION_CONTROLS,
+        ] {
+            assert!(set_city_ordinance_enabled(&mut city, ordinance, true));
+        }
+        let industry_demand = [33, 20, 26, 9, 21, 35, 24, 24, 15, 46, 21];
+        let industry_tax = [6, 7, 7, 7, 7, 6, 7, 7, 7, 7, 7];
+        let industry_population = [249, 23, 7, 1, 194, 491, 11, 34, 7, 29, 25];
+        for (index, ((demand, tax), population)) in industry_demand
+            .into_iter()
+            .zip(industry_tax)
+            .zip(industry_population)
+            .enumerate()
+        {
+            city.set_misc_u32_values(
+                INDUSTRY_MISC_OFFSET + index * INDUSTRY_FIELD_COUNT * 4,
+                &[demand, tax, population],
+            );
+        }
+
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = MacToolboxRng::new(1_055_876_497);
+        state.sim_calendar_day21_demand_and_graphs();
+        assert_eq!(state.mac_process_rng.seed(), outgoing_seed);
+        assert_eq!(state.city.mac_population_change_balances, [0, 48]);
+        assert_eq!(
+            state.city.misc_i32_values(RCI_DEMAND_MISC_OFFSET, 8),
+            expected
+        );
+        assert_eq!(state.city.mac_residential_pair_total(), 1601);
+        assert_eq!(state.city.pe_dw_residential_population, 1508);
+
+        let path = std::env::temp_dir().join(format!("citygame-{}-{name}", std::process::id()));
+        state.city.save(&path).unwrap();
+        let reloaded = City::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(reloaded.kind, kind);
+        assert_eq!(reloaded.mac_residential_pair_total(), 1601);
+        assert_eq!(
+            reloaded.misc_i32_values(RCI_DEMAND_MISC_OFFSET, 8),
+            expected
+        );
+        if kind.is_win95() {
+            assert_eq!(reloaded.pe_dw_residential_population, 1508);
+        }
+        for city in [&state.city, &reloaded] {
+            assert_eq!(city.misc_u32_values(0x44, 3), cohort_summary);
+            let history = city.chunk_u32_values(XGRP_CHUNK_NAME, 0, XGRP_VALUES);
+            assert_eq!(history[10 * XGRP_SAMPLES_PER_SERIES], cohort_summary[1]);
+            assert_eq!(history[11 * XGRP_SAMPLES_PER_SERIES], cohort_summary[2]);
+            let hash = city
+                .misc_u32_values(COHORT_TABLE, 60)
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                });
+            assert_eq!(hash, cohort_hash);
+            let rows = mac_industry_stats_for_city(city);
+            assert_eq!(
+                rows.map(|row| row.demand),
+                [24, 15, 19, 6, 15, 26, 18, 18, 11, 34, 15]
+            );
+            assert_eq!(rows.map(|row| row.tax as u32), industry_tax);
+            assert_eq!(rows.map(|row| row.population), population_rows);
+            assert_eq!(
+                city.mac_state_misc_u32_at(MISC_INDUSTRIAL_MIX_POLLUTION_BONUS_OFFSET),
+                Some(pollution)
+            );
+            assert_eq!(
+                city.mac_state_misc_u32_at(MISC_INDUSTRIAL_MIX_BONUS_OFFSET),
+                Some(mix)
+            );
+        }
+    }
+}
+
+#[test]
 fn pe_rci_ordinances_nudge_tax_rate_index_before_table_lookup() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     assert_eq!(
@@ -15000,6 +15243,30 @@ fn pe_rci_growth_roll_succeeds_optional_keeps_test_isolation() {
         before,
         "cfg(test) must keep isolation/zero-roll and not consume process CRT"
     );
+}
+
+#[test]
+fn pe_growth_keeps_startbuilding_draws_when_power_or_trip_fails() {
+    let _live_rng = LiveGrowthRng::enable();
+    let mut city = City::new_blank("/tmp/citygame-unserved-growth.sc2", "Unserved").unwrap();
+    city.set_zone(20, 20, ZONE_RESIDENTIAL_DENSE);
+    city.set_building(21, 20, 0x1d);
+    city.set_zone(24, 24, ZONE_INDUSTRIAL_DENSE | ZONE_CORNER_ALL);
+    city.set_building(24, 24, 0x85);
+    city.set_zone(32, 32, ZONE_RESIDENTIAL_DENSE);
+    set_rci_demand_for_test(&mut city, 2000, 2000, 1408);
+    let mut state = test_state(city);
+    state.bypass_growth_trip_gate = false;
+    state.pe_process_crt = Win95CrtRand::new(2_503_793_637);
+
+    state.sim_calendar_one_growth_tick(0, 0);
+
+    // Native 0x4358b0: 0x4362b7 at (20,20), then 0x43611a and
+    // 0x4362b7 at (24,24). The vacancy with no nearby transit exits earlier.
+    assert_eq!(state.pe_process_crt_seed(), 255_755_822);
+    assert_eq!(state.city.building_at(20, 20), 0);
+    assert_eq!(state.city.building_at(24, 24), 0x85);
+    assert_eq!(state.city.building_at(32, 32), 0);
 }
 
 #[test]
@@ -17344,6 +17611,7 @@ fn prison_bonus_raises_live_police_coverage() {
     // One marked source tile keeps the center below byte saturation so the
     // native +1 wPrisonBonus contribution is observable.
     city.set_building(20, 20, 210);
+    city.set_zone(20, 20, 0x80);
     city.set_tile_bits(
         20,
         20,
@@ -17474,6 +17742,62 @@ fn rci_decline_requires_xzon_view_corner_on_multitile() {
     let mut state = test_state(city);
     assert_eq!(state.decline_unserved_rci_zones(), 4);
     assert!(is_abandoned_building(state.city.building_at(20, 20)));
+}
+
+#[test]
+fn win95_abandoned_redevelopment_uses_raw_corner_and_keeps_cell_zones() {
+    // Native 0x43620f calls ChooseAndPlace with the scanned corner and current pop.
+    // The fixture supplies the same successful trip result as the native replay.
+    let _live_rng = LiveGrowthRng::enable();
+    for (x, y, abandoned, size, expected) in [
+        (20, 21, 0xaa, 2, Some(0x96)),
+        (20, 22, 0xc4, 3, Some(0xb9)),
+        (1, 21, 0xaa, 2, None),
+    ] {
+        let mut city = City::new_blank("/tmp/citygame-redevelop.sc2", "Redevelop").unwrap();
+        city.set_view_rotation(0);
+        let origin = (x, y + 1 - size);
+        let footprint = building_footprint_from_origin(origin.0, origin.1, size).unwrap();
+        for (i, &(tx, ty)) in footprint.iter().enumerate() {
+            city.set_building(tx, ty, abandoned);
+            city.set_zone(tx, ty, ZONE_INDUSTRIAL_DENSE);
+            city.set_terrain(tx, ty, (i & 1) as u8);
+        }
+        city.set_zone(x, y, ZONE_COMMERCIAL_DENSE | PE_POSITION_ANGLE[0]);
+        set_rci_demand_for_test(&mut city, 1_000, 1_000, 1_000);
+        let mut state = test_state(city);
+        state.bypass_growth_trip_gate = false;
+        state.trip_served_tiles[y * CITY_WIDTH + x] = true;
+        let mut power = PowerServiceMaps::default();
+        set_saved_xbit_growth_power_for_test(&mut power, x, y - 1, true);
+        let mut crt = Win95CrtRand::new(1);
+        let candidate = state.rci_development_candidate_at(
+            x,
+            y,
+            &vec![false; CITY_TILES],
+            &power,
+            city_service_outcomes_for_city(&state.city),
+            &rci_development_services_for_city(&state.city),
+            Some(&mut crt),
+        );
+        assert_eq!(crt.seed(), 3_357_800_067, "roll and picker at ({x},{y})");
+        assert_eq!(candidate.as_ref().map(|c| c.plan.building), expected);
+        if let Some(candidate) = candidate {
+            assert_eq!(candidate.plan.origin, origin);
+            assert_eq!(candidate.plan.footprint, footprint);
+            state.stamp_zone_development_with_crt(&candidate.plan, &mut crt);
+            for (tx, ty) in footprint {
+                assert_eq!(state.city.building_at(tx, ty), expected.unwrap());
+                let zone = if (tx, ty) == (x, y) {
+                    ZONE_COMMERCIAL_DENSE
+                } else {
+                    ZONE_INDUSTRIAL_DENSE
+                };
+                assert_eq!(state.city.zone_at(tx, ty).unwrap().zone_id(), zone);
+            }
+            assert_eq!(crt.seed(), 3_357_800_067);
+        }
+    }
 }
 
 #[test]
@@ -17936,6 +18260,21 @@ fn mac_fallback_special_zones_keep_the_citygame_demand_gate() {
             })
             .map_or(0, |plan| plan.building)
     );
+}
+
+#[test]
+fn pe_military_zone_without_an_active_base_keeps_the_crt_seed() {
+    let mut city = City::new_blank("/tmp/citygame-military-roll.sc2", "Military").unwrap();
+    city.set_zone(20, 20, ZONE_MILITARY | ZONE_CORNER_ALL);
+    city.set_building(20, 20, 0xe7);
+    let mut state = test_state(city);
+    for base in [MILITARY_BASE_NONE, MILITARY_BASE_DECLINED, 6, 255] {
+        set_military_base_type_for_test(&mut state.city, base);
+        let before = state.pe_process_crt_seed();
+        state.sim_calendar_one_growth_tick(0, 0);
+        assert_eq!(state.pe_process_crt_seed(), before, "selector {base}");
+        assert_eq!(state.city.building_at(20, 20), 0xe7);
+    }
 }
 
 #[test]
@@ -19371,6 +19710,10 @@ fn pe_budget_tail_new_cost_waits_for_the_next_monthly_rebuild() {
     state.game_clock = GameClock::new(1900, 3);
     state.no_disasters_enabled = false;
     state.pe_process_crt = Win95CrtRand::new(47); // Native third draw selects Free Clinics.
+    // The ordinance rebuild consumes the saved current tax bases. Model the
+    // preceding tax-base refresh so this fixture starts from the same native
+    // state that the monthly calendar produces.
+    state.refresh_tax_budget_rows(population_stats_for_city(&state.city));
     let current =
         budget_row_misc_offset(BUDGET_ORDINANCE_ROW, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
     state.refresh_monthly_budget_rows(population_stats_for_city(&state.city));
@@ -19994,18 +20337,145 @@ fn mac_phase21_recovered_prefix_runs_before_weather_on_both_layouts() {
         // export_237 makes exactly one further QuickDraw call for its weather
         // choice after the map and event prefix.
         expected_rng.random_i16();
+        // export_238 consumes its first draw after weather. This seed skips
+        // the national tax and trend rolls.
+        assert_ne!(expected_rng.random_u16() % 10, 0);
+        // The blank city's four empty neighbor rows consume no row draws.
+        assert_ne!(expected_rng.random_u16() & 63, 0);
 
         state.sim_calendar_day21_demand_and_graphs();
         assert_eq!(
             state.mac_process_rng.seed(),
             expected_rng.seed(),
-            "Mac export_237 prefix plus weather call for {kind:?}"
+            "Mac export_237 through the neighbor crash gate for {kind:?}"
         );
         assert_eq!(
             state.city.mac_state_misc_u32_at(technology.misc_offset()),
             Some(0),
             "phase 21 clears the first due technology date for {kind:?}"
         );
+    }
+}
+
+#[test]
+fn mac_phase21_publishes_national_and_neighbor_economy_on_both_layouts() {
+    const NEIGHBOR_TABLE: usize = 0x06d8;
+    let initial_neighbors = [
+        (0, 250_001),
+        (1, 123_456),
+        (5_000_001, 3_500_001),
+        (5_000_000, 3_500_000),
+    ];
+    // Original CODE 8, 0x39124..0x39770, with the QuickDraw seed at the
+    // end of the blank-map export_237 prefix. Each case starts at trend 0.
+    let cases = [
+        // The neighbors see the new tax and trend in the same month.
+        (
+            11,
+            4,
+            5,
+            2,
+            1_236_935_388,
+            [
+                (0, 250_001),
+                (2, 123_044),
+                (4_987_501, 3_511_667),
+                (5_008_333, 3_485_416),
+            ],
+        ),
+        // The crash selects a populated row.
+        (
+            662,
+            4,
+            4,
+            0,
+            1_775_648_490,
+            [
+                (0, 250_001),
+                (2, 123_764),
+                (3_746_876, 1_745_625),
+                (5_004_166, 3_511_666),
+            ],
+        ),
+        // The crash can also select an empty row with a saved value.
+        (
+            202,
+            4,
+            4,
+            0,
+            196_774_752,
+            [
+                (0, 125_000),
+                (2, 123_353),
+                (5_000_001, 3_500_001),
+                (5_000_000, 3_511_666),
+            ],
+        ),
+        // A negative SANE Comp result writes its low DWORD.
+        (
+            662,
+            2_000,
+            2_000,
+            0,
+            1_775_648_490,
+            [
+                (0, 250_001),
+                (2, 4_294_885_713),
+                (3_746_876, 4_656_459),
+                (5_004_166, 4_292_657_296),
+            ],
+        ),
+    ];
+    for name in ["mac-national-phase21.city", "mac-national-phase21.sc2"] {
+        for (seed, initial_tax, tax, trend, outgoing_seed, neighbors) in cases {
+            let mut city = blank_city_layout_fixture(name, "National economy");
+            let national = [
+                (MISC_NATIONAL_POPULATION_OFFSET, 1_000_000, 1_000_000),
+                (MISC_NATIONAL_VALUE_OFFSET, 650_000, 653_250),
+                (MISC_NATIONAL_TAX_OFFSET, initial_tax, tax),
+                (MISC_NATIONAL_TREND_OFFSET, 0, trend),
+            ];
+            for (offset, initial, _) in national {
+                city.set_mac_state_misc_u32_at(offset, initial);
+            }
+            for (index, (population, value)) in initial_neighbors.into_iter().enumerate() {
+                let base = NEIGHBOR_TABLE + index * 16;
+                city.set_misc_u32_values(
+                    base,
+                    &[index as u32 + 1, population, value, 100 + index as u32],
+                );
+            }
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.mac_process_rng = MacToolboxRng::new(seed);
+            state.sim_calendar_day21_demand_and_graphs();
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                outgoing_seed,
+                "{name}, seed {seed}"
+            );
+            assert_eq!(u32::from(state.city.pe_w_national_tax), tax);
+            assert_eq!(u32::from(state.city.pe_w_national_trend), trend);
+
+            let path = std::env::temp_dir().join(format!("citygame-{}-{name}", std::process::id()));
+            state.city.save(&path).unwrap();
+            let reloaded = City::load(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(reloaded.kind, state.city.kind);
+            for city in [&state.city, &reloaded] {
+                for (offset, _, expected) in national {
+                    assert_eq!(city.mac_state_misc_u32_at(offset), Some(expected));
+                }
+                for (index, (population, value)) in neighbors.into_iter().enumerate() {
+                    let base = NEIGHBOR_TABLE + index * 16;
+                    assert_eq!(
+                        city.misc_u32_values(base, 4),
+                        [index as u32 + 1, population, value, 100 + index as u32],
+                        "{name}, seed {seed}, tax {initial_tax}, neighbor {index}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -20402,6 +20872,10 @@ fn pe_monthly_graph_publishes_attitude_scores_from_saved_globals() {
         let offset = budget_row_misc_offset(row, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
         city.set_budget_misc_u32_values(offset, &[value]);
     }
+    for (row, value) in [(10, 30), (11, 40), (12, 51)] {
+        let offset = budget_row_misc_offset(row, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
+        city.set_budget_misc_u32_values(offset, &[value]);
+    }
     let mut state = test_state(city);
     let population = PopulationStats::default();
     let outcomes = CityServiceOutcomes::default();
@@ -20411,14 +20885,14 @@ fn pe_monthly_graph_publishes_attitude_scores_from_saved_globals() {
         (0..4)
             .map(|i| state.city.pe_attitude_score_at(i))
             .collect::<Vec<_>>(),
-        [10, 100, 30, 20]
+        [5, 100, 30, 20]
     );
     let history = state.city.chunk_u32_values(XGRP_CHUNK_NAME, 0, XGRP_VALUES);
     assert_eq!(
         (4..8)
             .map(|series| history[series * XGRP_SAMPLES_PER_SERIES])
             .collect::<Vec<_>>(),
-        [10, 100, 30, 20],
+        [5, 100, 30, 20],
         "saved graph series must equal the live native score pointers"
     );
     assert_eq!(state.pe_process_crt.seed(), seed);

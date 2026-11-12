@@ -1,8 +1,109 @@
-//! Mac CODE 8 cohort arithmetic. The complete monthly transition is not yet
-//! scheduled; helpers here retain the native ordering and random draw gates.
+//! Mac CODE 8 cohort arithmetic and monthly publication.
+
+use super::{
+    City, MISC_CITY_EDUCATION_QUOTIENT_OFFSET, MISC_CITY_LIFE_EXPECTANCY_OFFSET,
+    MISC_CITY_POLLUTION_OFFSET, MISC_EQ_LE_TABLES_OFFSET, MISC_NORMAL_POPULATION_OFFSET,
+    MISC_WORK_FORCE_PERCENT_OFFSET, MacToolboxRng, PE_EQ_LE_BUCKETS, PE_EQ_LE_PACKED_DWORDS,
+    microsim_lifecycle::budget_row_misc_offset_for_city,
+};
+
+impl City {
+    /// Mac CODE 8 export 238 at 0x39dea..0x3a502, before graph publication.
+    pub(crate) fn advance_mac_cohorts_month(&mut self, rng: &mut MacToolboxRng) {
+        if self.mac_clear_cohorts_if_zero_growth() {
+            return;
+        }
+        let misc = |offset| self.mac_state_misc_u32_at(offset).unwrap_or(0);
+        let budget = |row, field| {
+            budget_row_misc_offset_for_city(self, row, field)
+                .and_then(|offset| self.budget_misc_u32_at(offset))
+                .unwrap_or(0)
+        };
+        let scalar = misc(MISC_NORMAL_POPULATION_OFFSET);
+        let flags = self.ordinance_flags_for_saved_layout();
+        let setup = MacCohortSetup {
+            school_tiles: self.mac_xbld_tile_count(0xd6),
+            college_tiles: self.mac_xbld_tile_count(0xd9),
+            hospital_tiles: self.mac_xbld_tile_count(0xd1),
+            school_funding: budget(8, 1),
+            college_funding: budget(9, 1),
+            hospital_funding: budget(7, 1),
+            health_budget: budget(0, 0),
+            flags_a: (flags >> 8) as u8,
+            flags_b: flags as u8,
+            pollution: misc(MISC_CITY_POLLUTION_OFFSET),
+            scalar,
+            class_two: self.mac_rci_counter(7),
+        };
+        let auxiliary_rate = misc(MISC_CITY_EDUCATION_QUOTIENT_OFFSET);
+        let Some(prepared) = mac_cohort_prepare_inputs(&setup) else {
+            return;
+        };
+        let mut lanes: [[u32; PE_EQ_LE_BUCKETS]; 3] = std::array::from_fn(|lane| {
+            std::array::from_fn(|i| misc(MISC_EQ_LE_TABLES_OFFSET + (i * 3 + lane) * 4))
+        });
+        let [counts, auxiliary, life] = &mut lanes;
+        let [mut deficit, mut surplus] = self.mac_population_change_balances;
+        for index in 1..PE_EQ_LE_BUCKETS {
+            mac_cohort_mortality_slot(
+                index,
+                &mut counts[index],
+                &mut auxiliary[index],
+                &mut life[index],
+                &mut deficit,
+                || rng.random_u16(),
+            );
+        }
+        mac_cohort_age_month(counts, auxiliary, life, &prepared.age, || rng.random_u16());
+        mac_cohort_births(
+            counts,
+            auxiliary,
+            life,
+            &mut surplus,
+            &MacCohortBirthInputs {
+                pollution_penalty: prepared.age.life_penalty,
+                health_cap: prepared.health,
+                life_weight: prepared.life_expectancy,
+                auxiliary_rate,
+            },
+            || rng.random_u16(),
+        );
+        if deficit > surplus {
+            mac_cohort_replenish_deficit(counts, auxiliary, life, &mut deficit, surplus);
+        } else if surplus > deficit {
+            surplus -= deficit;
+            if mac_cohort_emigrate_surplus(counts, auxiliary, life, scalar, &mut surplus, || {
+                rng.random_u16()
+            })
+            .is_none()
+            {
+                return;
+            }
+        }
+        let summary = mac_cohort_summary(counts, auxiliary, life, scalar);
+        self.mac_population_change_balances = [deficit, surplus];
+        let packed: [u32; PE_EQ_LE_PACKED_DWORDS] = std::array::from_fn(|i| lanes[i % 3][i / 3]);
+        self.set_budget_misc_u32_values(MISC_EQ_LE_TABLES_OFFSET, &packed);
+        if self.kind.is_win95() {
+            // Win-layout saveback takes the shared lanes from these caches.
+            [
+                self.pe_age_cohorts,
+                self.pe_eq_aux_points,
+                self.pe_eq_life_points,
+            ] = lanes;
+        }
+        if let Some(summary) = summary {
+            self.set_mac_state_misc_u32_at(MISC_WORK_FORCE_PERCENT_OFFSET, summary.workforce_ratio);
+            self.set_mac_state_misc_u32_at(MISC_CITY_LIFE_EXPECTANCY_OFFSET, summary.life_average);
+            self.set_mac_state_misc_u32_at(
+                MISC_CITY_EDUCATION_QUOTIENT_OFFSET,
+                summary.auxiliary_average,
+            );
+        }
+    }
+}
 
 /// Inputs already computed by the original export 238 before its age walk.
-#[allow(dead_code)]
 pub(super) struct MacCohortAgeInputs {
     pub school: u32,
     pub college: u32,
@@ -11,7 +112,6 @@ pub(super) struct MacCohortAgeInputs {
 }
 
 /// Raw native inputs used by the cohort setup immediately before mortality.
-#[allow(dead_code)]
 pub(super) struct MacCohortSetup {
     pub school_tiles: u16,
     pub college_tiles: u16,
@@ -27,14 +127,12 @@ pub(super) struct MacCohortSetup {
     pub class_two: u32,
 }
 
-#[allow(dead_code)]
 pub(super) struct MacCohortPreparedInputs {
     pub age: MacCohortAgeInputs,
     pub health: u32,
     pub life_expectancy: u32,
 }
 
-#[allow(dead_code)]
 pub(super) struct MacCohortSummary {
     pub auxiliary_average: u32,
     pub life_average: u32,
@@ -42,7 +140,6 @@ pub(super) struct MacCohortSummary {
 }
 
 /// Inputs already computed by CODE 8 before its fertile-birth pass.
-#[allow(dead_code)]
 pub(super) struct MacCohortBirthInputs {
     pub pollution_penalty: u32,
     pub health_cap: u32,
@@ -53,7 +150,6 @@ pub(super) struct MacCohortBirthInputs {
 /// Reproduce CODE 8 setup at `0x39e1a..0x39efc`, and its pollution
 /// adjustment at `0x39fde..0x3a010`. A zero denominator faults in the
 /// original; return None so callers can handle that exceptional state.
-#[allow(dead_code)]
 pub(super) fn mac_cohort_prepare_inputs(raw: &MacCohortSetup) -> Option<MacCohortPreparedInputs> {
     let scaled = |base: u32, funding: u32| (base.wrapping_mul(funding) as i32 / 100) as u32;
     let school = scaled(u32::from(raw.school_tiles / 9) * 15, raw.school_funding);
@@ -85,7 +181,6 @@ pub(super) fn mac_cohort_prepare_inputs(raw: &MacCohortSetup) -> Option<MacCohor
 }
 
 /// CODE 8 `0x3a010..0x3a104`: visit source indices 18 down to 0.
-#[allow(dead_code)]
 pub(super) fn mac_cohort_age_month(
     counts: &mut [u32; 20],
     auxiliary: &mut [u32; 20],
@@ -129,8 +224,6 @@ pub(super) fn mac_cohort_age_month(
 }
 
 /// Apply the original CODE 8 fertile-cohort pass at `0x3a104..0x3a1b2`.
-/// This component is not scheduled in the live monthly transition yet.
-#[allow(dead_code)]
 pub(super) fn mac_cohort_births(
     counts: &mut [u32; 20],
     auxiliary: &mut [u32; 20],
@@ -162,8 +255,6 @@ pub(super) fn mac_cohort_births(
 }
 
 /// Refill a negative phase-21 population balance with the native age weights.
-/// This covers only CODE 8's deficit branch; the complete worker is unscheduled.
-#[allow(dead_code)]
 pub(super) fn mac_cohort_replenish_deficit(
     counts: &mut [u32; 20],
     auxiliary: &mut [u32; 20],
@@ -205,7 +296,6 @@ pub(super) fn mac_cohort_replenish_deficit(
 
 /// Publish CODE 8's post-transition cohort averages and workforce ratio.
 /// The native loop sums buckets 4 through 10 with 32-bit unsigned arithmetic.
-#[allow(dead_code)]
 pub(super) fn mac_cohort_summary(
     counts: &[u32; 20],
     auxiliary: &[u32; 20],
@@ -238,9 +328,7 @@ pub(super) fn mac_cohort_summary(
 /// integer result of its SANE Comp/extended proportional calculation. The
 /// caller supplies `positive_balance` after first subtracting the negative
 /// balance at CODE 8 `0x3a2ba..0x3a2c6`; that native branch leaves the negative
-/// balance stored. This component is not scheduled in the live monthly
-/// transition.
-#[allow(dead_code)]
+/// balance stored.
 pub(super) fn mac_cohort_emigrate_surplus(
     counts: &mut [u32; 20],
     auxiliary: &mut [u32; 20],
@@ -294,7 +382,6 @@ pub(super) fn mac_cohort_emigrate_surplus(
 
 /// Apply one mortality slot from `export_238 @ 0x39f02..0x39fd4`.
 /// The incoming and outgoing balance is Mac `fffff01e`.
-#[allow(dead_code)]
 pub(super) fn mac_cohort_mortality_slot(
     index: usize,
     count: &mut u32,
@@ -1163,6 +1250,57 @@ mod tests {
                 after_summary[9].parse::<u32>().unwrap(),
             ]
         );
+
+        // The live worker reads the captured post-industry state and uses
+        // the process RNG from the exact cohort-entry seed.
+        let initial_lanes = [
+            parse_lane(input[4]),
+            parse_lane(input[5]),
+            parse_lane(input[6]),
+        ];
+        let initial: [u32; PE_EQ_LE_PACKED_DWORDS] =
+            std::array::from_fn(|i| initial_lanes[i % 3][i / 3]);
+        let final_lanes = [counts, auxiliary, life];
+        let expected: [u32; PE_EQ_LE_PACKED_DWORDS] =
+            std::array::from_fn(|i| final_lanes[i % 3][i / 3]);
+        for (kind, extension) in [
+            (crate::city::CityFileKind::MacCity, "city"),
+            (crate::city::CityFileKind::WinSc2, "sc2"),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "citygame-dullsville-cohort-{}.{extension}",
+                std::process::id()
+            ));
+            let mut city = City::new_blank(&path, "Dullsville").unwrap();
+            city.kind = kind;
+            city.prepare_mac_fidelity_from_saved_city();
+            city.set_mac_state_misc_u32_at(MISC_NORMAL_POPULATION_OFFSET, 1_530);
+            city.set_mac_state_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET, 81);
+            city.mac_population_change_balances = [0, 150];
+            city.set_budget_misc_u32_values(MISC_EQ_LE_TABLES_OFFSET, &initial);
+            let mut rng = MacToolboxRng::new(1_476_003_502);
+            city.advance_mac_cohorts_month(&mut rng);
+            assert_eq!(rng.seed(), 1_415_002_952);
+            assert_eq!(city.mac_population_change_balances, [deficit, surplus]);
+            city.save(&path).unwrap();
+            let reloaded = City::load(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(reloaded.kind, kind);
+            for city in [&city, &reloaded] {
+                assert_eq!(
+                    city.misc_u32_values(MISC_EQ_LE_TABLES_OFFSET, PE_EQ_LE_PACKED_DWORDS),
+                    expected
+                );
+                assert_eq!(
+                    city.misc_u32_values(MISC_WORK_FORCE_PERCENT_OFFSET, 3),
+                    [
+                        summary.workforce_ratio,
+                        summary.life_average,
+                        summary.auxiliary_average
+                    ]
+                );
+            }
+        }
     }
 
     #[test]

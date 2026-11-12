@@ -4,28 +4,18 @@
 //! and preview geometry are preserved. Native workers, traffic rendering, and
 //! simulation scheduling remain in their existing modules.
 
+use super::terrain_editing::{PE_RAISE_TOOL0_UI_TOOL_ID, pe_raise_tool0_ui_tile_xy_443003};
 use super::{
     AppCommand, CityInfoDialog, DEPTH_BUILDING, DEPTH_ZONE, EDIT_MAP_COAST_MISC_OFFSET,
     EDIT_MAP_RIVER_MISC_OFFSET, GameCursor, HIGHWAY_COST_PER_SEGMENT, HighwayNeighborLinkCandidate,
     MAX_ZOOM, MIN_ZOOM, NetworkKind, PE_447490_UI_WAIT_4012C1_PER_CALL,
-    PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_A, PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_B,
-    PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_C, PE_RAISE_MIDBAND_REFUSE_UI_402900_A,
-    PE_RAISE_MIDBAND_REFUSE_UI_402900_B, PE_RAISE_SUBMODE_ADJUST_TOWARD, PE_RAISE_SUBMODE_DEFAULT,
-    PE_RAISE_SUBMODE_HUGE, PE_RAISE_SUBMODE0_DESTROY_XBLD_MIN, PE_RAISE_SUBMODE0_MIDBAND_XBLD_MIN,
-    PE_RAISE_SUBMODE0_POST_DEBIT_UI_WAIT_4012C1, PE_RAISE_TOOL0_UI_TOOL_ID,
     PE_SPREAD_TOOL4_UI_TIMER_INIT, PlacementSound, RailNeighborLinkCandidate,
     RoadNeighborLinkCandidate, UndergroundKind, ViewerState, arcology_choice_for_tool,
     format_number, mac_terrain_editing, network_drag_path, network_kind_for_tool,
     pe_lower_terrain_from_packed_443900, pe_place_tile_441f00,
-    pe_raise_adjust_land_toward_443200_with_crt, pe_raise_drag_step_dir_445da0,
-    pe_raise_land_inc_443c60_with_crt, pe_raise_submode0_step_billed_443270,
-    pe_raise_tool0_clear_temp_xtxt_0xc9, pe_raise_tool0_stamp_temp_xtxt_0xc9,
-    pe_raise_tool0_submode_step_with_crt, pe_raise_tool0_ui_press_y_byte_442ff4,
-    pe_raise_tool0_ui_tile_xy_443003, pe_raise_tool0_xter_ui_byte_442e8b,
-    pe_spread_terrain_from_packed_442a30_with_crt, pe_stretch_terrain_from_packed_443a50,
-    pe_terrain_nesw_land_copy_442a30_with_crt, placeable_building_for_tool,
-    power_plant_choice_for_tool, push_command, push_sprite, reward_mask_for_tool, sprite_depth,
-    underground_kind_for_tool, zone_id_for_tool,
+    pe_spread_terrain_from_packed_442a30_with_crt, pe_terrain_nesw_land_copy_442a30_with_crt,
+    placeable_building_for_tool, power_plant_choice_for_tool, push_command, push_sprite,
+    reward_mask_for_tool, sprite_depth, underground_kind_for_tool, zone_id_for_tool,
 };
 use crate::city::{AppMode, Technology};
 use crate::engine_fidelity::EngineFidelity;
@@ -312,13 +302,13 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         if menu == ui::ToolMenu::Emergency {
-            self.city.reset_emergency_dispatch();
+            self.city
+                .reset_emergency_dispatch_for_engine(self.engine_fidelity);
         }
         if let Some(item) = ui::tool_menu_items(menu).iter().find(|item| {
             !is_chooser_menu_tool(item.tool)
@@ -365,7 +355,7 @@ impl ViewerState {
         if !self.city.has_active_disaster() {
             disabled.push(UiAction::OpenMenu(ui::ToolMenu::Emergency));
         }
-        if self.city.rewards_available_mask() == 0 {
+        if self.active_reward_mask() == 0 {
             disabled.push(UiAction::OpenMenu(ui::ToolMenu::Rewards));
         }
         for menu in CITY_TOOL_MENUS {
@@ -419,6 +409,14 @@ impl ViewerState {
         checked
     }
 
+    pub(super) fn active_reward_mask(&self) -> u32 {
+        if self.engine_fidelity.uses_win95() {
+            self.city.rewards_available_mask()
+        } else {
+            self.city.mac_civic_latch() & 0x1f
+        }
+    }
+
     pub(super) fn ui_action_enabled(&self, action: UiAction) -> bool {
         match action {
             UiAction::ToggleEditCoast | UiAction::ToggleEditRiver | UiAction::GenerateEditMap => {
@@ -430,7 +428,7 @@ impl ViewerState {
             UiAction::ZoomOut => self.zoom > MIN_ZOOM + f32::EPSILON,
             UiAction::ZoomIn => self.zoom < MAX_ZOOM - f32::EPSILON,
             UiAction::OpenMenu(ui::ToolMenu::Emergency) => self.city.has_active_disaster(),
-            UiAction::OpenMenu(ui::ToolMenu::Rewards) => self.city.rewards_available_mask() != 0,
+            UiAction::OpenMenu(ui::ToolMenu::Rewards) => self.active_reward_mask() != 0,
             UiAction::SelectTool(tool) if is_dispatch_tool(tool) => {
                 self.city.has_active_disaster()
                     && dispatch_kind_for_tool(tool).is_some_and(|kind| {
@@ -451,8 +449,7 @@ impl ViewerState {
                     })
             }
             UiAction::SelectTool(tool) => {
-                reward_mask_for_tool(tool)
-                    .is_none_or(|mask| self.city.rewards_available_mask() & mask != 0)
+                reward_mask_for_tool(tool).is_none_or(|mask| self.active_reward_mask() & mask != 0)
                     && self.tool_technology_available(tool)
             }
             _ => true,
@@ -486,6 +483,20 @@ impl ViewerState {
             && self.can_afford_tool_build_cost(tool, 1)
     }
 
+    fn active_tool_cost_per_tile(&self) -> Option<u32> {
+        if self.edit_map_sampled_height_tool()
+            || (self.mode == AppMode::EditNewMap
+                && matches!(self.tool, EditTool::StretchTerrain | EditTool::LevelTerrain))
+        {
+            return None;
+        }
+        if let Some(zone_id) = super::zone_id_for_tool(self.tool) {
+            Some(self.zone_unit_cost(zone_id))
+        } else {
+            tool_build_cost(self.tool)
+        }
+    }
+
     pub(super) fn selected_tool_status_line(&self) -> Option<String> {
         if let Some(kind) = network_kind_for_tool(self.tool) {
             let cost = kind.cost_per_tile()?;
@@ -497,7 +508,7 @@ impl ViewerState {
         if self.tool == EditTool::Highway {
             return Some(format_tool_cost_status("Highway", HIGHWAY_COST_PER_SEGMENT));
         }
-        let cost = tool_build_cost(self.tool)?;
+        let cost = self.active_tool_cost_per_tile()?;
         Some(format_tool_cost_status(self.tool.label(), cost))
     }
 
@@ -516,9 +527,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.close_tool_menu();
@@ -697,8 +707,8 @@ impl ViewerState {
             || self.highway_drag_active()
             || self.terrain_drag_active()
             || self.edit_map_stretch_drag_active()
-            || self.edit_map_lower_drag_active()
             || self.edit_map_level_drag_active()
+            || self.edit_map_height_hold.is_some()
             || self.nature_drag_active();
         self.cancel_zone_drag();
         self.cancel_network_drag();
@@ -706,9 +716,8 @@ impl ViewerState {
         self.cancel_highway_drag();
         self.cancel_terrain_drag();
         self.cancel_edit_map_stretch_drag();
-        self.cancel_edit_map_lower_drag();
         self.cancel_edit_map_level_drag();
-        self.cancel_edit_map_raise_hold();
+        self.cancel_edit_map_height_hold();
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         had_active_drag
@@ -716,6 +725,7 @@ impl ViewerState {
 
     pub(super) fn release_left_mouse_drag(&mut self, cancel_drag: bool) -> DragReleaseOutcome {
         let mut outcome = DragReleaseOutcome::default();
+        let height_changed = self.edit_map_height_hold.take() == Some(true);
 
         if cancel_drag {
             self.cancel_zone_drag();
@@ -724,14 +734,18 @@ impl ViewerState {
             self.cancel_highway_drag();
             self.cancel_terrain_drag();
             self.cancel_edit_map_stretch_drag();
-            self.cancel_edit_map_lower_drag();
             self.cancel_edit_map_level_drag();
-            self.cancel_edit_map_raise_hold();
             self.cancel_edit_map_spread_hold();
             outcome.nature = self.finish_nature_drag();
             return outcome;
         }
 
+        if height_changed
+            && self.tool == EditTool::LowerTerrain
+            && self.engine_fidelity.uses_win95()
+        {
+            outcome.terrain_tiles = 1;
+        }
         if self.zone_drag_active() {
             outcome.placed_zones = self.finish_zone_drag();
         } else if let Some(network) = self.finish_network_drag() {
@@ -748,8 +762,6 @@ impl ViewerState {
             outcome.terrain_tiles = self.finish_terrain_drag();
         } else if self.edit_map_stretch_drag_active() {
             outcome.terrain_tiles = self.finish_edit_map_stretch_drag();
-        } else if self.edit_map_lower_drag_active() {
-            outcome.terrain_tiles = self.finish_edit_map_lower_drag();
         } else if self.edit_map_level_drag_active() {
             outcome.terrain_tiles = self.finish_edit_map_level_drag();
         } else if self.nature_drag_active() {
@@ -854,34 +866,9 @@ impl ViewerState {
         {
             return (0, previous_tile);
         }
-        if self.mac_edit_map_height_tool_active() {
-            // Held samples come from the frame loop, not a filled drag path
-            // or an extra random sample for each queued motion event.
+        if self.edit_map_sampled_height_tool() {
+            // Motion updates the target. The press and held frame loop sample it.
             return (0, Some(tile));
-        }
-        // PE Raise tool-0 hold samples the mouse tile (`0x444bf0`) and does not
-        // Bresenham-fill between previous and current the way network paint does.
-        if self.tool == EditTool::RaiseTerrain {
-            if previous_tile == Some(tile) {
-                return (0, previous_tile);
-            }
-            // PE Raise hold @ `0x442fac`: submode 4 skips tile-change body (no clear/apply).
-            if self.pe_raise_submode == PE_RAISE_SUBMODE_HUGE {
-                return (0, previous_tile);
-            }
-            if let Some((px, py)) = previous_tile {
-                // PE `0x442fba`/`0x442fbf`: store `0x445da0` direction before clear/apply.
-                self.pe_raise_drag_dir = pe_raise_drag_step_dir_445da0(
-                    tile.0 as i16,
-                    tile.1 as i16,
-                    px as i16,
-                    py as i16,
-                );
-                pe_raise_tool0_clear_temp_xtxt_0xc9(&mut self.city, px, py);
-            }
-            let applied =
-                usize::from(self.apply_tool_at_tile_with_shift(tile.0, tile.1, shift_down));
-            return (applied, Some(tile));
         }
         // PE Spread tool-4 hold @ `0x442b07`/`0x442b31`: unpack `0x444bf0` then same-tile gate.
         if self.tool == EditTool::SpreadTerrain {
@@ -976,130 +963,15 @@ impl ViewerState {
                         &mut self.mac_process_rng,
                     );
                 }
-                // PE Raise tool-0 @ `0x442de4`: `this+0xf8 = 0`.
-                self.pe_raise_this_f8 = 0;
-                // PE Raise tool-0 @ `0x442df4`/`0x442e0b`: `0x401e7e(0x1fc, -1)`.
-                self.pe_raise_hold_cursor_id = 0x1fc;
-                self.pe_raise_hold_cursor_arg = -1;
-                // PE Raise tool-0 @ `0x442e15`: MapTool UI tool-id = 4.
-                self.pe_raise_ui_tool_id = PE_RAISE_TOOL0_UI_TOOL_ID;
-                // PE Raise tool-0 @ `0x442e1d`: entry zeros UI `+1` before press-Y rewrite.
-                self.pe_raise_ui_press_y_byte = 0;
-                // PE Raise tool-0 @ `0x442e4e`: entry zeros UI `+5` before XTER rewrite.
-                self.pe_raise_xter_ui_byte = 0;
-                // PE Raise tool-0 @ `0x442e3c`–`0x442e4e`: zero UI bytes +6/+7/+8/+9.
-                self.pe_raise_ui_byte6 = 0;
-                self.pe_raise_ui_byte7 = 0;
-                self.pe_raise_ui_byte8 = 0;
-                self.pe_raise_ui_byte9 = 0;
-                // PE Raise tool-0 @ `0x442e5c` / `0x442fe7`: vacant XTXT → stamp `0xc9`.
-                pe_raise_tool0_stamp_temp_xtxt_0xc9(&mut self.city, x, y);
-                // PE Raise tool-0 @ `0x442e8b`: XTER≠0 → `[0x4ca434]+5` = 1, else 0.
-                self.pe_raise_xter_ui_byte = pe_raise_tool0_xter_ui_byte_442e8b(&self.city, x, y);
-                if self.pe_raise_submode == PE_RAISE_SUBMODE_ADJUST_TOWARD {
-                    // PE `0x442ec3`→`0x443200`: one step toward press-tile land.
-                    if let Some(waits) = pe_raise_adjust_land_toward_443200_with_crt(
-                        &mut self.city,
-                        Some(&mut self.pe_process_crt),
-                        x,
-                        y,
-                        self.pe_raise_adjust_land,
-                    ) {
-                        // Raise arm returns `0x445b50`/`0x447490` waits; dig/equal return 0.
-                        self.pe_raise_ui_wait_4012c1_count =
-                            self.pe_raise_ui_wait_4012c1_count.wrapping_add(waits);
-                    }
-                } else if self.pe_raise_submode == PE_RAISE_SUBMODE_DEFAULT {
-                    // PE MapTool Raise submode-0 `0x442eb3`→`0x443270` (billed).
-                    let funds_before = self.city.city_funds();
-                    if let Some(waits) = pe_raise_submode0_step_billed_443270(
-                        &mut self.city,
-                        &mut self.pe_process_crt,
-                        x,
-                        y,
-                        self.show_underground,
-                    ) {
-                        // PE post-raise `0x445b50`/`0x447490` `0x4012c1` waits.
-                        self.pe_raise_ui_wait_4012c1_count =
-                            self.pe_raise_ui_wait_4012c1_count.wrapping_add(waits);
-                        // PE FUN_00443270 epilogue @ `0x44378e`.
-                        self.pe_maptool_subway_epilogue_44378e(x, y);
-                    } else if self.city.city_funds() < funds_before
-                        && (PE_RAISE_SUBMODE0_MIDBAND_XBLD_MIN..PE_RAISE_SUBMODE0_DESTROY_XBLD_MIN)
-                            .contains(&self.city.building_at(x, y))
-                    {
-                        // PE @ `0x4433bf`: post-debit `0x4012c1` already ran before midband refuse.
-                        self.pe_raise_ui_wait_4012c1_count = self
-                            .pe_raise_ui_wait_4012c1_count
-                            .wrapping_add(PE_RAISE_SUBMODE0_POST_DEBIT_UI_WAIT_4012C1);
-                        // PE midband refuse @ `0x44348a`: `0x401ce9(0x1fc)` restore cursor.
-                        if self.pe_raise_hold_cursor_id == 0x1fc {
-                            self.pe_raise_hold_cursor_id = 0;
-                            self.pe_raise_hold_cursor_arg = 0;
-                        }
-                        // PE midband refuse @ `0x4434a3`: `0x401096(0x200)` (SOUND_RIOT).
-                        self.pe_raise_midband_refuse_sound_401096_count = self
-                            .pe_raise_midband_refuse_sound_401096_count
-                            .wrapping_add(1);
-                        // PE midband refuse @ `0x4434b4`: `0x402c4d(0x193, 0xec, 1)`.
-                        self.pe_raise_midband_refuse_dialog_402c4d_count = self
-                            .pe_raise_midband_refuse_dialog_402c4d_count
-                            .wrapping_add(1);
-                        self.pe_raise_midband_refuse_dialog_402c4d_a =
-                            PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_A;
-                        self.pe_raise_midband_refuse_dialog_402c4d_b =
-                            PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_B;
-                        self.pe_raise_midband_refuse_dialog_402c4d_c =
-                            PE_RAISE_MIDBAND_REFUSE_DIALOG_402C4D_C;
-                        // PE midband refuse @ `0x4434c0`: `0x402900(0x28, 0)`.
-                        self.pe_raise_midband_refuse_ui_402900_count =
-                            self.pe_raise_midband_refuse_ui_402900_count.wrapping_add(1);
-                        self.pe_raise_midband_refuse_ui_402900_a =
-                            PE_RAISE_MIDBAND_REFUSE_UI_402900_A;
-                        self.pe_raise_midband_refuse_ui_402900_b =
-                            PE_RAISE_MIDBAND_REFUSE_UI_402900_B;
-                    }
-                } else if self.pe_raise_submode == 2 {
-                    // PE `0x442ed8`→`0x443c60`: submode-2 raise with `0x445b50`/`0x447490` waits.
-                    if let Some(waits) = pe_raise_land_inc_443c60_with_crt(
-                        &mut self.city,
-                        Some(&mut self.pe_process_crt),
-                        x,
-                        y,
-                        self.pe_raise_submode,
-                    ) {
-                        self.pe_raise_ui_wait_4012c1_count =
-                            self.pe_raise_ui_wait_4012c1_count.wrapping_add(waits);
-                        self.pe_maptool_subway_epilogue_44378e(x, y);
-                    }
-                } else if pe_raise_tool0_submode_step_with_crt(
+                // Editor selector 1 -> 0x443a50. Its held loop samples near
+                // the pointer using the live CRT and leaves city funds alone.
+                super::terrain_editing::pe_stretch_terrain_hill_step_443a50_with_crt(
                     &mut self.city,
                     Some(&mut self.pe_process_crt),
                     x,
                     y,
-                    self.pe_raise_submode,
-                ) {
-                    self.pe_maptool_subway_epilogue_44378e(x, y);
-                }
-                // PE Raise tool-0 @ `0x443003`/`0x44300c`: UI tile X/Y.
-                let (ux, uy) = pe_raise_tool0_ui_tile_xy_443003(x, y);
-                self.pe_raise_ui_tile_x = ux;
-                self.pe_raise_ui_tile_y = uy;
-                // PE Raise tool-0 @ `0x442ff4`: UI `+1` = press Y (not current tile Y).
-                self.pe_raise_ui_press_y_byte =
-                    pe_raise_tool0_ui_press_y_byte_442ff4(self.pe_raise_press_y as usize);
-                // PE Raise hold @ `0x442f15`: UI `0x40226b` after each apply step.
-                self.pe_raise_hold_ui_refresh_count =
-                    self.pe_raise_hold_ui_refresh_count.wrapping_add(1);
-                // PE Raise hold @ `0x442f1e`: blit via `[0x4efe74]` after UI.
-                self.pe_raise_hold_blit_count = self.pe_raise_hold_blit_count.wrapping_add(1);
-                // PE Raise hold @ `0x442fc9`/`0x44300f`: `0x401758(0)` UI-cursor helper.
-                self.pe_raise_call_ui_cursor_4519e0(0);
-                self.pe_raise_call_ui_cursor_4519e0(0);
-                // PE Raise hold @ `0x44303e`/`0x443048`: `0x4012c1` UI wait.
-                self.pe_raise_ui_wait_4012c1_count =
-                    self.pe_raise_ui_wait_4012c1_count.wrapping_add(2);
-                true
+                )
+                .is_some()
             }
             (AppMode::EditNewMap, EditTool::LowerTerrain) => {
                 if self.engine_fidelity == EngineFidelity::Mac68k {
@@ -1113,45 +985,23 @@ impl ViewerState {
                 }
                 // PE LowerTerrain `0x401ea1`→`0x443900`: unpack `0x444bf0` then CRT jitter dig.
                 let packed = ((y as u16) << 8 | (x as u16 & 0xff)) as i16;
-                if pe_lower_terrain_from_packed_443900(
+                let Some(changed) = pe_lower_terrain_from_packed_443900(
                     &mut self.city,
                     &mut self.pe_process_crt,
                     packed,
-                ) {
-                    // PE Lower @ `0x4439c9`: UI `0x40226b` after every successful dig.
-                    self.pe_lower_hold_ui_refresh_count =
-                        self.pe_lower_hold_ui_refresh_count.wrapping_add(1);
-                    // PE Lower @ `0x4439d2`: blit via `[0x4efe74]` after UI.
-                    self.pe_lower_hold_blit_count = self.pe_lower_hold_blit_count.wrapping_add(1);
-                }
-                true
+                ) else {
+                    return false;
+                };
+                // The native loop redraws after every in-bounds worker call.
+                self.pe_lower_hold_ui_refresh_count =
+                    self.pe_lower_hold_ui_refresh_count.wrapping_add(1);
+                self.pe_lower_hold_blit_count = self.pe_lower_hold_blit_count.wrapping_add(1);
+                changed
             }
-            (AppMode::EditNewMap, EditTool::StretchTerrain) => {
-                // PE Stretch `0x401ab4`→`0x443a50`: unpack `0x444bf0` then CRT jitter hill++.
-                let packed = ((y as u16) << 8 | (x as u16 & 0xff)) as i16;
-                if let Some(waits_445b50) = pe_stretch_terrain_from_packed_443a50(
-                    &mut self.city,
-                    &mut self.pe_process_crt,
-                    packed,
-                ) {
-                    // PE @ `0x443b4a`: `0x4012c1` UI wait on success path.
-                    self.pe_stretch_hold_ui_wait_4012c1_count =
-                        self.pe_stretch_hold_ui_wait_4012c1_count.wrapping_add(1);
-                    // PE @ `0x443b94`→`0x445b50` / `0x443b9e`→`0x447490`.
-                    self.pe_stretch_hold_ui_wait_4012c1_count = self
-                        .pe_stretch_hold_ui_wait_4012c1_count
-                        .wrapping_add(waits_445b50)
-                        .wrapping_add(PE_447490_UI_WAIT_4012C1_PER_CALL);
-                }
-                true
-            }
+            // Stretch changes height only after vertical pointer motion.
+            (AppMode::EditNewMap, EditTool::StretchTerrain) => false,
             (AppMode::EditNewMap, EditTool::LevelTerrain) => {
-                if self.engine_fidelity == EngineFidelity::Mac68k {
-                    return self.begin_edit_map_level_drag_at(x, y, 0.0)
-                        && self.finish_edit_map_level_drag() > 0;
-                }
-                self.level_terrain_at(x, y);
-                true
+                self.begin_edit_map_level_drag_at(x, y) && self.finish_edit_map_level_drag() > 0
             }
             (AppMode::EditNewMap, EditTool::SpreadTerrain) => {
                 // PE terrain tool-4 @ `0x442a88`: `[0x4cad4c] = 0xfffffc18`.
@@ -1232,11 +1082,6 @@ impl ViewerState {
                 true
             }
             (AppMode::CityView, EditTool::Bulldoze) => {
-                if self.mac_bulldozer_military_zone_refusal(x, y)
-                    || self.mac_bulldozer_surface_cell_refusal(x, y)
-                {
-                    return false;
-                }
                 let clearable_tiles = self.bulldoze_clearable_tiles(x, y);
                 let billable_tiles = self.bulldoze_billable_tiles(x, y);
                 let billable_units = self.bulldoze_cost_units_for_click(x, y, billable_tiles.len());
@@ -1307,7 +1152,11 @@ impl ViewerState {
             (AppMode::CityView, EditTool::PowerPlantHydro) => self.place_hydro_power_at(x, y) > 0,
             (AppMode::CityView, tool) if placeable_building_for_tool(tool).is_some() => {
                 if let Some(building) = placeable_building_for_tool(tool) {
-                    let placed = self.place_building_at(x, y, building) > 0;
+                    let Some((origin_x, origin_y)) = self.player_building_origin(x, y, building)
+                    else {
+                        return false;
+                    };
+                    let placed = self.place_building_at(origin_x, origin_y, building) > 0;
                     if placed {
                         self.finish_reward_placement(tool);
                     }
@@ -1539,7 +1388,7 @@ impl ViewerState {
     pub(super) fn hover_cost_overlay(&self) -> Option<(u32, (usize, usize))> {
         let tile = self.hover_tile?;
         let placement = self.tool_placement_at(tile.0, tile.1)?;
-        let per_tile = tool_build_cost(self.tool)?;
+        let per_tile = self.active_tool_cost_per_tile()?;
         let cost = if self.tool == EditTool::Bulldoze {
             self.bulldoze_cost_units_for_click(tile.0, tile.1, placement.valid_tiles.len())
                 .saturating_mul(per_tile)
@@ -1619,7 +1468,8 @@ impl ViewerState {
             }
             (AppMode::CityView, tool) if placeable_building_for_tool(tool).is_some() => {
                 let building = placeable_building_for_tool(tool)?;
-                Some(self.building_placement_at(x, y, building))
+                let (origin_x, origin_y) = self.player_building_origin(x, y, building)?;
+                Some(self.building_placement_at(origin_x, origin_y, building))
             }
             _ => None,
         }

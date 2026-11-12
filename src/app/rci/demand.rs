@@ -169,16 +169,12 @@ pub(in crate::app) fn mac_rci_nature_sample(city: &mut City, mut random_word: im
     }
 }
 
-/// Consume the non-map, pre-weather QuickDraw draws in Mac CODE 8
-/// `export_237` (`0x38d28..0x38fee`). Story-queue insertions are presentation
-/// state, but their gates share the process QuickDraw stream with later
-/// gameplay. A successful final gate scans the 17 technology dates in
-/// ascending order and clears the first due date. In `export_240`, date slots
-/// 0..=11 add options to the native command chooser; CityGame's date gate then
-/// exposes the corresponding individual tools. Slots 12..=15 only increment
-/// an event/status count in that routine, so their relation to arcology
-/// availability or other gameplay remains unproven. The separate
-/// command-strip latch and event/status actions remain unmodeled.
+/// Run the non-map, pre-weather QuickDraw draws in Mac CODE 8
+/// `export_237` (`0x38d28..0x3905a`). A successful final gate scans the
+/// 17 technology dates in ascending order, admits the Extra poll when enabled,
+/// and clears the first due date. In `export_240`, date slots
+/// 0..=11 add command choices, and slots 12..=15 contribute to the gated
+/// arcology latch refreshed when a date clears.
 pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
     city: &mut City,
     current_year: u16,
@@ -209,8 +205,7 @@ pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
     let _second_history_roll = random_word();
 
     // The 1-in-8 technology-date scan gate precedes the weather draw. Its
-    // first-due date clear is modeled below; derived status/action effects are
-    // still a separate incomplete Mac event path.
+    // first-due date clear also refreshes the Mac arcology latch.
     let technology_scan_gate = random_word() & 7;
     if technology_scan_gate != 0 {
         return None;
@@ -226,10 +221,13 @@ pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
             continue;
         }
 
+        // CODE 8 emits selector 4 or 5 before clearing the due date.
+        city.mac_poll_for_extra(&mut random_word);
         // Each technology date occupies its own DWORD slot in the decoded
         // MISC model; native CODE 4 writes its WORD value into that slot.
         city.set_mac_state_misc_u32_at(offset, 0);
         city.set_technology_discovery_year(technology, 0);
+        city.refresh_mac_arcology_latch();
         return Some(index);
     }
     None
@@ -706,6 +704,57 @@ fn pe_rci_x87_demand_ftol(score: f64, tax_delta: i32) -> i32 {
         .truncate_to_i32()
 }
 
+/// Mac CODE 8 export 237 publishes demand before its first QuickDraw sample.
+/// The three demand words are shared saved fields, but the prior residential
+/// snapshot and weighted scan counters belong to the selected engine.
+pub(in crate::app) fn mac_publish_monthly_rci_demand(city: &mut City) {
+    let pair_totals = city.mac_rci_pair_totals();
+    let xbld_counts = std::array::from_fn(|id| city.mac_xbld_tile_count(id as u8));
+    let [cap_modifier_1, cap_modifier_2] = city.mac_rci_overlay_cap_counts();
+    let candidates = mac_rci_demand_candidates(MacRciCandidateInputs {
+        pair_totals,
+        previous_residential_total: city.mac_residential_pair_total(),
+        current_scalar: city
+            .mac_state_misc_u32_at(MISC_NORMAL_POPULATION_OFFSET)
+            .unwrap_or(0) as i32,
+        prior_industry_modifier: city
+            .mac_state_misc_u32_at(MISC_INDUSTRIAL_MIX_BONUS_OFFSET)
+            .unwrap_or(0) as i16,
+        difficulty: usize::from(city.pe_w_city_difficulty),
+        xbld_counts: &xbld_counts,
+        cap_modifier_1,
+        cap_modifier_2,
+    });
+    // 0x3868e stores the current pair after reading the old snapshot.
+    city.set_mac_residential_pair_total(pair_totals[0]);
+
+    let kinds = [
+        RciKind::Residential,
+        RciKind::Commercial,
+        RciKind::Industrial,
+    ];
+    let demand = std::array::from_fn::<_, 3, _>(|index| {
+        let previous = city
+            .misc_u32_at(RCI_DEMAND_MISC_OFFSET + index * 4)
+            .unwrap_or(0) as i16;
+        let rate = raw_tax_rate_for_city(city, index) as i16;
+        let adjusted_rate = pe_rci_ordinance_adjusted_tax_rate(city, kinds[index], i32::from(rate));
+        let tax_adjustment = pe_rci_tax_demand_delta(adjusted_rate) as i16;
+        let pair = pair_totals[index] as u32;
+        let normalized = mac_rci_normalize_demand_candidate(candidates[index], pair);
+        let word = mac_rci_demand_pre_clamp_word(normalized, tax_adjustment, previous);
+        // Keep the saved word when the native SANE conversion would be
+        // exceptional. Its out-of-range result is still unverified.
+        let next = if pair == u32::MAX {
+            previous
+        } else {
+            i16::try_from(word).map_or(previous, |word| word.clamp(-2000, 2000))
+        };
+        i32::from(next) as u32
+    });
+    city.set_misc_u32_values(RCI_DEMAND_MISC_OFFSET, &demand);
+}
+
 /// Mac CODE 8 `export_237` final RCI writer from the already capped candidate.
 ///
 /// `0x38a3a..0x38a64` divides the candidate by its R/C/I pair total plus one,
@@ -714,9 +763,7 @@ fn pe_rci_x87_demand_ftol(score: f64, tax_delta: i32) -> i32 {
 /// adds the ordinance-table WORD and prior signed demand, truncates toward
 /// zero, converts to a signed WORD, then clamps that stored WORD. This helper's
 /// result is native-validated only when the pre-clamp value fits in i16; the
-/// Mac SANE out-of-range conversion result is not yet pinned. Live Mac
-/// publication is gated until phase-3..18 inputs and month chronology are
-/// complete.
+/// Mac SANE out-of-range conversion result is not yet pinned.
 pub(in crate::app) fn mac_rci_demand_from_candidate(
     candidate: f32,
     pair_total: u32,
@@ -732,7 +779,7 @@ pub(in crate::app) fn mac_rci_demand_from_candidate(
 
 pub(in crate::app) fn mac_rci_normalize_demand_candidate(candidate: f32, pair_total: u32) -> f32 {
     PeX87Value::from_f64(f64::from(candidate))
-        .divided_by_u32(pair_total.saturating_add(1))
+        .divided_by_u32(pair_total.wrapping_add(1))
         .add_i32(-1)
         .to_f32()
 }
@@ -762,9 +809,7 @@ pub(in crate::app) fn mac_rci_demand_pre_clamp_word(
 }
 
 /// Inputs consumed by Mac CODE 8 `export_237` when it builds the three
-/// pre-normalization R/C/I candidate singles. This is deliberately separate
-/// from the live monthly dispatcher until the natural phase-3..18 inputs and
-/// shared RNG chronology are joined.
+/// pre-normalization R/C/I candidate singles.
 pub(in crate::app) struct MacRciCandidateInputs<'a> {
     pub pair_totals: [i32; 3],
     pub previous_residential_total: i32,
@@ -991,9 +1036,9 @@ pub(in crate::app) fn pe_xbld_counts_fa_network_overlay_4cc4d8(building: u8) -> 
     )
 }
 
-/// Rebuild the PE `DAT_004CC4D8` count from XTXT `0xfa` on network-class XBLD.
+/// PE `DAT_004CC4D8` uses the saved map census plus live purchase adjustments.
 pub(in crate::app) fn pe_fa_network_overlay_count_4cc4d8(city: &City) -> u32 {
-    let mut count = 0_u32;
+    let mut count = city.pe_road_link_census_delta;
     for y in 0..CITY_HEIGHT {
         for x in 0..CITY_WIDTH {
             if city.text_overlay_at(x, y) != Some(0xfa) {
@@ -1003,11 +1048,11 @@ pub(in crate::app) fn pe_fa_network_overlay_count_4cc4d8(city: &City) -> u32 {
                 continue;
             }
             if pe_xbld_counts_fa_network_overlay_4cc4d8(city.building_at(x, y)) {
-                count = count.saturating_add(1);
+                count = count.wrapping_add(1);
             }
         }
     }
-    count
+    u32::from(count)
 }
 
 /// Win95 `0x4683d5`: `1500 * ((runway + runway_cross + DAT_004CC4D8) / 5 + 1)`.
@@ -1028,9 +1073,8 @@ pub(in crate::app) fn pe_rci_commercial_infra_numerator(city: &City) -> i32 {
 }
 
 /// Win95 `0x468431`: `(crane + neighbor_count + 1) * 1500`.
-/// `DAT_004CA3F0` counts accepted, paid non-network neighbor links. It is not
-/// the edge-geometry census used to synthesize off-map trips; until CityGame
-/// exposes that confirmation/payment action, the runtime WORD remains zero.
+/// `DAT_004CA3F0` credits accepted Rail and Highway purchases. Its live
+/// value is separate from the edge geometry used to synthesize off-map trips.
 pub(in crate::app) fn pe_rci_industrial_infra_numerator(city: &City) -> i32 {
     // The crane count is MOVSX WORD; DAT_004CA3F0 is MOVZX WORD.
     let cranes = i32::from(city.pe_dw_tile_count[SEAPORT_CRANE_BUILDING_ID as usize] as u16 as i16);

@@ -320,7 +320,21 @@ fn maxis_man_search_try_ahead_move<R: Win95OverlayRng>(
         return true;
     }
 
-    move_maxis_man(record, city, direction, MAXIS_MAN_SUBTILE_STEP, slot)
+    let moved = move_maxis_man(record, city, direction, MAXIS_MAN_SUBTILE_STEP, slot);
+    // PE `0x45528e..0x4552c7`: look ahead again from the new tile.
+    let next_x = i16::from(record.tile_x) + dx;
+    let next_y = i16::from(record.tile_y) + dy;
+    if record.kind == XTHG_MAXIS_MAN
+        && (0..CITY_WIDTH as i16).contains(&next_x)
+        && (0..CITY_HEIGHT as i16).contains(&next_y)
+        && city
+            .text_overlay_at(next_x as usize, next_y as usize)
+            .unwrap_or(0)
+            < XTHG_EXPLOSION_XTXT_GATE
+    {
+        return move_maxis_man(record, city, direction, MAXIS_MAN_SUBTILE_STEP, slot) || moved;
+    }
+    moved
 }
 
 /// PE `0x402dbf` direction table used by the Maxis Man target branch.

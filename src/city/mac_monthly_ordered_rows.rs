@@ -114,6 +114,9 @@ impl City {
                 0xc9..=0xcf => {
                     record.stat0 = record.stat0.wrapping_add(1);
                     record.stat2 = plant_power.wrapping_add(rng.random_u16() & 7);
+                    if record.stat0 > 48 {
+                        self.mac_poll_for_extra(|| rng.random_u16());
+                    }
                     if record.stat0 > 50
                         && let Some(marker) = self.mac_find_xmic_marker(slot)
                     {
@@ -322,6 +325,15 @@ impl City {
                     }
                     changed = true;
                 }
+                0xf3 => {
+                    changed |= record.stat2 != self.mac_mayor_approval;
+                    record.stat2 = self.mac_mayor_approval;
+                    if record.stat3 != 0 {
+                        record.stat0 = record.stat0.wrapping_add(1);
+                        record.stat3 = record.stat3.wrapping_sub(1);
+                        changed = true;
+                    }
+                }
                 0xf4 | 0xfa => {
                     record.stat0 = (self.mac_water_service_summary() as u8)
                         .wrapping_add((rng.random_u16() & 7) as u8);
@@ -402,7 +414,9 @@ impl City {
             return;
         }
         let (mut x, mut y) = marker;
-        let rotation = usize::from(self.rotation() & 3);
+        // CODE 5 export 81 reads the Mac map's saved orientation. CityGame
+        // can open that map with an independently normalized display compass.
+        let rotation = usize::from(self.saved_rotation & 3);
         let masks = [
             [0x10, 0x20, 0x40, 0x80],
             [0x20, 0x40, 0x80, 0x10],

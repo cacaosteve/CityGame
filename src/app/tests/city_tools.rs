@@ -17433,6 +17433,137 @@ fn pe_road_bridge_selector_transaction_builds_span_and_charges_native_rate() {
 }
 
 #[test]
+fn pe_road_bridge_selector_transaction_matches_native_direction_length_matrix() {
+    let directions = [
+        (0isize, -1isize, 0x24),
+        (1, 0, 0x21),
+        (0, 1, 0x22),
+        (-1, 0, 0x23),
+    ];
+    let road_endpoint = |orientation: u8| 0x1e + orientation;
+
+    for (direction, (dx, dy, seed_xter)) in directions.into_iter().enumerate() {
+        for span_count in [5usize, 7, 8, 11, 12] {
+            let seed = (50usize, 50usize);
+            let point = |index: isize| {
+                (
+                    seed.0.checked_add_signed(index * dx).expect("x in map"),
+                    seed.1.checked_add_signed(index * dy).expect("y in map"),
+                )
+            };
+            let fixture = (-1..=span_count as isize).map(point).collect::<Vec<_>>();
+            let selectors: &[u8] = match span_count {
+                5 => &[3],
+                7 => &[2, 3, 4],
+                _ => &[4],
+            };
+
+            let mut city_template = City::new_blank(
+                "/tmp/citygame-road-bridge-direction-length-matrix.sc2",
+                "RoadBridgeMatrix",
+            )
+            .expect("blank city");
+            city_template.set_city_funds(5_000);
+            for index in -1..=span_count as isize {
+                let (x, y) = point(index);
+                city_template.set_altitude(x, y, 5, 5);
+                city_template.set_terrain(
+                    x,
+                    y,
+                    if index == -1 || index == span_count as isize {
+                        0x40
+                    } else if index == 0 {
+                        seed_xter
+                    } else {
+                        0x20
+                    },
+                );
+                if (0..span_count as isize).contains(&index) {
+                    city_template.set_tile_bits(x, y, TileBits::new(0).with_water_tile(true));
+                }
+                city_template.set_traffic_density(x, y, 0x40 + (index + 1) as u8);
+            }
+            let traffic_before = fixture
+                .iter()
+                .map(|&(x, y)| city_template.traffic_density_at(x, y))
+                .collect::<Vec<_>>();
+
+            for &selector in selectors {
+                let mut state = test_state(city_template.clone());
+                state.tool = EditTool::Road;
+                assert_ne!(
+                    pe_road_bridge_selector_mask(span_count) & (1 << selector),
+                    0,
+                    "selector {selector} is enabled for span {span_count}"
+                );
+                assert_eq!(
+                    state.finish_road_bridge(seed, direction as u8, span_count, selector),
+                    span_count,
+                    "placement result direction={direction}, span={span_count}, selector={selector}"
+                );
+                assert_eq!(
+                    state.city.city_funds(),
+                    5_000 - (pe_road_bridge_selector_cost(selector) * span_count as u32) as i32,
+                    "native rate direction={direction}, span={span_count}, selector={selector}"
+                );
+
+                let near_orientation = ((direction as u8 + 1) & 3) + 1;
+                let far_orientation = ((direction as u8 + 3) & 3) + 1;
+                for (fixture_index, &(x, y)) in fixture.iter().enumerate() {
+                    let index = fixture_index as isize - 1;
+                    let (expected_building, expected_xter, is_interior) =
+                        if index == -1 || index == span_count as isize {
+                            (0, 0x40, false)
+                        } else if index == 0 {
+                            (road_endpoint(near_orientation), near_orientation, false)
+                        } else if index == span_count as isize - 1 {
+                            (road_endpoint(far_orientation), far_orientation, false)
+                        } else {
+                            (
+                                pe_road_bridge_interior_tile(
+                                    selector,
+                                    span_count,
+                                    index as usize,
+                                    direction as u8,
+                                ),
+                                0x20,
+                                true,
+                            )
+                        };
+                    assert_eq!(
+                        state.city.building_at(x, y),
+                        expected_building,
+                        "XBLD direction={direction}, span={span_count}, selector={selector}, index={index}"
+                    );
+                    assert_eq!(
+                        state.city.terrain_at(x, y),
+                        expected_xter,
+                        "XTER direction={direction}, span={span_count}, selector={selector}, index={index}"
+                    );
+                    assert_eq!(
+                        state.city.altitude_at(x, y) & 0x1f,
+                        if index == 0 || index == span_count as isize - 1 {
+                            6
+                        } else {
+                            5
+                        },
+                        "ALTM direction={direction}, span={span_count}, selector={selector}, index={index}"
+                    );
+                    let bits = state.city.tile_bits_at(x, y).expect("bridge XBIT");
+                    assert_eq!(bits.water_tile(), is_interior);
+                    assert_eq!(bits.rotate(), is_interior && direction & 1 != 0);
+                    assert_eq!(
+                        state.city.traffic_density_at(x, y),
+                        traffic_before[fixture_index],
+                        "bridge leaves XTRF unchanged direction={direction}, span={span_count}, selector={selector}, index={index}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn pe_road_one_tile_bridge_uses_terminal_as_far_endpoint() {
     let mut city = City::new_blank("/tmp/sc2000-road-bridge-one-tile.sc2", "RoadBridgeOneTile")
         .expect("blank city");

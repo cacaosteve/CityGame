@@ -287,8 +287,13 @@ pub(in crate::app) fn pe_road_bridge_interior_tile(
             }
         }
         4 => {
-            let center = (((span_count - 2) % 5) + 2) / 2;
-            if center > index {
+            let midpoint_seed = ((span_count - 2) % 5) + 2;
+            let center = midpoint_seed / 2;
+            // The PE returns to causeway padding at the far side as well as
+            // before the suspension family. Its upper bound uses the full
+            // midpoint seed, not the halved center.
+            let far_boundary = span_count - midpoint_seed.div_ceil(2);
+            if center > index || index >= far_boundary {
                 0x57
             } else if matches!(direction & 3, 0 | 3) {
                 0x51 + ((index - center) % 5) as u8

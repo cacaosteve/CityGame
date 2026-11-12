@@ -587,6 +587,8 @@ fn mac_engine_publishes_native_power_summary_for_win_layout_city() {
     .expect("blank city");
     city.kind = CityFileKind::WinSc2;
     city.set_misc_u32_at(100 * 4, 0x1234_5678);
+    let raw_power_slot = 0x89ab_cdef;
+    city.set_misc_u32_at(1048 * 4, raw_power_slot);
     for (x, building) in [(10, 0xC6), (11, 0x70), (12, 0x71)] {
         city.set_building(x, 20, building);
         city.set_tile_bits(x, 20, TileBits::new(0).with_powerable(true));
@@ -594,9 +596,30 @@ fn mac_engine_publishes_native_power_summary_for_win_layout_city() {
 
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
+    state.city.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(
+        state.city.mac_power_service_summary(),
+        raw_power_slot,
+        "a first Mac-fidelity open follows the native loader's raw MISC slot interpretation"
+    );
+    state.city.set_microsim_tile_id(1, 0xc9);
+    let mut xmic_rng = MacToolboxRng::new(1);
+    let expected_plant_stat = (raw_power_slot as u16).wrapping_add(xmic_rng.random_u16() & 7);
+    state.city.refresh_mac_monthly_random_xmic_rows(0, 0, 0, 0, 0, true, &mut xmic_rng);
+    assert_eq!(
+        state.city.microsim_at(1).unwrap().stat2,
+        expected_plant_stat,
+        "the annual Mac plant row consumes the prior raw summary's low WORD before phase 1"
+    );
+    assert_eq!(state.city.mac_power_service_summary(), raw_power_slot);
     state.sim_calendar_day1_power();
 
     assert_eq!(state.city.misc_u32_at(100 * 4), Some(0x1234_5678));
+    assert_eq!(
+        state.city.misc_u32_at(1048 * 4),
+        Some(raw_power_slot),
+        "Mac runtime updates must not overwrite the Win-layout MISC slot"
+    );
 
     assert_eq!(
         state.city.mac_power_service_summary(),

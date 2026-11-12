@@ -5819,6 +5819,46 @@ fn mac_police_selector_matches_original_68020_replay() {
 }
 
 #[test]
+fn mac_ordered_xmic_uses_incoming_arrest_carry_then_publishes_current_carry() {
+    let mut city =
+        City::new_blank("/tmp/mac-arrest-carry-order.city", "ArrestCarry").expect("blank Mac city");
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x002c, 1_000);
+    city.set_mac_state_misc_u32_at(0x102c, 500_000);
+    city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xd2 * 4, 1);
+    city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xd8 * 4, 16);
+    let police_slot =
+        usize::from(city.provision_microsim_for_building(0xd2).unwrap() - MIN_SIM_TEXT_ENTRIES);
+    let prison_slot =
+        usize::from(city.provision_microsim_for_building(0xd8).unwrap() - MIN_SIM_TEXT_ENTRIES);
+    assert!(police_slot < prison_slot, "fixture places D2 before D8");
+
+    let mut rng = MacToolboxRng::new(0x2468);
+    city.refresh_mac_monthly_random_xmic_rows(100, 100, 100, 100, 100, false, &mut rng);
+    let first_carry = city.mac_monthly_arrest_total();
+    assert!(first_carry > 0);
+    let prison = city.microsim_at(prison_slot).unwrap();
+    assert_eq!(
+        prison.stat1, 0,
+        "D8 reads incoming fffffe04, initially zero"
+    );
+    assert_eq!(prison.stat3, 0);
+    assert_eq!(
+        city.mac_state_misc_u32_at(1038 * 4),
+        Some(u32::from(first_carry)),
+        "the completed D2 subtotal becomes the next saved carry"
+    );
+
+    city.refresh_mac_monthly_random_xmic_rows(100, 100, 100, 100, 100, false, &mut rng);
+    let prison = city.microsim_at(prison_slot).unwrap();
+    assert_eq!(
+        prison.stat1, first_carry,
+        "the next annual D8 row consumes the prior pass's published carry"
+    );
+    assert_eq!(prison.stat3, first_carry / 100);
+}
+
+#[test]
 fn mac_prison_selector_matches_original_68020_replay() {
     let csv = include_str!("../../../tests/fixtures/simulation/mac/mac_prison.csv");
     for (line, row) in csv.lines().enumerate().skip(1) {

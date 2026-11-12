@@ -21,6 +21,19 @@ impl City {
             residential_total: self.mac_residential_total_runtime,
             scenario: self.mac_scenario_runtime,
             road_neighbor_links: self.mac_road_neighbor_link_count_runtime,
+            police_arrest_subtotal: Some(self.mac_monthly_arrest_total),
+        }
+    }
+
+    pub(super) fn persist_mac_police_arrest_subtotal(&mut self) {
+        // On native Mac-layout files CODE 4 owns MISC slot 1038. On Win-layout
+        // files that slot belongs to PE old-arrests, so CGEX carries the Mac
+        // value instead.
+        if self.kind == CityFileKind::MacCity {
+            self.set_mac_state_misc_u32_at(
+                1038 * MISC_FIELD_LEN,
+                u32::from(self.mac_monthly_arrest_total),
+            );
         }
     }
 

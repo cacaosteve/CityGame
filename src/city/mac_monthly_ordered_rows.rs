@@ -84,9 +84,14 @@ impl City {
 
         let Some(record_count) = self.microsims.as_ref().map(Vec::len) else {
             self.mac_monthly_arrest_total = 0;
+            self.persist_mac_police_arrest_subtotal();
             self.clear_mac_monthly_transit_accumulators();
             return;
         };
+        // Native CODE 3 clears a local subtotal for this pass. D8 reads the
+        // prior value in global fffffe04; D2 rows publish this pass's subtotal
+        // only after the slot walk finishes.
+        let incoming_arrest_total = self.mac_monthly_arrest_total;
         let mut arrest_total = 0_u16;
         let mut prison_gate_sum = 0_i16;
         let mut changed = false;
@@ -248,7 +253,8 @@ impl City {
                 }
                 0xd8 => {
                     let prior = u32::from(record.stat1);
-                    let raw = arrest_total as u32 / prison_divisor as u32 + prior - prior / 4;
+                    let raw = u32::from(incoming_arrest_total) / prison_divisor as u32 + prior
+                        - prior / 4;
                     let inmate_candidate = if raw > 10_000 {
                         10_000 + u32::from(rng.random_u16() & 0x03ff)
                     } else {
@@ -368,7 +374,8 @@ impl City {
             }
             self.microsims.as_mut().expect("live XMIC table")[slot] = record;
         }
-        self.mac_monthly_arrest_total = 0;
+        self.mac_monthly_arrest_total = arrest_total;
+        self.persist_mac_police_arrest_subtotal();
         self.clear_mac_monthly_transit_accumulators();
         let police_gate = if prison_raw_divisor > 0 && prison_gate_sum / prison_raw_divisor < 80 {
             1

@@ -845,6 +845,8 @@ fn mac_cross_layout_saved_state_round_trips_without_using_pe_misc_slots() {
     let mut city = City::new_blank(&path, "MacRuntimeState").expect("blank Win-layout city");
     city.mac_cross_layout_active = true;
     city.mac_pending_action_runtime = 0x1234_5678;
+    city.mac_monthly_arrest_total = 0x4321;
+    city.set_misc_u32_at(MISC_OLD_ARRESTS_OFFSET, 0xbeef);
     city.mac_rci_counters_runtime = [11, 22, 33, 44, 55, 66, 77, 88];
     city.mac_transit_accumulators_runtime = [101, 202, 303];
     let transit_misc_sentinels = [0x1111_2222, 0x3333_4444, 0x5555_6666];
@@ -866,7 +868,7 @@ fn mac_cross_layout_saved_state_round_trips_without_using_pe_misc_slots() {
     city.save(&path).expect("save Win-layout city");
     let mut loaded = City::load(&path).expect("reload Win-layout city");
     let extension = decode_citygame_extension(&loaded.chunks).expect("decode Mac state extension");
-    assert_eq!(extension.version, 15);
+    assert_eq!(extension.version, 20);
     assert_eq!(extension.mac_pending_action, 0x1234_5678);
     assert_eq!(
         extension
@@ -875,8 +877,21 @@ fn mac_cross_layout_saved_state_round_trips_without_using_pe_misc_slots() {
             .and_then(|state| state.mac_scenario_active),
         Some(false)
     );
+    assert_eq!(
+        extension
+            .mac_saved_state
+            .as_ref()
+            .and_then(|state| state.police_arrest_subtotal),
+        Some(0x4321)
+    );
     assert!(!loaded.mac_cross_layout_active);
     assert!(loaded.mac_cross_layout_state_restored);
+    assert_eq!(loaded.mac_monthly_arrest_total(), 0x4321);
+    assert_eq!(
+        loaded.misc_u32_at(MISC_OLD_ARRESTS_OFFSET),
+        Some(0xbeef),
+        "Mac carry must not overwrite the PE-owned old-arrests slot"
+    );
     loaded.prepare_mac_fidelity_from_saved_city();
 
     assert_eq!(
@@ -920,7 +935,30 @@ fn mac_cross_layout_saved_state_round_trips_without_using_pe_misc_slots() {
         reloaded.mac_xbld_census_runtime,
         city.mac_xbld_census_runtime
     );
+    assert_eq!(reloaded.mac_monthly_arrest_total(), 0x4321);
+    assert_eq!(reloaded.misc_u32_at(MISC_OLD_ARRESTS_OFFSET), Some(0xbeef));
     assert_eq!(reloaded.misc_u32_at(MISC_TRIGGER_DISASTER_OFFSET), Some(5));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn mac_police_arrest_carry_round_trips_in_native_misc_slot_1038() {
+    let path = std::env::temp_dir().join(format!(
+        "citygame-mac-police-arrest-carry-{}.city",
+        std::process::id()
+    ));
+    let mut city = City::new_blank(&path, "MacArrestCarry").expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.mac_monthly_arrest_total = 0x2468;
+    city.persist_mac_police_arrest_subtotal();
+    city.save(&path).expect("save native Mac MISC carry");
+
+    let loaded = City::load(&path).expect("reload native Mac carry");
+    assert_eq!(loaded.mac_monthly_arrest_total(), 0x2468);
+    assert_eq!(
+        loaded.mac_state_misc_u32_at(1038 * MISC_FIELD_LEN),
+        Some(0x2468)
+    );
     let _ = std::fs::remove_file(path);
 }
 
@@ -7818,7 +7856,7 @@ fn mac_scenario_cgex_preserves_goals_actions_and_native_pe_fields() {
 
     let mut reloaded = City::load(&path).unwrap();
     let extension = decode_citygame_extension(&reloaded.chunks).unwrap();
-    assert_eq!(extension.version, 18);
+    assert_eq!(extension.version, 20);
     assert_eq!(
         reloaded.misc_u32_values(MISC_MONSTER_XTHG_INDEX_OFFSET, 3),
         pe_action

@@ -384,6 +384,14 @@ impl City {
             dirty_tiles: HashSet::new(),
             modified: false,
         };
+        city.mac_monthly_arrest_total = if kind == CityFileKind::MacCity {
+            city.mac_state_misc_u32_at(1038 * MISC_FIELD_LEN)
+                .unwrap_or(0) as u16
+        } else {
+            mac_saved_state
+                .and_then(|state| state.police_arrest_subtotal)
+                .unwrap_or(0)
+        };
         city.hydrate_pe_eq_le_from_misc();
         // PE MISC→BSS arco pop @ `0x431b8e` (`[MISC+0x1020]` → `[0x4c94c4]`).
         // Mac CODE 4 restores `fffffe0a` from the same slot, so a CityGame

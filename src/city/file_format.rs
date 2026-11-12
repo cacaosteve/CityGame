@@ -83,10 +83,13 @@ const CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE: u32 = 16;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_RESIDENTIAL_TOTAL: u32 = 17;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION: u32 = 18;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS: u32 = 19;
+const CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY: u32 = 20;
 const MAC_SCENARIO_CONTINUATION_TAIL_LEN: usize = 4 * (1 + 16 + 5 + 1);
 const CGEX_MAC_RESIDENTIAL_PRESENT: u32 = 1 << 25;
 const CGEX_MAC_GOALS_PRESENT: u32 = 1 << 26;
 const CGEX_MAC_SCENARIO_PRESENT: u32 = 1 << 27;
+const CGEX_MAC_ROAD_LINKS_PRESENT: u32 = 1 << 28;
+const CGEX_MAC_ARREST_CARRY_PRESENT: u32 = 1 << 29;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MacCrossLayoutSavedState {
@@ -104,6 +107,7 @@ pub(super) struct MacCrossLayoutSavedState {
     pub residential_total: Option<u32>,
     pub scenario: Option<MacScenarioContinuation>,
     pub road_neighbor_links: Option<u16>,
+    pub police_arrest_subtotal: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,13 +201,17 @@ pub(super) fn encode_citygame_extension(
     // total when Win95 owns the native MISC slot. v18 appends Mac scenario
     // goals, action state and any queued scenario point. v19 appends Mac's
     // road-link tally and allows the scenario continuation to be absent.
+    // v20 appends the Mac police arrest carry; its fixed tail also reserves
+    // the optional road-link WORD so the earlier continuation remains intact.
     let mac_residential_total = mac_saved_state.and_then(|state| state.residential_total);
     let mac_scenario = mac_saved_state.and_then(|state| state.scenario);
     let mac_road_links = mac_saved_state.and_then(|state| state.road_neighbor_links);
+    let mac_arrest_carry = mac_saved_state.and_then(|state| state.police_arrest_subtotal);
     let version = if pe_monster_xthg_index.is_some()
         || mac_residential_total.is_some()
         || mac_scenario.is_some()
         || mac_road_links.is_some()
+        || mac_arrest_carry.is_some()
     {
         CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE
     } else if mac_saved_state.is_some_and(|state| state.mac_scenario_active.is_some()) {
@@ -252,7 +260,9 @@ pub(super) fn encode_citygame_extension(
         CITYGAME_EXTENSION_VERSION_WITH_PE_STATE => 594,
         _ => 590,
     });
-    let header_version = if mac_road_links.is_some() {
+    let header_version = if mac_arrest_carry.is_some() {
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
+    } else if mac_road_links.is_some() {
         CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS
     } else if mac_scenario.is_some() {
         CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION
@@ -289,8 +299,11 @@ pub(super) fn encode_citygame_extension(
         | (u32::from(pe_industrial_mix_bonus.is_some()) << 19)
         | (u32::from(pe_industrial_mix_pollution_bonus.is_some()) << 20)
         | (u32::from(pe_traffic_count.is_some()) << 21)
-        | (u32::from(pe_monster_xthg_index.is_some()) << 24);
-    let flags = if mac_scenario.is_some() || mac_road_links.is_some() {
+        | (u32::from(pe_monster_xthg_index.is_some()) << 24)
+        | (u32::from(mac_road_links.is_some()) << 28)
+        | (u32::from(mac_arrest_carry.is_some()) << 29);
+    let flags = if mac_scenario.is_some() || mac_road_links.is_some() || mac_arrest_carry.is_some()
+    {
         flags
             | if mac_residential_total.is_some() {
                 CGEX_MAC_RESIDENTIAL_PRESENT
@@ -305,11 +318,12 @@ pub(super) fn encode_citygame_extension(
     } else {
         flags
     };
-    let flags = if mac_road_links.is_some() && mac_scenario.is_some() {
-        flags | CGEX_MAC_SCENARIO_PRESENT
-    } else {
-        flags
-    };
+    let flags =
+        if mac_scenario.is_some() && (mac_road_links.is_some() || mac_arrest_carry.is_some()) {
+            flags | CGEX_MAC_SCENARIO_PRESENT
+        } else {
+            flags
+        };
     raw.extend_from_slice(&flags.to_be_bytes());
     let state = mac_saved_state;
     for value in state.map_or([0; 8], |state| state.rci_counters) {
@@ -525,7 +539,7 @@ pub(super) fn encode_citygame_extension(
     if version == CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE {
         raw.extend_from_slice(&u32::from(pe_monster_xthg_index.unwrap_or_default()).to_be_bytes());
     }
-    if mac_scenario.is_some() || mac_road_links.is_some() {
+    if mac_scenario.is_some() || mac_road_links.is_some() || mac_arrest_carry.is_some() {
         let scenario = mac_scenario.unwrap_or_default();
         raw.extend_from_slice(&mac_residential_total.unwrap_or(0).to_be_bytes());
         for value in scenario
@@ -544,8 +558,11 @@ pub(super) fn encode_citygame_extension(
         raw.extend_from_slice(&total.to_be_bytes());
     }
 
-    if let Some(count) = mac_road_links {
-        raw.extend_from_slice(&count.to_be_bytes());
+    if mac_road_links.is_some() || mac_arrest_carry.is_some() {
+        raw.extend_from_slice(&mac_road_links.unwrap_or_default().to_be_bytes());
+    }
+    if let Some(carry) = mac_arrest_carry {
+        raw.extend_from_slice(&carry.to_be_bytes());
     }
     raw
 }
@@ -556,7 +573,27 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
         .find(|chunk| chunk.name == CITYGAME_EXTENSION_CHUNK)
         .map(|chunk| sc2_rle_decode(&chunk.data).unwrap_or_else(|_| chunk.data.clone()))?;
     let header_version = u32::from_be_bytes(payload.get(0..4)?.try_into().ok()?);
-    let mac_road_links = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS {
+    let mac_v20_flags = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY {
+        Some(u32::from_be_bytes(payload.get(8..12)?.try_into().ok()?))
+    } else {
+        None
+    };
+    let mac_arrest_carry = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY {
+        let (base, carry) = payload.split_last_chunk::<2>()?;
+        let carry = u16::from_be_bytes(*carry);
+        payload.truncate(base.len());
+        (mac_v20_flags? & CGEX_MAC_ARREST_CARRY_PRESENT != 0).then_some(carry)
+    } else {
+        None
+    };
+    let mut decode_header_version = header_version;
+    let mac_road_links = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY {
+        let (base, count) = payload.split_last_chunk::<2>()?;
+        let count = u16::from_be_bytes(*count);
+        payload.truncate(base.len());
+        decode_header_version = CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS;
+        Some(count)
+    } else if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS {
         let (base, count) = payload.split_last_chunk::<2>()?;
         let count = u16::from_be_bytes(*count);
         payload.truncate(base.len());
@@ -564,7 +601,7 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
     } else {
         None
     };
-    let (version, base_len, mac_residential_total, mac_scenario) = match header_version {
+    let (version, base_len, mac_residential_total, mac_scenario) = match decode_header_version {
         CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION
         | CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS => {
             let base_len = payload
@@ -983,7 +1020,16 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
                     mac_scenario_active: (flags & (1 << 22) != 0).then_some(flags & (1 << 23) != 0),
                     residential_total: mac_residential_total,
                     scenario: mac_scenario,
-                    road_neighbor_links: mac_road_links,
+                    road_neighbor_links: if header_version
+                        == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
+                        && mac_v20_flags
+                            .is_some_and(|flags| flags & CGEX_MAC_ROAD_LINKS_PRESENT == 0)
+                    {
+                        None
+                    } else {
+                        mac_road_links
+                    },
+                    police_arrest_subtotal: mac_arrest_carry,
                 }),
                 pe_residential_population,
                 pe_trigger_disaster,

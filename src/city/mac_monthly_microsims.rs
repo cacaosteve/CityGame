@@ -619,8 +619,9 @@ impl City {
         }
     }
 
-    /// Current CODE 3 police arrest subtotal for the Mac prison XMIC row later
-    /// in the same annual January slot sweep.
+    /// CODE 3's saved police arrest carry. D8 consumes the incoming value
+    /// during the annual January slot sweep; D2 publishes the next value at
+    /// the end of that sweep.
     pub fn mac_monthly_arrest_total(&self) -> u16 {
         self.mac_monthly_arrest_total
     }

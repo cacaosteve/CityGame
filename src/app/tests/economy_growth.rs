@@ -18926,22 +18926,22 @@ fn pe_city_value_building_hospital_div9_like_46a3a7() {
 }
 
 #[test]
-fn pe_bond_issue_city_value_gate_allows_when_ratio_below_6_like_41a679() {
+fn pe_bond_issue_city_value_gate_allows_when_ratio_below_6() {
     // SC2KFix recalculates from placed values before the PE (bonds*2500)/(value+1) gate.
     let mut city = City::new_blank("/tmp/sc2000-bond-gate-ok.sc2", "BondGateOk").expect("blank");
     city.pe_dw_tile_count[0xc6] = 10; // 10 hydro tiles × $400 = $4,000
     city.set_misc_u32_at(BUDGET_BONDS_MISC_OFFSET, 5); // 12500 / 4001 = 3
-    assert!(pe_bond_issue_city_value_allows_41a679(&mut city));
+    assert!(pe_bond_issue_city_value_allows_41b270(&mut city));
     assert_eq!(city.pe_city_value, 4000);
 }
 
 #[test]
-fn pe_bond_issue_city_value_gate_refuses_when_ratio_ge_6_like_41a6a5() {
+fn pe_bond_issue_city_value_gate_refuses_when_ratio_ge_6() {
     let mut city = City::new_blank("/tmp/sc2000-bond-gate-no.sc2", "BondGateNo").expect("blank");
     // Blank census → value 0; one bond → 2500 / 1 = 2500 >= 6.
     city.set_misc_u32_at(BUDGET_BONDS_MISC_OFFSET, 1);
-    assert!(!pe_bond_issue_city_value_allows_41a679(&mut city));
-    assert!(!pe_bond_issue_city_value_would_allow_41a679(&city));
+    assert!(!pe_bond_issue_city_value_allows_41b270(&mut city));
+    assert!(!pe_bond_issue_city_value_would_allow_41b270(&city));
 }
 
 #[test]
@@ -18993,7 +18993,7 @@ fn mac_bond_issue_uses_25000_gate_against_sc2kfix_pe_valuation() {
     assert!(!mac_bond_issue_city_value_allows_3a714(&mut mac_city));
     assert_eq!(mac_city.pe_city_value, 4_000);
     let mut pe_city = mac_city.clone();
-    assert!(!pe_bond_issue_city_value_allows_41a679(&mut pe_city));
+    assert!(!pe_bond_issue_city_value_allows_41b270(&mut pe_city));
     assert_eq!(pe_city.pe_city_value, 400);
 
     // A larger Mac census lowers its ratio below the strict six-bond limit.
@@ -19014,8 +19014,8 @@ fn mac_bond_issue_gate_compares_the_quotient_as_a_signed_word() {
 }
 
 #[test]
-fn pe_bond_city_value_ratio_score_clamps_at_6_like_41d9b0() {
-    // PE `0x41d9a7`: min((bonds * 25000) / (value + 1), 6).
+fn pe_bond_city_value_ratio_score_clamps_at_6() {
+    // Win95 credit path `0x41e580`: min((bonds * 25000) / (value + 1), 6).
     assert_eq!(pe_bond_city_value_ratio_score_from(0, 0), 0);
     assert_eq!(pe_bond_city_value_ratio_score_from(24_999, 1), 1);
     assert_eq!(pe_bond_city_value_ratio_score_from(4_999, 1), 5);
@@ -19024,13 +19024,13 @@ fn pe_bond_city_value_ratio_score_clamps_at_6_like_41d9b0() {
 }
 
 #[test]
-fn pe_bond_city_value_ratio_score_recalculates_like_41d98e() {
+fn pe_bond_city_value_ratio_score_recalculates_at_win95_entry() {
     let mut city = City::new_blank("/tmp/sc2000-bond-score.sc2", "BondScore").expect("blank");
     city.pe_dw_tile_count[0xc6] = 10; // 10 hydro tiles × $400 = $4,000
     city.set_misc_u32_at(BUDGET_BONDS_MISC_OFFSET, 1); // 25000 / 4001 = 6
-    assert_eq!(pe_bond_city_value_ratio_score_41d9a7(&mut city), 6);
+    assert_eq!(pe_bond_city_value_ratio_score_41e580(&mut city), 6);
     assert_eq!(city.pe_city_value, 4000);
-    assert_eq!(pe_bond_city_value_ratio_score_would_41d9a7(&city), 6);
+    assert_eq!(pe_bond_city_value_ratio_score_would_41e580(&city), 6);
 }
 
 #[test]

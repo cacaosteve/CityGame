@@ -106,13 +106,13 @@ pub(super) fn pe_city_value_building_contrib_46a34a(city: &City, tile: u8) -> i3
     }
 }
 
-/// PE RecalculateCityValue @ `0x469670`–`0x469a4f` (thunk `0x401350`): infra + buildings,
+/// PE RecalculateCityValue @ `0x46a270`–`0x46a656` (thunk `0x401f50`): infra + buildings,
 /// then store dword `[0x4ca4d0]`.
 pub(super) fn pe_recalculate_city_value_46a270(city: &mut City) {
-    city.pe_city_value = pe_city_value_total_469670(city);
+    city.pe_city_value = pe_city_value_total_46a270(city);
 }
 
-fn pe_city_value_total_469670(city: &City) -> i32 {
+fn pe_city_value_total_46a270(city: &City) -> i32 {
     let mut total = pe_city_value_infra_subtotal_46a270(city);
     for tile in 0xc6u8..=0xfe {
         total = total.wrapping_add(pe_city_value_building_contrib_46a34a(city, tile));
@@ -321,19 +321,19 @@ pub(super) fn mac_bond_issue_rate_scaled_3a714(city: &City) -> Option<u32> {
     Some(u32::from(rate_word) * BOND_RATE_SCALE)
 }
 
-/// Win95 bond gate @ `0x41a679`–`0x41a6a5`, using the SC2KFix-corrected
-/// construction-cost valuation before the retail ratio comparison.
-pub(super) fn pe_bond_issue_city_value_allows_41a679(city: &mut City) -> bool {
+/// Win95 bond gate enters at `0x41b270` and recalculates at `0x41b274`. The
+/// gameplay adapter uses the SC2KFix-corrected valuation before its ratio check.
+pub(super) fn pe_bond_issue_city_value_allows_41b270(city: &mut City) -> bool {
     sc2kfix_pe_recalculate_city_value(city);
-    pe_bond_issue_city_value_ratio_ok_41a679(city)
+    pe_bond_issue_city_value_ratio_ok_41b270(city)
 }
 
-fn pe_bond_issue_city_value_ratio_ok_41a679(city: &City) -> bool {
+fn pe_bond_issue_city_value_ratio_ok_41b270(city: &City) -> bool {
     pe_bond_issue_gate_from(city.pe_city_value, outstanding_bond_count_for_city(city))
         .unwrap_or(false)
 }
 
-/// PE `0x41b279..0x41b29c`: DIV uses a DWORD quotient, but `CMP AX,6`
+/// PE `0x41b287..0x41b29c`: DIV uses a DWORD quotient, but `CMP AX,6`
 /// followed by signed JGE reads only its low signed WORD. A zero divisor is
 /// malformed state and remains fail-closed instead of reproducing a CPU fault.
 pub(super) fn pe_bond_issue_gate_from(city_value: i32, bonds: u32) -> Option<bool> {
@@ -344,7 +344,7 @@ pub(super) fn pe_bond_issue_gate_from(city_value: i32, bonds: u32) -> Option<boo
 
 /// Read-only probe for the Win95 bond gate using the SC2KFix-corrected total
 /// without writing `[0x4ca4d0]` (UI enable paths).
-pub(super) fn pe_bond_issue_city_value_would_allow_41a679(city: &City) -> bool {
+pub(super) fn pe_bond_issue_city_value_would_allow_41b270(city: &City) -> bool {
     pe_bond_issue_gate_from(
         sc2kfix_pe_city_value_total(city),
         outstanding_bond_count_for_city(city),
@@ -352,9 +352,9 @@ pub(super) fn pe_bond_issue_city_value_would_allow_41a679(city: &City) -> bool {
     .unwrap_or(false)
 }
 
-/// Win95 bond credit ratio score @ `0x41d994`–`0x41d9b8`, using the
-/// SC2KFix-corrected construction-cost valuation.
-pub(super) fn pe_bond_city_value_ratio_score_41d9a7(city: &mut City) -> u16 {
+/// Win95 bond credit ratio path enters at `0x41e580` and recalculates at
+/// `0x41e58e`; CityGame uses the SC2KFix-corrected construction-cost valuation.
+pub(super) fn pe_bond_city_value_ratio_score_41e580(city: &mut City) -> u16 {
     sc2kfix_pe_recalculate_city_value(city);
     pe_bond_city_value_ratio_score_from(city.pe_city_value, outstanding_bond_count_for_city(city))
 }
@@ -368,7 +368,7 @@ pub(super) fn pe_bond_city_value_ratio_score_from(city_value: i32, bonds: u32) -
 }
 
 /// Read-only probe for the Win95 credit score without writing `[0x4ca4d0]`.
-pub(super) fn pe_bond_city_value_ratio_score_would_41d9a7(city: &City) -> u16 {
+pub(super) fn pe_bond_city_value_ratio_score_would_41e580(city: &City) -> u16 {
     pe_bond_city_value_ratio_score_from(
         sc2kfix_pe_city_value_total(city),
         outstanding_bond_count_for_city(city),

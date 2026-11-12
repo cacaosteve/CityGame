@@ -15,7 +15,7 @@ use super::{
     industry_stats_for_city, industry_tax_misc_offset, mac_bond_issue_city_value_allows_3a714,
     mac_bond_issue_city_value_would_allow_3a714, mac_bond_issue_rate_scaled_3a714,
     mac_industry_stats_for_city, outstanding_bond_count_for_city,
-    pe_bond_issue_city_value_allows_41a679, pe_bond_issue_city_value_would_allow_41a679,
+    pe_bond_issue_city_value_allows_41b270, pe_bond_issue_city_value_would_allow_41b270,
     remove_oldest_bond_rate_for_city, sync_bond_budget_row_for_city, tax_rate_for_city,
     tax_rate_misc_offset_for_city,
 };
@@ -158,7 +158,7 @@ impl ViewerState {
         }
         // The edition-specific issue gate is rooted in each binary's finance path.
         let may_issue = if self.engine_fidelity.uses_win95() {
-            pe_bond_issue_city_value_allows_41a679(&mut self.city)
+            pe_bond_issue_city_value_allows_41b270(&mut self.city)
         } else {
             mac_bond_issue_city_value_allows_3a714(&mut self.city)
         };
@@ -194,7 +194,7 @@ impl ViewerState {
                 return false;
             }
             return if self.engine_fidelity.uses_win95() {
-                pe_bond_issue_city_value_would_allow_41a679(&self.city)
+                pe_bond_issue_city_value_would_allow_41b270(&self.city)
             } else {
                 mac_bond_issue_city_value_would_allow_3a714(&self.city)
             };

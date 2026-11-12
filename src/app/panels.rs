@@ -944,7 +944,7 @@ impl ViewerState {
     ) {
         let bonds = outstanding_bond_count_for_city(&self.city);
         let bond_score = if self.engine_fidelity.uses_win95() {
-            pe_bond_city_value_ratio_score_would_41d9a7(&self.city)
+            pe_bond_city_value_ratio_score_would_41e580(&self.city)
         } else {
             mac_bond_city_value_ratio_3a714(mac_city_value_total_3a714(&self.city), bonds)
                 .unwrap_or(u32::MAX)

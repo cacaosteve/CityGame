@@ -262,13 +262,13 @@ use city_publication::{
 use city_valuation::{
     mac_bond_city_value_ratio_3a714, mac_bond_issue_city_value_allows_3a714,
     mac_bond_issue_city_value_would_allow_3a714, mac_bond_issue_rate_scaled_3a714,
-    mac_city_value_total_3a714, pe_bond_city_value_ratio_score_would_41d9a7,
-    pe_bond_credit_rating_caption_4e6a78, pe_bond_issue_city_value_allows_41a679,
-    pe_bond_issue_city_value_would_allow_41a679, sc2kfix_pe_recalculate_city_value,
+    mac_city_value_total_3a714, pe_bond_city_value_ratio_score_would_41e580,
+    pe_bond_credit_rating_caption_4e6a78, pe_bond_issue_city_value_allows_41b270,
+    pe_bond_issue_city_value_would_allow_41b270, sc2kfix_pe_recalculate_city_value,
 };
 #[cfg(test)]
 use city_valuation::{
-    mac_bond_city_value_ratio_allows_issue_3a714, pe_bond_city_value_ratio_score_41d9a7,
+    mac_bond_city_value_ratio_allows_issue_3a714, pe_bond_city_value_ratio_score_41e580,
     pe_bond_city_value_ratio_score_from, pe_city_value_building_contrib_46a34a,
     pe_city_value_infra_subtotal_46a270, pe_recalculate_city_value_46a270,
     sc2kfix_pe_city_value_total,

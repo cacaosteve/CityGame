@@ -1743,6 +1743,40 @@ fn pe_recalculate_city_value_stores_4ca4d0_like_46a64d() {
 }
 
 #[test]
+fn win95_retail_city_value_matches_native_reference_vectors() {
+    let mut all_positive = [0i16; 256];
+    let mut signed_edges = [0i16; 256];
+    let mut wrapping_sum = [0i16; 256];
+    let signed_cases = [-32768, -17, -16, -15, -9, -1, 0, 1, 8, 9, 15, 16, 17, 32767];
+
+    for tile in (0x0eusize..0x70).chain(0xc6..0xff) {
+        all_positive[tile] = ((tile * 37 + 11) % 73) as i16;
+        signed_edges[tile] = signed_cases[(tile * 7 + 3) % signed_cases.len()];
+        wrapping_sum[tile] = if tile & 1 == 0 { i16::MAX } else { i16::MIN };
+    }
+
+    for (label, xund, counts, expected) in [
+        ("all-positive-case-table", 19i16, all_positive, 2_353_627i32),
+        ("signed-word-division-edges", i16::MIN, signed_edges, -130_337),
+        ("signed-word-wrapping-accumulation", i16::MAX, wrapping_sum, 443_153_418),
+    ] {
+        let mut city = City::new_blank(
+            format!("/tmp/citygame-city-value-{label}.sc2"),
+            "CityValueReference",
+        )
+        .expect("blank city");
+        city.pe_xund_occupancy = xund as u16;
+        for (slot, count) in city.pe_dw_tile_count.iter_mut().zip(counts) {
+            *slot = count as u16;
+        }
+
+        pe_recalculate_city_value_46a270(&mut city);
+
+        assert_eq!(city.pe_city_value, expected, "native reference case {label}");
+    }
+}
+
+#[test]
 fn sc2kfix_pe_city_value_matches_full_tile_case_map() {
     let mut city =
         City::new_blank("/tmp/sc2000-cityval-case-map.sc2", "CityValCaseMap").expect("blank");

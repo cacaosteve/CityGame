@@ -9864,3 +9864,58 @@ fn mac_dispatchers_compete_for_a_live_fire_marker_in_x_major_order() {
         );
     }
 }
+
+#[test]
+fn mac_police_and_fire_dispatchers_compete_for_one_live_fire_marker() {
+    use crate::win95_overlay::DispatchKind;
+
+    for path in [
+        "mac-police-fire-contention.city",
+        "mac-police-fire-contention.sc2",
+    ] {
+        let mut city = blank_city_layout_fixture(path, "Police and fire response");
+        city.prepare_mac_fidelity_from_saved_city();
+        for x in 100..116 {
+            city.set_building(x, 100, 210);
+            city.set_building(x, 101, 211);
+        }
+        city.set_mac_state_misc_u32_at(915 * 4, 3);
+
+        let fidelity = EngineFidelity::Mac68k;
+        city.reset_emergency_dispatch_for_engine(fidelity);
+        assert!(city.place_dispatch_actor_for_engine(45, 40, DispatchKind::Police, fidelity));
+        assert!(city.place_dispatch_actor_for_engine(
+            47,
+            40,
+            DispatchKind::Firefighters,
+            fidelity,
+        ));
+        city.set_text_overlay(46, 40, 0xff);
+        scenario_action::begin_action(&mut city, scenario_action::OAKLAND_ACTION);
+
+        // The first proxy's police gate admits fire response from the zero
+        // app-LFSR state. Police consumes fire and riot direction words; the
+        // later firefighter still consumes its fire-direction word.
+        let mut rng = MacToolboxRng::new(10);
+        let mut expected_rng = MacToolboxRng::new(10);
+        let expected_draws: Vec<_> = (0..3).map(|_| expected_rng.random_u16()).collect();
+        assert_eq!(expected_draws, [36_998, 19_819, 49_281]);
+        let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+
+        assert!(pass.complete, "{path}");
+        assert!(!pass.riot_sound, "{path}");
+        assert_eq!(rng.seed(), expected_rng.seed(), "{path}");
+        for (x, y) in [(45, 40), (46, 40), (47, 40), (45, 41)] {
+            assert_eq!(city.text_overlay_at(x, y), Some(0), "{path} ({x},{y})");
+        }
+        assert_eq!(city.building_at(46, 40), 1);
+        let actors = city.traffic_overlays().unwrap();
+        assert_eq!(actors[1].kind, 0, "{path} police proxy cleanup");
+        assert_eq!(actors[2].kind, 0, "{path} fire proxy cleanup");
+        assert_eq!(city.mac_state_misc_u32_at(0x1048), Some(0));
+        assert_eq!(
+            city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_GAMEPLAY),
+        );
+    }
+}

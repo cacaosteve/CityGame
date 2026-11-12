@@ -18249,7 +18249,7 @@ fn mac_fallback_special_zones_keep_the_citygame_demand_gate() {
     enable_airport_demand_for_test(&mut state.city);
     let expected_developments = expected_special_zone_development_count(&state);
     let expected_plans = expected_special_zone_development_plans(&state);
-    // Only the transport-adjacent tile of the 2x2 pad can place a 1x1 runway.
+    // The Mac fallback retains its transport gate for this untraced path.
     assert_eq!(state.develop_special_zones(), expected_developments);
     assert_eq!(
         state.city.building_at(airport_origin.0, airport_origin.1),

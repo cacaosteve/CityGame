@@ -10099,7 +10099,7 @@ fn dense_rci_pop3_startbuilding_places_after_road_without_terrain_transport_or_p
 }
 
 #[test]
-fn special_zone_growth_develops_airport_and_seaport_footprints() {
+fn win95_special_zone_growth_develops_airport_and_seaport_without_transport_access() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     stamp_special_zone_demand_population_for_test(
         &mut city,
@@ -10119,7 +10119,6 @@ fn special_zone_growth_develops_airport_and_seaport_footprints() {
     stamp_zone_footprint_for_test(&mut city, airport_origin, 2, ZONE_AIRPORT);
     stamp_airport_runway_zone_ray_for_test(&mut city, airport_origin);
     city.set_building(11, 10, 6);
-    stamp_transport_access_for_test(&mut city, 9, 11);
     power_adjacent_building_for_test(&mut city, 10, 10);
     water_footprint_from_below_for_test(&mut city, 10, 11, 2);
 
@@ -10127,7 +10126,6 @@ fn special_zone_growth_develops_airport_and_seaport_footprints() {
     let seaport_origin = (16, 10);
     stamp_zone_footprint_for_test(&mut city, seaport_origin, 2, ZONE_SEAPORT);
     stamp_seaport_crane_water_ray_for_test(&mut city, seaport_origin);
-    stamp_transport_access_for_test(&mut city, seaport_origin.0 - 1, seaport_origin.1);
     power_adjacent_building_for_test(&mut city, seaport_origin.0, seaport_origin.1 - 1);
     water_footprint_from_below_for_test(&mut city, seaport_origin.0, seaport_origin.1, 2);
 
@@ -10136,7 +10134,6 @@ fn special_zone_growth_develops_airport_and_seaport_footprints() {
     for (x, y) in building_footprint_from_origin(blocked_origin.0, blocked_origin.1, 2).unwrap() {
         city.set_terrain(x, y, 0x30);
     }
-    stamp_transport_access_for_test(&mut city, 25, 10);
     power_adjacent_building_for_test(&mut city, 26, 9);
     water_footprint_from_below_for_test(&mut city, 26, 10, 2);
     let mut state = test_state(city);
@@ -10187,8 +10184,7 @@ fn special_zone_growth_develops_airport_and_seaport_footprints() {
     ));
 
     assert_ne!(state.city.building_at(10, 10), 0);
-    // Tree on a non-adjacent pad tile stays: empty airport growth places 1x1 runways
-    // only on tiles that themselves have transport access.
+    // The selector clears/stamps its selected tile; an unrelated pad tree stays.
     assert_eq!(state.city.building_at(11, 10), 6);
 
     for (x, y) in building_footprint_from_origin(blocked_origin.0, blocked_origin.1, 2).unwrap() {
@@ -10198,7 +10194,7 @@ fn special_zone_growth_develops_airport_and_seaport_footprints() {
 }
 
 #[test]
-fn special_zones_wait_for_transport_access_before_developing() {
+fn special_zone_transport_access_gate_is_engine_specific() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     let airport = (10, 11);
     let seaport = (20, 10);
@@ -10209,7 +10205,9 @@ fn special_zones_wait_for_transport_access_before_developing() {
     stamp_seaport_crane_water_ray_for_test(&mut city, seaport);
     water_footprint_from_below_for_test(&mut city, airport.0, airport.1, 2);
     water_footprint_from_below_for_test(&mut city, seaport.0, seaport.1, 2);
-    let mut state = test_state(city);
+    let win95_state = test_state(city.clone());
+    let mut mac_state = test_state(city);
+    mac_state.engine_fidelity = EngineFidelity::Mac68k;
     let reserved = vec![false; CITY_TILES];
     let mut power_maps = PowerServiceMaps {
         conductive_tiles: vec![false; CITY_TILES],
@@ -10221,24 +10219,33 @@ fn special_zones_wait_for_transport_access_before_developing() {
     for origin in [airport, seaport] {
         set_saved_xbit_growth_power_for_test(&mut power_maps, origin.0, origin.1 - 1, true);
         assert!(
-            state
+            win95_state
                 .special_zone_development_plan_at(origin.0, origin.1, &reserved, &power_maps)
-                .is_none()
+                .is_some(),
+            "Win95's powered special-zone selector should not require surface transport"
+        );
+        assert!(
+            mac_state
+                .special_zone_development_plan_at(origin.0, origin.1, &reserved, &power_maps)
+                .is_none(),
+            "keep the untraced Mac fallback's existing transport gate"
         );
     }
 
-    stamp_transport_access_for_test(&mut state.city, airport.0 - 1, airport.1);
-    stamp_transport_access_for_test(&mut state.city, seaport.0 - 1, seaport.1);
-    assert!(
-        state
-            .special_zone_development_plan_at(airport.0, airport.1, &reserved, &power_maps)
-            .is_some()
-    );
-    assert!(
-        state
-            .special_zone_development_plan_at(seaport.0, seaport.1, &reserved, &power_maps)
-            .is_some()
-    );
+    stamp_transport_access_for_test(&mut mac_state.city, airport.0 - 1, airport.1);
+    stamp_transport_access_for_test(&mut mac_state.city, seaport.0 - 1, seaport.1);
+    for origin in [airport, seaport] {
+        assert!(
+            win95_state
+                .special_zone_development_plan_at(origin.0, origin.1, &reserved, &power_maps)
+                .is_some()
+        );
+        assert!(
+            mac_state
+                .special_zone_development_plan_at(origin.0, origin.1, &reserved, &power_maps)
+                .is_some()
+        );
+    }
 }
 
 #[test]
@@ -10544,8 +10551,11 @@ fn win95_airport_growth_plan_has_no_extra_global_population_floor() {
     let origin = (10, 11);
     stamp_zone_footprint_for_test(&mut city, origin, 2, ZONE_AIRPORT);
     stamp_airport_runway_zone_ray_for_test(&mut city, origin);
-    stamp_transport_access_for_test(&mut city, origin.0 - 1, origin.1);
     power_adjacent_building_for_test(&mut city, origin.0, origin.1 - 1);
+    // Class 0 owns the terrain/occupancy attempt after its five-cell XZON ray
+    // check. The planner must let the selector reach PlaceTile on this tile.
+    city.set_building(origin.0, origin.1, 6);
+    city.set_terrain(origin.0, origin.1, 0x30);
     city.set_technology_discovery_year(Technology::Airport, 1900);
     let state = test_state(city);
 
@@ -10561,7 +10571,7 @@ fn win95_airport_growth_plan_has_no_extra_global_population_floor() {
     let power_maps = power_service_maps_with_entry_seed(&state.city, state.pe_process_crt.seed());
     let plan = state
         .special_zone_development_plan_at(origin.0, origin.1, &reserved, &power_maps)
-        .expect("the rooted airport selector, not a global population floor, owns admission");
+        .expect("the rooted airport selector, not planner terrain/transport filters, owns admission");
     assert_eq!(plan.building, RUNWAY_BUILDING_ID);
 }
 

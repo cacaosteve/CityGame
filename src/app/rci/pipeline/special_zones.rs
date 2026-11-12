@@ -161,9 +161,7 @@ impl ViewerState {
             && (size == 2
                 || building == MILITARY_SILO_BUILDING_ID
                 || pe_army_selector_owns_footprint(building)))
-            || (self.engine_fidelity.uses_win95()
-                && zone_id == ZONE_AIRPORT
-                && building != RUNWAY_BUILDING_ID)
+            || (self.engine_fidelity.uses_win95() && zone_id == ZONE_AIRPORT)
             || (self.engine_fidelity.uses_win95()
                 && zone_id == ZONE_SEAPORT
                 && matches!(
@@ -213,8 +211,10 @@ impl ViewerState {
         // Class 6's silo arm walks to an origin, then writes a 3x3 plot without checking
         // the destination footprint's zone, occupancy, or terrain. Let those PE paths
         // own their mutations instead of prefiltering them as civilian growth does.
-        let transport_ok =
-            zone_id == ZONE_MILITARY || self.development_footprint_has_transport_access(&footprint);
+        let transport_ok = zone_id == ZONE_MILITARY
+            || (self.engine_fidelity.uses_win95()
+                && matches!(zone_id, ZONE_AIRPORT | ZONE_SEAPORT))
+            || self.development_footprint_has_transport_access(&footprint);
         if footprint.iter().all(|&(tx, ty)| {
             !reserved[ty * CITY_WIDTH + tx]
                 && (self

@@ -450,12 +450,16 @@ impl Win95OverlayRecord {
     /// Large-bank sprite for airplane / helicopter / cargo ship / train / sailboat facings.
     /// Subway train kinds are intentionally undrawn on the surface map (Win95 `DrawThings`).
     pub fn ambient_port_sprite_id(self) -> Option<u32> {
+        if self.kind == XTHG_SAILBOAT {
+            // DrawThings uses a two-entry sailboat art family. The next IDs
+            // belong to dispatch markers, not additional boat directions.
+            return Some(XTHG_SAILBOAT_SPRITE_BASE + u32::from([0u8, 1, 1, 0][(self.lane & 3) as usize]));
+        }
         let base = match self.kind {
             XTHG_AIRPLANE => XTHG_AIRPLANE_SPRITE_BASE,
             XTHG_HELICOPTER => XTHG_HELICOPTER_SPRITE_BASE,
             XTHG_CARGO_SHIP => XTHG_CARGO_SHIP_SPRITE_BASE,
             XTHG_TRAIN_ENGINE | XTHG_TRAIN_CAR => XTHG_TRAIN_SPRITE_BASE,
-            XTHG_SAILBOAT => XTHG_SAILBOAT_SPRITE_BASE,
             _ => return None,
         };
         // OpenSC2K packs five facings; fold the eight compass dirs into 0..4.
@@ -480,6 +484,9 @@ impl Win95OverlayRecord {
     /// tables are recovered. The portal/bridge branches remain on the prior
     /// generic fallback until their separate PE draw paths are recovered.
     pub fn ambient_port_sprite(self, building: u8, xbit: Option<u8>) -> Option<(u32, bool)> {
+        if self.kind == XTHG_SAILBOAT {
+            return self.ambient_port_sprite_id().map(|id| (id, (self.lane & 3) >= 2));
+        }
         if matches!(self.kind, XTHG_TRAIN_ENGINE | XTHG_TRAIN_CAR) {
             if let Some((sprite_id, flip_x)) =
                 pe_train_sprite_for_tile(building, self.target_x, xbit)
@@ -665,6 +672,19 @@ mod tests {
         assert_eq!(raw.len(), XTHG_CHUNK_SIZE);
         let back = decode_xthg_records(&raw).expect("decode");
         assert_eq!(back, table);
+    }
+
+    #[test]
+    fn sailboat_directions_never_select_dispatch_sprites() {
+        let mut record = Win95OverlayRecord { kind: XTHG_SAILBOAT, ..Default::default() };
+        for (lane, expected) in [(0, (1380, false)), (1, (1381, false)), (2, (1381, true)), (3, (1380, true))] {
+            record.lane = lane;
+            assert_eq!(record.ambient_port_sprite(0, None), Some(expected));
+        }
+        for lane in 0..=u8::MAX {
+            record.lane = lane;
+            assert!(matches!(record.ambient_port_sprite_id(), Some(1380 | 1381)));
+        }
     }
 
     #[test]

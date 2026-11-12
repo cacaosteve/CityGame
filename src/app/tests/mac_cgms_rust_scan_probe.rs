@@ -239,4 +239,51 @@ fn mac_native_leaf_cgms_differential_probe() {
             .collect::<Vec<_>>()
             .join(","),
     );
+
+    // Optional bounded worker join: continue the same loaded Mac city through
+    // the CODE 8 scalar/demand and export-238 worker slices, preserving its
+    // original format adapter. A CGMS-only replay cannot distinguish MacCity
+    // from a Win-layout city. Presentation/event/weather chronology is outside
+    // this controlled worker comparison.
+    if let Ok(path) = std::env::var("SC2K_MAC_CGMS_PHASE21_OUTPUT") {
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = crate::app::EngineFidelity::Mac68k;
+        state.game_clock = crate::app::game_clock_from_city(&state.city);
+        state.mac_process_rng = MacToolboxRng::new(quickdraw.seed());
+        state.mac_game_rng = MacGameLcgRng::new(game_rng.state());
+        crate::app::mac_publish_monthly_growth_scalar(&mut state.city);
+        crate::app::mac_budget_refresh_rci_budget_currents(&mut state.city);
+        crate::app::mac_publish_monthly_rci_demand(&mut state.city);
+        println!("RUST_PHASE21_AFTER_DEMAND quickdraw={}", state.mac_process_rng.seed());
+        state
+            .city
+            .advance_mac_national_economy_month(&mut state.mac_process_rng);
+        println!("RUST_PHASE21_AFTER_NATIONAL quickdraw={}", state.mac_process_rng.seed());
+        state
+            .city
+            .advance_mac_neighbor_economy_month(&mut state.mac_process_rng);
+        println!("RUST_PHASE21_AFTER_NEIGHBOR quickdraw={}", state.mac_process_rng.seed());
+        state
+            .city
+            .advance_mac_industry_mix_month(&mut state.mac_process_rng);
+        println!("RUST_PHASE21_AFTER_INDUSTRY quickdraw={}", state.mac_process_rng.seed());
+        state
+            .city
+            .advance_mac_cohorts_month(&mut state.mac_process_rng);
+        let snapshot = cgms_v4_from_city_for_test(&state.city)
+            .expect("encode Rust post-phase-21 CGMS v4");
+        std::fs::write(path, snapshot).expect("write Rust phase-21 CGMS v4");
+        println!(
+            "RUST_PHASE21_DONE quickdraw={} population_balances={:?} class_two={} demands={:?} industry_populations={:?} cohort_summary={:?} cohort_lanes={:?}",
+            state.mac_process_rng.seed(),
+            state.city.mac_population_change_balances,
+            state.city.mac_rci_counter(7),
+            state.city.misc_i32_values(0x0718, 3),
+            (0..11)
+                .map(|row| state.city.mac_state_misc_u32_at(0x016c + row * 12 + 8).unwrap_or(0))
+                .collect::<Vec<_>>(),
+            state.city.misc_u32_values(0x0044, 3),
+            state.city.misc_u32_values(0x007c, 60),
+        );
+    }
 }

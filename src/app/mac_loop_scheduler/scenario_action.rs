@@ -21,6 +21,80 @@ const ACTIVE_FLAG: usize = 0x1048;
 const ACTION_ACTOR: usize = 0x1040;
 const CARDINAL: [(isize, isize); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
 
+/// Incremental core of CODE 10 selector 11. The caller supplies the native
+/// terrain validator/writer, inherited refresh counter and live sound query;
+/// these are not yet available together in the normal application path.
+#[allow(dead_code)]
+struct Selector11Work {
+    point: (i16, i16),
+    temporary_funds: i32,
+    refresh_counter: u32,
+}
+
+#[allow(dead_code)]
+impl Selector11Work {
+    fn new(point: (i16, i16), refresh_counter: u32) -> Self {
+        Self {
+            point,
+            temporary_funds: 25_000,
+            refresh_counter,
+        }
+    }
+
+    /// Advance one sampled candidate, returning true when the native budget
+    /// loop exits. Out-of-map candidates consume two draws and spend nothing.
+    fn step(
+        &mut self,
+        city: &mut City,
+        rng: &mut MacToolboxRng,
+        mut validate_and_raise: impl FnMut(
+            &mut City,
+            usize,
+            usize,
+            &mut i32,
+            &mut MacToolboxRng,
+        ) -> bool,
+        mut refresh: impl FnMut(&mut City, &mut MacToolboxRng),
+        mut sound_query: impl FnMut(&mut MacToolboxRng) -> bool,
+        mut sound: impl FnMut(u16, &mut MacToolboxRng),
+    ) -> bool {
+        if self.temporary_funds <= 0 {
+            return true;
+        }
+        let x = self.point.0.wrapping_add((rng.random_u16() % 5) as i16 - 2);
+        let y = self.point.1.wrapping_add((rng.random_u16() % 5) as i16 - 2);
+        let Some((x, y)) = checked_tile(x, y) else {
+            return false;
+        };
+        city.set_text_overlay(x, y, if rng.random_bit() { 0xff } else { 0xfb });
+        if validate_and_raise(city, x, y, &mut self.temporary_funds, rng) {
+            self.refresh_counter = self.refresh_counter.wrapping_add(1);
+            if self.refresh_counter & 3 == 0 {
+                refresh(city, rng);
+            }
+        } else {
+            self.temporary_funds = self.temporary_funds.wrapping_sub(1_000);
+        }
+        let x = self
+            .point
+            .0
+            .wrapping_add((rng.random_u16() % 32) as i16 - 16);
+        let y = self
+            .point
+            .1
+            .wrapping_add((rng.random_u16() % 32) as i16 - 16);
+        if let Some((x, y)) = checked_tile(x, y) {
+            let wet = city.tile_bits_at(x, y).is_some_and(TileBits::water_tile);
+            city.set_text_overlay(x, y, if wet { 0xfb } else { 0xff });
+        }
+        if sound_query(rng) {
+            let id = if rng.random_u16() & 3 == 0 { 504 } else { 507 };
+            sound(id, rng);
+        }
+        self.temporary_funds <= 0
+    }
+}
+
 /// Selectors whose Mac scenario-opening behavior is implemented in CityGame.
 /// Native CODE 4 copies any `SCEN` resource selector into the action latch;
 /// this narrower predicate is an implementation gate, not the game's format
@@ -69,19 +143,19 @@ pub(super) fn seed_fire(
     point: &mut (i16, i16),
     rng: &mut MacToolboxRng,
     now: &mut u32,
+    lfsr: &mut MacAppLfsrRng,
 ) -> bool {
     let (x, y) = fire_origin(city, rng);
-    let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
     let target = disaster_spiral_candidates((isize::from(x), isize::from(y)), 0x3f)
         .find(|&(x, y)| {
             city.building_at(x, y) >= 0x70
-                && mac_export247_candidate(city, x, y, true, &mut lfsr, rng, now)
+                && mac_export247_candidate(city, x, y, true, lfsr, rng, now)
         })
         .or_else(|| {
             (0..200).find_map(|_| {
                 let x = usize::from(lfsr.low_seven_bits());
                 let y = usize::from(lfsr.low_seven_bits());
-                mac_export247_candidate(city, x, y, true, &mut lfsr, rng, now).then_some((x, y))
+                mac_export247_candidate(city, x, y, true, lfsr, rng, now).then_some((x, y))
             })
         });
     let Some((x, y)) = target else {
@@ -103,14 +177,20 @@ pub(super) fn seed_toxic_spill(city: &mut City, point: (i16, i16)) -> bool {
 }
 
 /// CODE 10 FUN_3bfb2 uses two CODE 13 export-207 results for the spawn.
-pub(super) fn seed_air_crash(city: &mut City) -> Option<(i16, i16)> {
-    // The reconstructed A5-2 state is a zero fixed point. Both coordinates
-    // resolve to 32 on every iteration, so reject an occupied cell instead
-    // of reproducing the original's unbounded retry.
-    let (x, y) = (32, 32);
-    if city.text_overlay_at(x, y).unwrap_or(0) != 0 {
-        return None;
-    }
+pub(super) fn seed_air_crash(city: &mut City, lfsr: &mut MacAppLfsrRng) -> Option<(i16, i16)> {
+    let initial_state = lfsr.state();
+    let (x, y) = loop {
+        let x = usize::from(lfsr.low_six_bits()) + 32;
+        let y = usize::from(lfsr.low_six_bits()) + 32;
+        if city.text_overlay_at(x, y).unwrap_or(0) == 0 {
+            break (x, y);
+        }
+        // The original retries indefinitely if this stream cycles over
+        // occupied cells. Stop after one cycle to keep the app responsive.
+        if lfsr.state() == initial_state {
+            return None;
+        }
+    };
     let (slot, free) = city
         .mac_object_slot_records_mut()
         .iter()
@@ -164,14 +244,14 @@ pub(super) fn seed_cloud_scatter(
     last_stamp
 }
 
-/// CODE 10 selector 6 scans x first after the display-only shake.
+/// CODE 10 selector 6 scans x first after its 24-frame shake and Explode requests.
 pub(super) fn seed_earthquake(
     city: &mut City,
     point: (i16, i16),
     rng: &mut MacToolboxRng,
     now: &mut u32,
+    lfsr: &mut MacAppLfsrRng,
 ) {
-    let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
     for dx in -32..=32 {
         for dy in -32..=32 {
             // The gate draws even when the coordinate is outside the map.
@@ -189,10 +269,11 @@ pub(super) fn seed_earthquake(
                 continue;
             }
             if rng.random_u16() & 3 == 0 {
-                mac_export247_candidate(city, x, y, true, &mut lfsr, rng, now);
+                mac_export247_candidate(city, x, y, true, lfsr, rng, now);
             } else if !matches!(building, 0x3f..=0x42) {
-                // FUN_3dc90 calls export 80 even when its footprint-fill flag is zero.
-                super::super::budget::mac_destroy_building_export80(city, x, y, rng, false);
+                // FUN_3dc90 records the affected class even when footprint fill is off.
+                city.record_mac_disaster_damage_class_at(x, y);
+                super::super::budget::mac_destroy_building_export80_for_earthquake(city, x, y, rng);
             }
         }
     }
@@ -205,11 +286,11 @@ pub(super) fn seed_oakland(
     point: &mut (i16, i16),
     rng: &mut MacToolboxRng,
     now: &mut u32,
+    lfsr: &mut MacAppLfsrRng,
 ) -> usize {
-    let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
     city.set_mac_pending_action(0);
     let count = disaster_spiral_candidates((isize::from(point.0), isize::from(point.1)), 0x7f)
-        .filter(|&(x, y)| mac_export247_candidate(city, x, y, false, &mut lfsr, rng, now))
+        .filter(|&(x, y)| mac_export247_candidate(city, x, y, false, lfsr, rng, now))
         .take(FIRESTORM_IGNITION_LIMIT)
         .inspect(|&(x, y)| *point = (x as i16, y as i16))
         .count();
@@ -317,18 +398,32 @@ pub(super) struct ActionPass {
     pub wind_sound: bool,
 }
 
+#[cfg(test)]
 pub(super) fn advance_action(
     city: &mut City,
     rng: &mut MacToolboxRng,
     now: &mut u32,
-    hurricane_lfsr: &mut u16,
+    lfsr: &mut MacAppLfsrRng,
+) -> ActionPass {
+    let pass = advance_action_with_redraw(city, rng, now, lfsr, None, None, &mut |_| {});
+    if pass.complete {
+        city.mac_poll_for_newspaper(|| rng.random_u16());
+    }
+    pass
+}
+
+pub(super) fn advance_action_with_redraw(
+    city: &mut City,
+    rng: &mut MacToolboxRng,
+    now: &mut u32,
+    lfsr: &mut MacAppLfsrRng,
+    view: Option<super::map_redraw::MacMapRedrawView>,
+    dirty: Option<super::map_redraw::MacMapClip>,
+    palette: &mut impl FnMut(usize),
 ) -> ActionPass {
     if !mac_scenario_action_active(city) {
         return ActionPass::default();
     }
-    let hurricane =
-        city.mac_state_misc_u32_at(ACTIVE_SELECTOR).unwrap_or(0) as u16 == HURRICANE_ACTION;
-    let mut lfsr = MacAppLfsrRng::new(if hurricane { *hurricane_lfsr } else { 0 });
     let duration = super::hurricane::begin_pass(city);
     let mut marker_active = false;
     let mut riot_seen = false;
@@ -339,26 +434,26 @@ pub(super) fn advance_action(
             match city.text_overlay_at(x, y) {
                 Some(0xff) => {
                     marker_active = true;
-                    fire_cell(city, x, y, rng, &mut lfsr, now);
+                    fire_cell(city, x, y, rng, lfsr, now);
                 }
                 Some(0xfc) => {
                     marker_active = true;
-                    super::hurricane::visit(city, x, y, duration, rng, &mut lfsr, now);
+                    super::hurricane::visit(city, x, y, duration, rng, lfsr, now);
                 }
                 Some(0xfb) => {
                     marker_active = true;
-                    cloud_cell(city, x, y, rng, &mut lfsr);
+                    cloud_cell(city, x, y, rng, lfsr);
                 }
                 Some(marker @ (0xfd | 0xfe)) => {
                     marker_active = true;
                     riot_seen = true;
-                    super::riot::visit(city, (x, y), marker, rng, &mut lfsr, now);
+                    super::riot::visit(city, (x, y), marker, rng, lfsr, now);
                 }
                 Some(proxy @ 0xc9..=0xf0) => {
                     let kind = proxy_actor(city, proxy).kind;
                     if matches!(kind, 8 | 14) || (kind == 7 && lfsr.bounded(16) == 0) {
                         if let Some((nx, ny)) = neighbor(x, y, rng.random_u16() & 3) {
-                            extinguish(city, nx, ny, rng, &mut lfsr);
+                            extinguish(city, nx, ny, rng, lfsr);
                         }
                     }
                     if matches!(kind, 7 | 14) {
@@ -374,10 +469,10 @@ pub(super) fn advance_action(
         }
     }
     let riot_sound = riot_seen && rng.random_u16() & 7 == 0;
-    let (flood_sound, wind_sound) =
-        super::hurricane::finish_pass(city, duration, rng, &mut lfsr, now);
-    if hurricane {
-        *hurricane_lfsr = lfsr.state();
+    let (flood_sound, wind_sound) = super::hurricane::finish_pass(city, duration, rng, lfsr, now);
+    if let (Some(view), Some(dirty)) = (view, dirty) {
+        view.redraw_dirty_with_palette(city, rng, dirty, palette)
+            .apply(city, lfsr);
     }
     let actor_active = city.traffic_overlays().is_some_and(|records| {
         records
@@ -393,14 +488,17 @@ pub(super) fn advance_action(
             u32::from(marker_active)
         },
     );
+    // CODE 10 export 246 redraws after the marker/actor scans and before
+    // the completion tail can open the newspaper.
+    if let Some(view) = view {
+        view.redraw_markers_with_palette(city, rng, palette)
+            .apply(city, lfsr);
+    }
     let complete = !marker_active && !actor_active;
     if complete {
         city.mac_clear_dispatch_proxies();
         city.set_mac_state_misc_u32_at(ACTION_ACTOR, u32::MAX);
         city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
-        // CODE 10's completion tail opens the paper directly after switching
-        // back to run state 1, independently of Extra and Subscription.
-        city.mac_poll_for_newspaper(|| rng.random_u16());
     }
     ActionPass {
         complete,
@@ -478,6 +576,7 @@ pub(super) fn burn_footprint(
         return 0;
     }
     let footprint = super::super::budget::mac_export81_footprint(city, x, y, building);
+    city.record_mac_disaster_damage_class_at(x, y);
     let waits = super::super::budget::mac_destroy_building_export80(city, x, y, rng, render);
     if let Some((ax, ay, side)) = footprint {
         for dx in 0..side as i16 {
@@ -586,19 +685,20 @@ fn spawn_fire_actor(city: &mut City, x: usize, y: usize) {
     else {
         return;
     };
-    city.set_mac_object_slot_record(
-        slot,
-        Win95OverlayRecord {
-            kind: 6,
-            tile_x: x as u8,
-            tile_y: y as u8,
-            sub_x: 8,
-            sub_y: 8,
-            saved_a: marker,
-            saved_b: 1,
-            ..Win95OverlayRecord::default()
-        },
-    );
+    // CODE 6 export 119 leaves bytes +8/+9 untouched when reusing a
+    // free slot. They can retain data from an earlier actor.
+    let mut record = city.mac_object_slot_records_mut()[slot];
+    record.kind = 6;
+    record.lane = 0;
+    record.state = 0;
+    record.tile_x = x as u8;
+    record.tile_y = y as u8;
+    record.height = 0;
+    record.sub_x = 8;
+    record.sub_y = 8;
+    record.saved_a = marker;
+    record.saved_b = 1;
+    city.set_mac_object_slot_record(slot, record);
     city.set_text_overlay(x, y, 0xc9 + slot as u8);
 }
 
@@ -629,4 +729,671 @@ pub(super) fn checked_tile(x: i16, y: i16) -> Option<(usize, usize)> {
     (0..CITY_HEIGHT as i16)
         .contains(&y)
         .then_some((x as usize, y as usize))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires private original-Mac selector 11 fixtures"]
+    fn selector11_rejected_terrain_matches_native_marker_and_sound_paths() {
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_FIXTURE").unwrap());
+        for (name, guard) in [("reject", false), ("reject_sound", true)] {
+            let row: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join(format!("selector11-{name}.json"))).unwrap(),
+            )
+            .unwrap();
+            let expected: Vec<u8> = row["markers"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            let mut city = City::new_blank("/tmp/mac-selector11.sc2", "Selector 11").unwrap();
+            let mut rng = MacToolboxRng::new(1);
+            let mut work = Selector11Work::new((64, 64), 0);
+            let mut sounds = Vec::new();
+            let mut count = 0;
+            loop {
+                count += 1;
+                if work.step(
+                    &mut city,
+                    &mut rng,
+                    |_, _, _, _, _| false,
+                    |_, _| panic!("rejected validation cannot refresh"),
+                    |_| guard,
+                    |id, _| sounds.push(id),
+                ) {
+                    break;
+                }
+                assert!(count < 100);
+            }
+            assert_eq!(count, row["validations"].as_u64().unwrap() as usize);
+            assert_eq!(rng.seed(), row["seed"].as_u64().unwrap() as u32);
+            assert_eq!(
+                sounds,
+                row["sounds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u16)
+                    .collect::<Vec<_>>()
+            );
+            for x in 0..128 {
+                for y in 0..128 {
+                    assert_eq!(
+                        city.text_overlay_at(x, y).unwrap(),
+                        expected[x * 128 + y],
+                        "{name} {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private original-Mac selector 11 fixtures"]
+    fn selector11_terrain_loop_matches_original_flat_and_mixed_workers() {
+        fn bytes(s: &str) -> Vec<u8> {
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_FIXTURE").unwrap());
+        for name in ["flat", "mixed"] {
+            let row: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join(format!("selector11-{name}.json"))).unwrap(),
+            )
+            .unwrap();
+            let mut city = City::new_blank("/tmp/mac-selector11-city", "Selector 11").unwrap();
+            city.kind = crate::city::CityFileKind::MacCity;
+            for x in 0..128 {
+                for y in 0..128 {
+                    city.set_altm_word(x, y, 0x0145);
+                    city.set_zone(x, y, 0xa2);
+                }
+            }
+            if name == "mixed" {
+                city.set_zone(65, 67, 0xa7);
+                city.set_underground(64, 66, 2);
+            }
+            let mut rng = MacToolboxRng::new(1);
+            let mut work = Selector11Work::new((64, 64), 0);
+            let mut count = 0;
+            loop {
+                count += 1;
+                if work.step(
+                    &mut city,
+                    &mut rng,
+                    |city, x, y, funds, rng| {
+                        if !super::super::super::mac_terrain_editing::mac_mark_terrain_raise(
+                            city, x, y,
+                        ) {
+                            return false;
+                        }
+                        super::super::super::mac_terrain_editing::mac_apply_marked_terrain_raise(
+                            city, x, y, funds, rng,
+                        );
+                        true
+                    },
+                    |_, _| {},
+                    |_| false,
+                    |_, _| unreachable!(),
+                ) {
+                    break;
+                }
+                assert!(count < 500);
+            }
+            assert_eq!(
+                count,
+                row["validations"].as_u64().unwrap() as usize,
+                "{name}"
+            );
+            assert_eq!(rng.seed(), row["seed"].as_u64().unwrap() as u32, "{name}");
+            let altm = bytes(row["altm"].as_str().unwrap());
+            let expected: Vec<_> = [
+                "terrain",
+                "bits",
+                "buildings",
+                "zones",
+                "markers",
+                "underground",
+            ]
+            .map(|key| bytes(row[key].as_str().unwrap()))
+            .into_iter()
+            .collect();
+            for x in 0..128 {
+                for y in 0..128 {
+                    let i = x * 128 + y;
+                    let sample = city.altm_at(x, y);
+                    let actual = u16::from(sample.land)
+                        | u16::from(sample.water) << 5
+                        | u16::from(sample.tunnel_levels) << 10;
+                    assert_eq!(
+                        actual,
+                        u16::from_be_bytes([altm[2 * i], altm[2 * i + 1]]),
+                        "{name} ALTM {x},{y}"
+                    );
+                    let actual = [
+                        city.terrain_at(x, y),
+                        city.tile_bits_at(x, y).unwrap().raw_bits(),
+                        city.building_at(x, y),
+                        city.zone_at(x, y).unwrap().raw_bits(),
+                        city.text_overlay_at(x, y).unwrap(),
+                        city.underground_at(x, y),
+                    ];
+                    for (plane, value) in actual.into_iter().enumerate() {
+                        assert_eq!(value, expected[plane][i], "{name} plane {plane} {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private original-Mac capture and shape data; runtime integration incomplete"]
+    fn selector11_first_accepted_refresh_matches_native_boundary() {
+        fn bytes(s: &str) -> Vec<u8> {
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let row: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("selector11-first-refresh.json")).unwrap(),
+        )
+        .unwrap();
+        let before = &row["before"];
+        let names = [
+            "altm",
+            "terrain",
+            "buildings",
+            "zones",
+            "underground",
+            "markers",
+            "bits",
+        ];
+        let planes: Vec<_> = names
+            .map(|name| bytes(before[name].as_str().unwrap()))
+            .into_iter()
+            .collect();
+        let mut city = City::load(root.join("Selector11.city")).unwrap();
+        for x in 0..128 {
+            for y in 0..128 {
+                let i = x * 128 + y;
+                let word = u16::from_be_bytes([planes[0][2 * i], planes[0][2 * i + 1]]);
+                let altm = city.altm_at(x, y);
+                let old = u16::from(altm.land)
+                    | u16::from(altm.water) << 5
+                    | u16::from(altm.tunnel_levels) << 10;
+                if old != word {
+                    city.set_altm_word(x, y, word);
+                }
+                if city.terrain_at(x, y) != planes[1][i] {
+                    city.set_terrain(x, y, planes[1][i]);
+                }
+                if city.building_at(x, y) != planes[2][i] {
+                    city.set_building(x, y, planes[2][i]);
+                }
+                if city.zone_at(x, y).unwrap().raw_bits() != planes[3][i] {
+                    city.set_zone(x, y, planes[3][i]);
+                }
+                if city.underground_at(x, y) != planes[4][i] {
+                    city.set_underground(x, y, planes[4][i]);
+                }
+                if city.text_overlay_at(x, y).unwrap() != planes[5][i] {
+                    city.set_text_overlay(x, y, planes[5][i]);
+                }
+                if city.tile_bits_at(x, y).unwrap().raw_bits() != planes[6][i] {
+                    city.set_tile_bits(x, y, TileBits::new(planes[6][i]));
+                }
+            }
+        }
+        let point = (
+            before["point"][0].as_u64().unwrap() as i16,
+            before["point"][1].as_u64().unwrap() as i16,
+        );
+        let mut work = Selector11Work::new(point, row["refresh_counter"].as_u64().unwrap() as u32);
+        let mut rng = MacToolboxRng::new(row["seed_before"].as_u64().unwrap() as u32);
+        let viewport = &row["view"];
+        let mut view = super::super::map_redraw::MacMapRedrawView::from_native_snapshot(
+            viewport["width"].as_i64().unwrap() as i32,
+            viewport["height"].as_i64().unwrap() as i32,
+            viewport["origin_x"].as_i64().unwrap() as i32,
+            viewport["origin_y"].as_i64().unwrap() as i32,
+            viewport["zoom"].as_u64().unwrap() as u32,
+            viewport["rotation"].as_u64().unwrap() as u8,
+        );
+        if row["auto_goto"].as_bool().unwrap() {
+            view.center_on(&city, point.0 as usize, point.1 as usize);
+        }
+        let expected_view = super::super::map_redraw::MacMapRedrawView::from_native_snapshot(
+            viewport["width"].as_i64().unwrap() as i32,
+            viewport["height"].as_i64().unwrap() as i32,
+            row["mid_origin"][0].as_i64().unwrap() as i32,
+            row["mid_origin"][1].as_i64().unwrap() as i32,
+            viewport["zoom"].as_u64().unwrap() as u32,
+            viewport["rotation"].as_u64().unwrap() as u8,
+        );
+        assert_eq!(view, expected_view);
+        // Diagnostic isolation only: supply the original worker's preexisting
+        // dirty rectangles. Normal gameplay must generate these itself.
+        let native_dirty = std::env::var_os("CITYGAME_MAC_SELECTOR11_NATIVE_DIRTY").map(|_| {
+            let native: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("redraw-worker.json")).unwrap())
+                    .unwrap();
+            native["destroy_entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| {
+                    let rect = &entry[3];
+                    super::super::map_redraw::MacMapClip::from_native_snapshot(
+                        rect[0].as_i64().unwrap() as i32,
+                        rect[1].as_i64().unwrap() as i32,
+                        rect[2].as_i64().unwrap() as i32,
+                        rect[3].as_i64().unwrap() as i32,
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        // The bounds fixture supplies sprite dimensions, not dirty rectangles.
+        let shape_data = std::env::var_os("CITYGAME_MAC_SELECTOR11_SHAPE_DATA").map(|_| {
+            let fixture: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join("tile-bounds-worker.json")).unwrap(),
+            )
+            .unwrap();
+            fixture["tile_bounds"].as_array().unwrap().clone()
+        });
+        let asset_shapes = std::env::var_os("CITYGAME_MAC_SHAPE_PACK").map(|pack| {
+            let mut shapes =
+                crate::mac_shape_table::MacShapeDimensions::from_pack(std::path::Path::new(&pack))
+                    .unwrap();
+            if let Some(resources) = std::env::var_os("CITYGAME_MAC_RESOURCES") {
+                shapes.set_terrain_shapes(
+                    crate::mac_import::terrain_shape_map_from_resources(std::path::Path::new(
+                        &resources,
+                    ))
+                    .unwrap()
+                    .unwrap(),
+                );
+            }
+            shapes
+        });
+        let pending_dirty = std::cell::RefCell::new(None::<super::super::map_redraw::MacMapClip>);
+        let mut destruction_index = 0;
+        let mut refresh_seen = false;
+        let finished = work.step(&mut city, &mut rng,
+            |city, x, y, funds, rng| {
+                if !super::super::super::mac_terrain_editing::mac_mark_terrain_raise(city, x, y) { return false; }
+                super::super::super::mac_terrain_editing::mac_apply_marked_terrain_raise_with_callbacks(city, x, y, funds, rng,
+                    &mut |city, x, y, rng| {
+                        let origin = super::super::super::budget::mac_export81_footprint(city, x, y, city.building_at(x, y))
+                            .and_then(|(x, y, _)| Some((usize::try_from(x).ok()?, usize::try_from(y).ok()?)))
+                            .filter(|&(x, y)| x < CITY_WIDTH && y < CITY_HEIGHT)
+                            .map(|(ax, ay)| (ax, ay, if city.tile_bits_at(x, y).is_some_and(TileBits::water_tile) { city.water_height_at(ax, ay) } else { city.altitude_at(ax, ay) }));
+                        let mut dirty = native_dirty.as_ref().map(|rects| rects[destruction_index])
+                            .or_else(|| pending_dirty.borrow_mut().take());
+                        destruction_index += 1;
+                        let waits = super::super::super::budget::mac_destroy_building_export80_with_animation(city, x, y, rng,
+                            &mut |frame, column, row, variant| {
+                                if let Some((ax, ay, height)) = origin {
+                                    let bounds = view.destruction_frame_bounds(ax, ay, height, frame, column, row, variant);
+                                    dirty = Some(dirty.map_or(bounds, |old| old.union(bounds)));
+                                }
+                            });
+                        if let Some(dirty) = dirty { view.redraw_dirty_with_palette(city, rng, dirty, &mut |_| {}); }
+                        waits
+                    }, &mut |city, x, y| {
+                        let terrain = city.terrain_at(x, y);
+                        let building = city.building_at(x, y);
+                        let bounds = if let Some(shapes) = &asset_shapes {
+                            view.tile_dirty_bounds_from_assets(city, x, y, shapes)
+                        } else if let Some(rows) = &shape_data {
+                            let item = rows.iter().find(|item| item["terrain"].as_u64() == Some(u64::from(terrain))
+                                && item["building"].as_u64() == Some(u64::from(building))).expect("fixture sprite dimensions");
+                            view.surface_tile_dirty_bounds(city, x, y, item["terrain_height"].as_i64().unwrap() as i32,
+                             Some((item["building_height"].as_i64().unwrap() as i32, item["building_width"].as_i64().unwrap() as i32)))
+                        } else { return; };
+                        if let Some(bounds) = bounds {
+                            let mut pending = pending_dirty.borrow_mut();
+                            *pending = Some(pending.map_or(bounds, |old| old.union(bounds)));
+                        }
+                    });
+                true
+            }, |city, rng| {
+                refresh_seen = true;
+                assert_eq!(rng.seed(), row["refresh_seed"].as_u64().unwrap() as u32);
+                view.redraw_markers(city, rng);
+                assert_eq!(rng.seed(), row["after_refresh_seed"].as_u64().unwrap() as u32);
+            }, |_| false, |_, _| unreachable!());
+        assert!(refresh_seen && !finished);
+        assert_eq!(destruction_index, 4);
+        assert_eq!(
+            work.temporary_funds,
+            row["refresh_funds"].as_i64().unwrap() as i32
+        );
+    }
+
+    #[test]
+    #[ignore = "requires private original-Mac live selector 11 capture"]
+    fn selector11_matches_live_scenario_worker_with_captured_sound_queries() {
+        fn bytes(s: &str) -> Vec<u8> {
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_LIVE").unwrap());
+        let row: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("selector11-live-reference.json")).unwrap(),
+        )
+        .unwrap();
+        let before = &row["before"];
+        let names = [
+            "altm",
+            "terrain",
+            "buildings",
+            "zones",
+            "underground",
+            "markers",
+            "bits",
+        ];
+        let input: Vec<_> = names
+            .map(|name| bytes(before[name].as_str().unwrap()))
+            .into_iter()
+            .collect();
+        let expected: Vec<_> = names
+            .map(|name| bytes(row["after"][name].as_str().unwrap()))
+            .into_iter()
+            .collect();
+        let mut city = City::load(root.join("Selector11.city")).unwrap();
+        for x in 0..128 {
+            for y in 0..128 {
+                let i = x * 128 + y;
+                let word = u16::from_be_bytes([input[0][2 * i], input[0][2 * i + 1]]);
+                let a = city.altm_at(x, y);
+                let old =
+                    u16::from(a.land) | u16::from(a.water) << 5 | u16::from(a.tunnel_levels) << 10;
+                if old != word {
+                    city.set_altm_word(x, y, word);
+                }
+                if city.terrain_at(x, y) != input[1][i] {
+                    city.set_terrain(x, y, input[1][i]);
+                }
+                if city.building_at(x, y) != input[2][i] {
+                    city.set_building(x, y, input[2][i]);
+                }
+                if city.zone_at(x, y).unwrap().raw_bits() != input[3][i] {
+                    city.set_zone(x, y, input[3][i]);
+                }
+                if city.underground_at(x, y) != input[4][i] {
+                    city.set_underground(x, y, input[4][i]);
+                }
+                if city.text_overlay_at(x, y).unwrap() != input[5][i] {
+                    city.set_text_overlay(x, y, input[5][i]);
+                }
+                if city.tile_bits_at(x, y).unwrap().raw_bits() != input[6][i] {
+                    city.set_tile_bits(x, y, TileBits::new(input[6][i]));
+                }
+            }
+        }
+        let point = (
+            before["point"][0].as_u64().unwrap() as i16,
+            before["point"][1].as_u64().unwrap() as i16,
+        );
+        let mut rng = MacToolboxRng::new(row["seed_before"].as_u64().unwrap() as u32);
+        let mut work = Selector11Work::new(point, row["refresh_counter"].as_u64().unwrap() as u32);
+        let mut queries = row["sound_queries"].as_array().unwrap().iter();
+        let mut sounds = Vec::new();
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            if work.step(
+                &mut city,
+                &mut rng,
+                |city, x, y, funds, rng| {
+                    if !super::super::super::mac_terrain_editing::mac_mark_terrain_raise(city, x, y)
+                    {
+                        return false;
+                    }
+                    super::super::super::mac_terrain_editing::mac_apply_marked_terrain_raise(
+                        city, x, y, funds, rng,
+                    );
+                    true
+                },
+                |_, _| panic!("live rejected fixture does not refresh"),
+                |_| {
+                    queries
+                        .next()
+                        .expect("unexpected sound query")
+                        .as_u64()
+                        .unwrap()
+                        != 0
+                },
+                |id, _| sounds.push(id),
+            ) {
+                break;
+            }
+            assert!(steps < 100);
+        }
+        assert_eq!(steps, 25);
+        assert!(queries.next().is_none());
+        assert_eq!(rng.seed(), row["seed_after"].as_u64().unwrap() as u32);
+        assert_eq!(
+            sounds,
+            row["sound_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u16)
+                .collect::<Vec<_>>()
+        );
+        for x in 0..128 {
+            for y in 0..128 {
+                let i = x * 128 + y;
+                let a = city.altm_at(x, y);
+                let word =
+                    u16::from(a.land) | u16::from(a.water) << 5 | u16::from(a.tunnel_levels) << 10;
+                assert_eq!(
+                    word,
+                    u16::from_be_bytes([expected[0][2 * i], expected[0][2 * i + 1]]),
+                    "ALTM {x},{y}"
+                );
+                let values = [
+                    city.terrain_at(x, y),
+                    city.building_at(x, y),
+                    city.zone_at(x, y).unwrap().raw_bits(),
+                    city.underground_at(x, y),
+                    city.text_overlay_at(x, y).unwrap(),
+                    city.tile_bits_at(x, y).unwrap().raw_bits(),
+                ];
+                for (plane, value) in values.into_iter().enumerate() {
+                    assert_eq!(
+                        value,
+                        expected[plane + 1][i],
+                        "{} {x},{y}",
+                        names[plane + 1]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private original-Mac live selector 11 capture"]
+    fn selector11_live_worker_matches_with_modeled_sound_admission() {
+        use crate::mac_sound_state::{
+            MacManagedSoundRecord, MacSoundRecord, MacSoundVoice, mac_reserve_sound_record,
+            mac_sound_records_are_idle, mac_start_sound_voice,
+        };
+        use std::cell::RefCell;
+        fn bytes(s: &str) -> Vec<u8> {
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_LIVE").unwrap());
+        let row: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("selector11-live-reference.json")).unwrap(),
+        )
+        .unwrap();
+        let before = &row["before"];
+        let zones = bytes(before["zones"].as_str().unwrap());
+        let bits = bytes(before["bits"].as_str().unwrap());
+        let markers = bytes(before["markers"].as_str().unwrap());
+        let expected = bytes(row["after"]["markers"].as_str().unwrap());
+        let mut city = City::load(root.join("Selector11.city")).unwrap();
+        for x in 0..128 {
+            for y in 0..128 {
+                let i = x * 128 + y;
+                if city.zone_at(x, y).unwrap().raw_bits() != zones[i] {
+                    city.set_zone(x, y, zones[i]);
+                }
+                if city.tile_bits_at(x, y).unwrap().raw_bits() != bits[i] {
+                    city.set_tile_bits(x, y, TileBits::new(bits[i]));
+                }
+                if city.text_overlay_at(x, y).unwrap() != markers[i] {
+                    city.set_text_overlay(x, y, markers[i]);
+                }
+            }
+        }
+        // The live entry snapshot has two empty CODE 9 records and two
+        // inactive MDRV slots. The original sound-507 request admits one
+        // descriptor into slot 6; driver retirement is not exercised here.
+        let audio = RefCell::new((
+            vec![MacManagedSoundRecord::default(); 2],
+            vec![
+                MacSoundVoice {
+                    descriptor: 505,
+                    state: -1,
+                },
+                MacSoundVoice {
+                    descriptor: 0,
+                    state: -1,
+                },
+            ],
+        ));
+        let point = (
+            before["point"][0].as_u64().unwrap() as i16,
+            before["point"][1].as_u64().unwrap() as i16,
+        );
+        let mut work = Selector11Work::new(point, row["refresh_counter"].as_u64().unwrap() as u32);
+        let mut rng = MacToolboxRng::new(row["seed_before"].as_u64().unwrap() as u32);
+        let mut results = Vec::new();
+        let mut sounds = Vec::new();
+        for _ in 0..100 {
+            let finished = work.step(
+                &mut city,
+                &mut rng,
+                |city, x, y, funds, rng| {
+                    if !super::super::super::mac_terrain_editing::mac_mark_terrain_raise(city, x, y)
+                    {
+                        return false;
+                    }
+                    super::super::super::mac_terrain_editing::mac_apply_marked_terrain_raise(
+                        city, x, y, funds, rng,
+                    );
+                    true
+                },
+                |_, _| panic!("live rejected fixture does not refresh"),
+                |_| {
+                    let state = audio.borrow();
+                    let records: Vec<_> = state
+                        .0
+                        .iter()
+                        .map(|r| MacSoundRecord {
+                            active: r.active,
+                            descriptor: r.descriptor,
+                        })
+                        .collect();
+                    let result =
+                        mac_sound_records_are_idle(false, false, 1, &records, &state.1, |_| {});
+                    results.push(result);
+                    result
+                },
+                |id, _| {
+                    sounds.push(id);
+                    let mut state = audio.borrow_mut();
+                    let (records, voices) = &mut *state;
+                    let slot = mac_reserve_sound_record(records, voices, false, 1, 2002, |_, _| {})
+                        .unwrap();
+                    assert_eq!(slot, 0);
+                    records[slot] = MacManagedSoundRecord {
+                        active: true,
+                        descriptor: id,
+                        rank: 2002,
+                    };
+                    assert_eq!(mac_start_sound_voice(&mut state.1, id, true), Some(0));
+                },
+            );
+            if finished {
+                break;
+            }
+        }
+        assert_eq!(
+            results,
+            row["sound_queries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() != 0)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(sounds, [507]);
+        assert_eq!(rng.seed(), row["seed_after"].as_u64().unwrap() as u32);
+        for x in 0..128 {
+            for y in 0..128 {
+                assert_eq!(
+                    city.text_overlay_at(x, y).unwrap(),
+                    expected[x * 128 + y],
+                    "XTXT {x},{y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fire_actor_constructor_preserves_reused_slot_target_bytes() {
+        let mut city = City::new_blank("/tmp/mac-fire-slot.sc2", "Fire slot").unwrap();
+        city.set_mac_object_slot_record(
+            1,
+            Win95OverlayRecord {
+                kind: 3,
+                ..Default::default()
+            },
+        );
+        city.set_mac_object_slot_record(
+            2,
+            Win95OverlayRecord {
+                lane: 3,
+                state: 64,
+                tile_x: 127,
+                tile_y: 255,
+                height: 2,
+                sub_x: 109,
+                sub_y: 99,
+                target_x: 0x5a,
+                target_y: 1,
+                saved_a: 2,
+                saved_b: 3,
+                ..Default::default()
+            },
+        );
+        city.set_text_overlay(52, 62, 0);
+        spawn_fire_actor(&mut city, 52, 62);
+        let actor = city.traffic_overlays().unwrap()[2];
+        assert_eq!(actor.to_bytes(), [6, 0, 0, 52, 62, 0, 8, 8, 0x5a, 1, 0, 1]);
+        assert_eq!(city.text_overlay_at(52, 62), Some(0xcb));
+    }
 }

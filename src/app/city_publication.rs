@@ -61,7 +61,8 @@ pub(super) fn persist_pe_garbage_day22(city: &mut City, population: PopulationSt
     city.persist_pe_day22_population_leftover(increment);
 }
 
-/// Win95 `0x4735e6`: `bYearEndFlag = 1` when 0-indexed month is `0x0B` (December).
+/// The month that sets the Win95 annual latch.
+#[cfg(test)]
 pub(super) fn pe_year_end_flag(month: u8) -> u32 {
     u32::from(month == 12)
 }
@@ -93,7 +94,13 @@ pub(super) fn persist_pe_year_end_misc(city: &mut City, month: u8) {
         return;
     }
     ensure_budget_misc_defaults_before_extension(city);
-    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, pe_year_end_flag(month));
+    // The PE sets the latch in December and clears it only when January
+    // consumes the annual pass. Other months preserve the loaded value.
+    if month == 12 {
+        city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
+    } else if month == 1 && city.misc_u32_at(MISC_YEAR_END_OFFSET).unwrap_or(0) != 0 {
+        city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 0);
+    }
 }
 
 impl ViewerState {
@@ -243,10 +250,6 @@ impl ViewerState {
             (
                 MISC_SPEED_OFFSET,
                 sc2k_speed_misc_value(self.traffic.speed()),
-            ),
-            (
-                MISC_YEAR_END_OFFSET,
-                pe_year_end_flag(self.game_clock.month()),
             ),
             (MISC_DIFFICULTY_OFFSET, city_difficulty_for_city(&self.city)),
         ] {

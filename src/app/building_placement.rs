@@ -18,7 +18,6 @@ use crate::city::{
     pe_choose_and_place_corner_bits,
 };
 use crate::engine_fidelity::EngineFidelity;
-use crate::mac_random::MacAppLfsrRng;
 use crate::ui::EditTool;
 use crate::win95_random::{Win95CrtRand, Win95Lfsr};
 use std::collections::HashSet;
@@ -959,8 +958,7 @@ impl ViewerState {
             // using the same window as PE. CODE 13 export 203 uses the Mac LFSR.
             let residential =
                 pe_citytool_nimby_residential_count_440648(&self.city, click_x, click_y, size);
-            let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
-            if lfsr.bounded(200) < residential {
+            if self.mac_app_lfsr.bounded(200) < residential {
                 return 0;
             }
         }
@@ -1034,12 +1032,11 @@ impl ViewerState {
         self.finish_mac_building_services(click_x, click_y);
         if tool == EditTool::RailDepot {
             // CODE 5 0x310a calls export 120 immediately on placement success.
-            let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
             super::mac_loop_scheduler::rail_consist::mac_spawn_rail_near_station(
                 &mut self.city,
                 x as i16,
                 y as i16,
-                || lfsr.bounded(4),
+                || self.mac_app_lfsr.bounded(4),
                 || self.mac_game_rng.bounded(2),
             );
         }

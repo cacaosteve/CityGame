@@ -2880,6 +2880,150 @@ fn pe_raise_epilogue_44c7a0_44c9b0_band_gates() {
 }
 
 #[test]
+fn win95_maptool_epilogue_matches_native_transport_family_fixtures() {
+    // Native SIMCITY.EXE f7a51b... replay of 0x443270 with a successful
+    // MapTool operation at (20,20), followed by the 0x44378e neighbor sweep.
+    // The surface cases leave valid road/rail/power runs in place. The
+    // underground cases start after the selected center has been cleared;
+    // pipe reshaping converts the south neighbor from 0x10 to 0x1e.
+    for (xbld, label) in [(0x1d, "road"), (0x2c, "rail"), (0x0e, "power")] {
+        let mut city = City::new_blank("/tmp/pe-maptool-transport-surface.sc2", label)
+            .expect("blank city");
+        for (x, y) in [(20, 19), (20, 18), (20, 21)] {
+            city.set_building(x, y, xbld);
+        }
+        crate::app::demolition::pe_maptool_epilogue_44378e(&mut city, 20, 20);
+        for (x, y) in [(20, 19), (20, 18), (20, 21)] {
+            assert_eq!(city.building_at(x, y), xbld, "{label} at ({x},{y})");
+        }
+    }
+
+    for (kind, original, south_after) in [("subway", 1, 1), ("pipe", 0x10, 0x1e)] {
+        let mut city = City::new_blank("/tmp/pe-maptool-transport-underground.sc2", kind)
+            .expect("blank city");
+        for (x, y) in [(20, 19), (20, 18), (20, 21)] {
+            city.set_underground(x, y, original);
+            city.set_tile_bits(x, y, TileBits::new(0x20));
+        }
+        crate::app::demolition::pe_maptool_epilogue_44378e(&mut city, 20, 20);
+        assert_eq!(city.underground_at(20, 19), original, "{kind} north");
+        assert_eq!(city.underground_at(20, 18), original, "{kind} far north");
+        assert_eq!(city.underground_at(20, 21), south_after, "{kind} south");
+        for (x, y) in [(20, 19), (20, 18), (20, 21)] {
+            assert_eq!(city.tile_bits_at(x, y).unwrap().raw_bits(), 0x20, "{kind} XBIT");
+        }
+    }
+}
+
+#[test]
+fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
+    // Current installed PE f7a51b...: 0x443c60 raises flat land at (20,20),
+    // then 0x447490 reclassifies its 3x3 area. Surface networks are removed
+    // there, and the XUND classifier clears subway/pipe state but keeps XBIT.
+    const NATIVE_PLANES: [u64; 4] = [
+        0xd2a8_65cf_8809_2c64,
+        0xe705_34f7_e0d0_9729,
+        0x9c1b_da7f_8c87_2325,
+        0x9c1b_da7f_8c87_2325,
+    ];
+    for (xbld, label) in [(0x1d, "road"), (0x2c, "rail"), (0x0e, "power")] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.set_building(20, 19, xbld);
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(18), // PE's 27 includes nine nested DestroyBuilding waits.
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
+        assert_eq!(win95_terrain_plane_fingerprints(&city), NATIVE_PLANES, "{label}");
+        assert_eq!(city.building_at(20, 19), 0, "{label} is cleared by 0x447490");
+    }
+
+    let piped_xbit = [
+        NATIVE_PLANES[0],
+        NATIVE_PLANES[1],
+        NATIVE_PLANES[2],
+        0x2cbc_e375_8077_bac5,
+    ];
+    for (xund, label) in [(1, "subway"), (0x10, "pipe")] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.set_underground(20, 19, xund);
+        city.set_tile_bits(20, 19, TileBits::new(0x20));
+        city.pe_xund_occupancy = u16::from(xund == 1);
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 1, "{label} does not consume CRT");
+        assert_eq!(win95_terrain_plane_fingerprints(&city), piped_xbit, "{label}");
+        assert_eq!(
+            pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
+            NATIVE_PLANES[2],
+            "{label} XUND"
+        );
+        assert_eq!(city.tile_bits_at(20, 19).unwrap().raw_bits(), 0x20, "{label} XBIT");
+        assert_eq!(city.pe_xund_occupancy, 0, "{label} occupancy");
+    }
+
+    // The same native fixtures at the map boundary and across a wet/dry step.
+    let mut edge = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+    edge.pe_w_city_mode = 1;
+    edge.set_building(0, 19, 0x1d);
+    edge.set_city_funds(100);
+    let mut crt = Win95CrtRand::new(1);
+    assert_eq!(
+        pe_raise_land_inc_443c60_with_crt(&mut edge, Some(&mut crt), 0, 20, 2),
+        Some(18)
+    );
+    assert_eq!(edge.city_funds(), 75);
+    assert_eq!(crt.seed(), 415_139_642);
+    assert_eq!(win95_terrain_plane_fingerprints(&edge), [
+        0xd772_142a_84e6_8c64,
+        0x63bb_86e7_9d32_d8d9,
+        NATIVE_PLANES[2],
+        NATIVE_PLANES[3],
+    ]);
+
+    let mut wet_dry = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+    wet_dry.pe_w_city_mode = 1;
+    wet_dry.set_mac_selected_water_height(8);
+    wet_dry.set_altitude(20, 19, 8, 8);
+    wet_dry.set_altitude(20, 20, 10, 0);
+    wet_dry.set_altitude(20, 21, 10, 0);
+    for (x, y) in [(20, 19), (20, 20), (20, 21)] {
+        wet_dry.set_terrain(x, y, 0x30);
+    }
+    wet_dry.set_tile_bits(20, 19, TileBits::new(4));
+    wet_dry.set_city_funds(100);
+    let mut crt = Win95CrtRand::new(1);
+    assert_eq!(
+        pe_raise_land_inc_443c60_with_crt(&mut wet_dry, Some(&mut crt), 20, 20, 2),
+        Some(36)
+    );
+    assert_eq!(wet_dry.city_funds(), 50);
+    assert_eq!(crt.seed(), 1);
+    assert_eq!(win95_terrain_plane_fingerprints(&wet_dry), [
+        0x52a1_3c4f_af3e_6ef3,
+        NATIVE_PLANES[1],
+        NATIVE_PLANES[2],
+        NATIVE_PLANES[3],
+    ]);
+    assert_eq!(
+        pe_density_plane_fingerprint(1, |x, y| wet_dry.underground_at(x, y)),
+        NATIVE_PLANES[2]
+    );
+}
+
+#[test]
 fn pe_lower_crt_oob_jitter_refuses() {
     // PE Lower `0x443900`: out-of-bounds CRT jitter tile → no dig.
     let mut city = City::new_blank("/tmp/sc2000-lower-oob.sc2", "LowerOob").expect("blank");
@@ -7942,8 +8086,7 @@ fn mac_first_open_water_summary_seeds_annual_xmic_for_win_layout_city() {
     );
 
     let mut expected_rng = MacToolboxRng::new(1);
-    let expected_stat0 = (raw_water_slot as u8)
-        .wrapping_add((expected_rng.random_u16() & 7) as u8);
+    let expected_stat0 = (raw_water_slot as u8).wrapping_add((expected_rng.random_u16() & 7) as u8);
     let mut xmic_rng = MacToolboxRng::new(1);
     state
         .city
@@ -12040,16 +12183,16 @@ fn edit_map_make_replaces_city_layers_and_uses_generator_options() {
     assert_eq!(state.city.building_at(10, 10), 0);
     assert_eq!(state.city.underground_at(10, 10), 0);
     assert_eq!(state.city.zone_at(10, 10).unwrap().raw_bits(), 0);
-    assert_eq!(state.city.text_overlay_at(10, 10), Some(0));
+    assert_eq!(state.city.text_overlay_at(10, 10), Some(7));
     let generated_bits = state.city.tile_bits_at(10, 10).unwrap();
-    assert!(!generated_bits.piped());
-    assert!(!generated_bits.watered());
+    assert!(generated_bits.piped());
+    assert!(generated_bits.watered());
     assert_eq!(
         generated_bits.water_tile(),
         is_water_terrain(state.city.terrain_at(10, 10)),
         "map generation keeps the XBIT water-surface flag consistent with generated terrain"
     );
-    assert_eq!(state.city.traffic_density_at(10, 10), Some(0));
+    assert_eq!(state.city.traffic_density_at(10, 10), Some(99));
     assert_eq!(state.query_line, "Map generated");
 
     let mut water_tiles = 0;
@@ -13733,11 +13876,24 @@ fn animation_frame_keeps_cycling_after_u8_cast_threshold() {
         traffic,
         win95_overlay_sim,
         pe_process_crt,
+        pe_document_tick_word: None,
+        pe_new_city_reserved_labels: None,
+        pe_registered_mayor_name: "Mayor McSim".into(),
+        pe_newspaper_data: None,
+        pe_newspaper_paint: None,
+        pe_newspaper_paint_attempted: false,
+        pe_newspaper_article: None,
+        mac_newspaper: newspaper_state::MacPaperRuntime::default(),
+        mac_system_font: None,
         mac_process_rng: MacToolboxRng::new(MacToolboxRng::QUICKDRAW_INIT_GRAF_SEED),
+        mac_app_lfsr: crate::mac_random::MacAppLfsrRng::new(
+            crate::mac_random::MacAppLfsrRng::INITIAL_STATE,
+        ),
         mac_kind2_sound_deadline: 0,
         mac_game_rng: crate::mac_random::MacGameLcgRng::new(
             crate::mac_random::MacGameLcgRng::INITIAL_STATE,
         ),
+        mac_music: title_flow::MacMusicSelector::default(),
         pe_process_game_rand,
         edit_map_height_hold: None,
         pe_raise_xter_ui_byte: 0,
@@ -13798,14 +13954,17 @@ fn animation_frame_keeps_cycling_after_u8_cast_threshold() {
         power_plant_dialog: None,
         arcology_dialog: None,
         sign_dialog: None,
+        win95_new_city_setup: None,
         military_base_dialog: None,
         city_info_dialog: None,
-            status_panel_origin: None,
-            status_panel_grab: None,
-            info_panel_origin: None,
-            info_panel_scale: 1.0,
-            info_panel_drag: None,
+        pending_newspaper_music: None,
+        status_panel_origin: None,
+        status_panel_grab: None,
+        info_panel_origin: None,
+        info_panel_scale: 1.0,
+        info_panel_drag: None,
         founding_newspaper_pending: false,
+        pe_founding_mode_transition_pending: false,
         graph_series_visible: [true; GRAPH_HISTORY_TOTAL_SERIES],
         graph_scale: GraphScale::Year1,
         query_line: String::new(),
@@ -14315,7 +14474,7 @@ fn mac_water_phase_publishes_treatment_gate_without_overwriting_win_misc() {
 }
 
 #[test]
-fn mac_arcology_slots_each_run_water_worker_and_publish_treatment_gate() {
+fn mac_arcology_slots_use_shared_lfsr_without_running_water_worker() {
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         let mut city = City::new_blank("/tmp/mac-arcology-water-slots.sc2", "Arco").unwrap();
         city.kind = kind;
@@ -14343,17 +14502,16 @@ fn mac_arcology_slots_each_run_water_worker_and_publish_treatment_gate() {
         }
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
+        let mut expected_lfsr = state.mac_app_lfsr;
+        let first_draw = expected_lfsr.low_six_bits();
+        let second_draw = expected_lfsr.low_six_bits();
         state.refresh_mac_xmic_with_arcologies([100; 5], [7, 7, 7]);
         let first_residents = state.city.microsim_at(first).unwrap().stat2;
         let second_residents = state.city.microsim_at(second).unwrap().stat2;
-        assert_eq!(
-            first_residents - second_residents,
-            22,
-            "{kind:?}: slots use original-worker water results 46 then 24"
-        );
-        assert!(state.city.tile_bits_at(11, 10).unwrap().watered());
-        assert_eq!(state.city.mac_water_service_summary(), 24);
-        assert_eq!(state.city.mac_treatment_gate(), 0);
+        assert_eq!(first_residents, 302 + first_draw);
+        assert_eq!(second_residents, 302 + second_draw);
+        assert_eq!(state.mac_app_lfsr.state(), expected_lfsr.state());
+        assert!(!state.city.tile_bits_at(11, 10).unwrap().watered());
         if kind == CityFileKind::WinSc2 {
             assert_eq!(state.city.misc_u32_at(1043 * 4), Some(0x1234_0001));
         }
@@ -14361,7 +14519,7 @@ fn mac_arcology_slots_each_run_water_worker_and_publish_treatment_gate() {
 }
 
 #[test]
-fn mac_xmic_water_rows_observe_arcology_pass_in_slot_order() {
+fn mac_xmic_water_rows_keep_summary_across_arcology_draw() {
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         let mut city = City::new_blank("/tmp/mac-xmic-water-interleave.sc2", "Water").unwrap();
         city.kind = kind;
@@ -14389,7 +14547,7 @@ fn mac_xmic_water_rows_observe_arcology_pass_in_slot_order() {
         let before_value = 12_u8.wrapping_add((expected_rng.random_u16() & 7) as u8);
         expected_rng.random_u16();
         expected_rng.random_u16();
-        let after_value = 46_u8.wrapping_add((expected_rng.random_u16() & 7) as u8);
+        let after_value = 12_u8.wrapping_add((expected_rng.random_u16() & 7) as u8);
         expected_rng.random_u16();
         expected_rng.random_u16();
         state.refresh_mac_xmic_with_arcologies([100; 5], [7; 3]);
@@ -14408,8 +14566,8 @@ fn mac_xmic_water_rows_observe_arcology_pass_in_slot_order() {
             expected_rng.seed(),
             "{kind:?} QuickDraw stream"
         );
-        assert!(state.city.tile_bits_at(11, 10).unwrap().watered());
-        assert_eq!(state.city.mac_water_service_summary(), 46);
+        assert!(!state.city.tile_bits_at(11, 10).unwrap().watered());
+        assert_eq!(state.city.mac_water_service_summary(), 12);
     }
 }
 
@@ -14461,6 +14619,7 @@ fn mac_annual_phase0_xmic_and_ordinance_draws_feed_phase1_power_stream() {
         let expected_ordinance = usize::from(expected_rng.random_u16() % 20);
         let expected_power_draw = expected_rng.random_u16();
 
+        city.set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.mac_process_rng = MacToolboxRng::new(seed);
@@ -14547,6 +14706,94 @@ fn mac_zoo_game_rng_respects_plant_expiry_slot_order() {
 }
 
 #[test]
+fn mac_expired_plant_preserves_a_later_distinct_zoo_and_its_rng_draws() {
+    let mut city = City::new_blank("/tmp/mac-distinct-zoo-plant.sc2", "Zoo").unwrap();
+    city.kind = CityFileKind::MacCity;
+    let (plant_slot, zoo_slot) = (10_usize, 16_usize);
+    city.set_microsim_tile_id(plant_slot, 0xce);
+    city.set_microsim_stat0(plant_slot, 50);
+    city.set_microsim_tile_id(zoo_slot, 0xda);
+    for dx in 0..4 {
+        for dy in 0..4 {
+            city.set_building(20 + dx, 20 - dy, 0xce);
+            city.set_terrain(20 + dx, 20 - dy, 0);
+            city.set_building(40 + dx, 40 - dy, 0xda);
+            city.set_terrain(40 + dx, 40 - dy, 0);
+        }
+    }
+    city.set_text_overlay(20, 20, MIN_SIM_TEXT_ENTRIES + plant_slot as u8);
+    city.set_text_overlay(40, 40, MIN_SIM_TEXT_ENTRIES + zoo_slot as u8);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.no_disasters_enabled = false;
+    let mut expected = state.mac_game_rng;
+    let zoo_values = [
+        expected.bounded(100),
+        expected.bounded(100),
+        expected.bounded(100),
+        expected.bounded(100),
+    ];
+
+    state.refresh_mac_xmic_with_arcologies([100; 5], [7; 3]);
+
+    assert_eq!(state.city.microsim_at(plant_slot).unwrap().tile_id, 0);
+    let zoo = state.city.microsim_at(zoo_slot).unwrap();
+    assert_eq!(zoo.tile_id, 0xda);
+    assert_eq!(
+        [u16::from(zoo.stat0), zoo.stat1, zoo.stat2, zoo.stat3],
+        zoo_values
+    );
+    assert_eq!(
+        state.city.text_overlay_at(40, 40),
+        Some(MIN_SIM_TEXT_ENTRIES + zoo_slot as u8)
+    );
+    assert_eq!(state.mac_game_rng.state(), expected.state());
+}
+
+#[test]
+fn mac_renewed_plant_preserves_later_zoo_and_charges_its_full_cost() {
+    let mut city = City::new_blank("/tmp/mac-renew-zoo.sc2", "Zoo").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(100_000);
+    let (plant_slot, zoo_slot) = (10_usize, 16_usize);
+    city.set_microsim_tile_id(plant_slot, 0xce);
+    city.set_microsim_stat0(plant_slot, 50);
+    city.set_microsim_tile_id(zoo_slot, 0xda);
+    city.set_text_overlay(20, 20, MIN_SIM_TEXT_ENTRIES + plant_slot as u8);
+    city.set_text_overlay(40, 40, MIN_SIM_TEXT_ENTRIES + zoo_slot as u8);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.no_disasters_enabled = true;
+    let mut expected = state.mac_game_rng;
+    let zoo_values = [
+        expected.bounded(100),
+        expected.bounded(100),
+        expected.bounded(100),
+        expected.bounded(100),
+    ];
+
+    state.refresh_mac_xmic_with_arcologies([100; 5], [7; 3]);
+
+    let plant = state.city.microsim_at(plant_slot).unwrap();
+    assert_eq!((plant.tile_id, plant.stat0), (0xce, 0));
+    assert_eq!(state.city.city_funds(), 60_000);
+    assert_eq!(
+        state.city.text_overlay_at(20, 20),
+        Some(MIN_SIM_TEXT_ENTRIES + plant_slot as u8)
+    );
+    let zoo = state.city.microsim_at(zoo_slot).unwrap();
+    assert_eq!(
+        [u16::from(zoo.stat0), zoo.stat1, zoo.stat2, zoo.stat3],
+        zoo_values
+    );
+    assert_eq!(
+        state.city.text_overlay_at(40, 40),
+        Some(MIN_SIM_TEXT_ENTRIES + zoo_slot as u8)
+    );
+    assert_eq!(state.mac_game_rng.state(), expected.state());
+}
+
+#[test]
 fn mac_arcology_total_keeps_processed_rows_removed_later_in_walk() {
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         for arcology_first in [true, false] {
@@ -14588,7 +14835,7 @@ fn mac_arcology_total_keeps_processed_rows_removed_later_in_walk() {
             // has no water sources, so export_209 returns 100 instead.
             assert_eq!(
                 state.city.mac_arcology_resident_total(),
-                if arcology_first { 402 } else { 0 },
+                if arcology_first { 302 } else { 0 },
                 "{kind:?} arcology_first={arcology_first}"
             );
         }

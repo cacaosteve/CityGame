@@ -26,12 +26,14 @@ oxideav-pict = { version = "0.0.4", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+sha2 = "0.10"
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.30"
 pollster = "0.4"
 env_logger = "0.11"
 log = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+freetype-sys = "0.20.1"
 
 # Desktop: system SDL via pkg-config.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

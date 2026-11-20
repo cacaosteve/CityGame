@@ -135,6 +135,11 @@ fn mac_xund_counted_value(value: u16) -> bool {
 }
 
 impl City {
+    /// Whether this city was loaded from, or successfully saved to, a file.
+    pub fn has_backing_file(&self) -> bool {
+        self.has_backing_file
+    }
+
     pub fn is_modified(&self) -> bool {
         self.modified
     }
@@ -382,6 +387,33 @@ impl City {
         self.replace_edit_map_canvas_with_buildings(terrain, altm, vec![0u8; CITY_TILES]);
     }
 
+    /// Win95 Make Map replaces terrain while retaining XTXT and the simulation maps.
+    pub(crate) fn replace_pe_edit_map_canvas(&mut self, terrain: Vec<u8>, altm: Vec<AltmSample>) {
+        let planes = (
+            self.text_overlays.take(),
+            self.traffic_density.take(),
+            self.pollution_density.take(),
+            self.land_value_density.take(),
+            self.crime_density.take(),
+            self.police_coverage.take(),
+            self.fire_coverage.take(),
+            self.population_density.take(),
+            self.rate_of_growth.take(),
+        );
+        self.replace_edit_map_canvas(terrain, altm);
+        (
+            self.text_overlays,
+            self.traffic_density,
+            self.pollution_density,
+            self.land_value_density,
+            self.crime_density,
+            self.police_coverage,
+            self.fire_coverage,
+            self.population_density,
+            self.rate_of_growth,
+        ) = planes;
+    }
+
     pub fn replace_edit_map_canvas_with_buildings(
         &mut self,
         terrain: Vec<u8>,
@@ -589,14 +621,63 @@ impl City {
     }
 
     pub fn set_label(&mut self, index: u8, text: impl Into<String>) {
+        let text = text.into();
+        self.update_pe_label_backing(index, &text);
+        self.update_mac_label_backing(index, &text);
         if self.labels.is_none() {
             self.labels = Some(vec![String::new(); CITY_LABEL_COUNT]);
         }
         if let Some(labels) = self.labels.as_mut()
             && let Some(label) = labels.get_mut(index as usize)
         {
-            *label = text.into();
+            *label = text;
             self.modified = true;
+        }
+    }
+
+    /// The PE newspaper's in-place conversion does not call the label editor.
+    pub(crate) fn set_label_untracked(&mut self, index: u8, text: String) {
+        self.update_pe_label_backing(index, &text);
+        self.update_mac_label_backing(index, &text);
+        if let Some(label) = self.labels.as_mut().and_then(|labels| labels.get_mut(index as usize)) {
+            *label = text;
+        }
+    }
+
+    fn update_pe_label_backing(&mut self, index: u8, text: &str) {
+        let Some(backing) = self.pe_label_backing.as_mut() else { return };
+        let offset = usize::from(index) * CITY_LABEL_RECORD_LEN;
+        let encoded = super::win1252::encode(text, CITY_LABEL_TEXT_MAX);
+        backing[offset..offset + encoded.len()].copy_from_slice(&encoded);
+        backing[offset + encoded.len()] = 0;
+    }
+
+    fn update_mac_label_backing(&mut self, index: u8, text: &str) {
+        if self.kind != CityFileKind::MacCity {
+            return;
+        }
+        let backing = self.mac_label_backing.get_or_insert_with(|| vec![0; CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN]);
+        let offset = usize::from(index) * CITY_LABEL_RECORD_LEN;
+        let encoded = super::mac_roman::encode(text, CITY_LABEL_RECORD_LEN - 1);
+        backing[offset] = encoded.len() as u8;
+        backing[offset + 1..offset + 1 + encoded.len()].copy_from_slice(&encoded);
+    }
+
+    pub(crate) fn inherit_pe_new_city_label_backing(&mut self, previous: &City) {
+        if let Some(backing) = &previous.pe_label_backing {
+            self.pe_label_backing = Some(backing.clone());
+            if let Some(backing) = self.pe_label_backing.as_mut() {
+                for row in backing.chunks_exact_mut(CITY_LABEL_RECORD_LEN).skip(1) {
+                    row[0] = 0;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn clear_pe_label_backing_row(&mut self, index: u8) {
+        if let Some(backing) = self.pe_label_backing.as_mut() {
+            let offset = usize::from(index) * CITY_LABEL_RECORD_LEN;
+            backing[offset..offset + CITY_LABEL_RECORD_LEN].fill(0);
         }
     }
 

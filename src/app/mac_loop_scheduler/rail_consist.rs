@@ -63,6 +63,7 @@ pub(super) enum MacRailPrefixOutcome {
 pub(super) fn mac_rail_handler(
     city: &mut City,
     head_slot: usize,
+    app_lfsr: &mut MacAppLfsrRng,
     mut app_draw_bound_two: impl FnMut() -> u16,
     quickdraw: impl FnOnce() -> u16,
 ) -> Option<(MacRailPrefixOutcome, Option<bool>)> {
@@ -73,19 +74,18 @@ pub(super) fn mac_rail_handler(
     let records = city.traffic_overlays()?;
     let middle = usize::from(records.get(head_slot)?.state);
     let tail = usize::from(records.get(middle)?.state);
-    let sound = mac_rail_handler_suffix(city, head_slot, tail, quickdraw, app_draw_bound_two)?;
+    let sound = mac_rail_handler_suffix(city, head_slot, tail, app_lfsr, quickdraw, app_draw_bound_two)?;
     Some((outcome, Some(sound)))
 }
 
-/// The normal-state `0xec04..0xef34` handler suffix. The CODE 13 export-203
-/// calls are zero in the recovered initialized state; the two callbacks are
-/// the distinct QuickDraw and conditional app-LCG draws. The return value
-/// reports the native sound request, not whether sound playback succeeded.
+/// The normal-state `0xec04..0xef34` handler suffix. The return value
+/// reports the native sound request.
 #[allow(dead_code)]
 pub(super) fn mac_rail_handler_suffix(
     city: &mut City,
     head_slot: usize,
     tail_slot: usize,
+    app_lfsr: &mut MacAppLfsrRng,
     quickdraw: impl FnOnce() -> u16,
     draw_bound_two: impl FnOnce() -> u16,
 ) -> Option<bool> {
@@ -106,11 +106,8 @@ pub(super) fn mac_rail_handler_suffix(
     const DROW: [i16; 4] = [0, 1, 0, -1];
     const DCOL: [i16; 4] = [-1, 0, 1, 0];
     const SHAPE: [[u8; 4]; 4] = [[0, 1, 2, 7], [1, 2, 3, 4], [2, 3, 4, 5], [7, 4, 5, 6]];
-    // CODE 6 `0xec94..0xeccc` calls CODE 13 export 203 with bounds 4 and 2.
-    // The reconstructed A5-2 app-LFSR begins at zero and has no loaded-code
-    // writer, so the native zero/zero branch chooses heading+3.
-    let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
-    let selected = if app_lfsr.bounded(4) != 0 {
+    let random_turn = app_lfsr.bounded(4) == 0;
+    let selected = if !random_turn {
         initial
     } else if app_lfsr.bounded(2) != 0 {
         (initial + 1) & 3
@@ -123,7 +120,7 @@ pub(super) fn mac_rail_handler_suffix(
     };
     let (r, c) = candidate(selected);
     let candidate_is_open = mac_actor_route_candidate(city, r, c, kind);
-    let sound_requested = quickdraw() & 0xff == 0;
+    let sound_requested = random_turn && quickdraw() & 0xff == 0;
     if candidate_is_open {
         head.lane = initial;
         head.target_x = selected * 2;

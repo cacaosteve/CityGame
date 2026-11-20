@@ -7,6 +7,9 @@ use crate::ui::UiAction;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SignDialogState {
     pub(super) sign_id: u8,
+    pub(super) pending_mac_tile: Option<(usize, usize)>,
+    pub(super) select_all: bool,
+    pub(super) caret: usize,
     pub(super) text: String,
     pub(super) original_text: String,
 }
@@ -34,15 +37,25 @@ pub(super) enum NewspaperEdition {
     Subscription,
     Extra,
     Courier,
+    /// Mac CODE 2 / CODE 14 ordinary paper.
+    MacStandard,
+    /// CODE 10's mandatory Mac disaster-completion paper.
+    MacDisaster,
 }
 
 impl NewspaperEdition {
+    pub(super) fn is_mac(self) -> bool {
+        matches!(self, Self::MacStandard | Self::MacDisaster)
+    }
+
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Founding => "Founding Edition",
             Self::Subscription => "Subscription",
             Self::Extra => "Extra!!!",
             Self::Courier => "Courier",
+            Self::MacStandard => "Newspaper",
+            Self::MacDisaster => "Disaster Report",
         }
     }
 
@@ -52,6 +65,7 @@ impl NewspaperEdition {
             Self::Subscription => format!("{city_name} Newspaper Subscription"),
             Self::Extra => format!("{city_name} Extra!!!"),
             Self::Courier => format!("The {city_name} {}", newspaper_paper_name(newspaper_choice)),
+            Self::MacStandard | Self::MacDisaster => format!("{city_name} Newspaper"),
         }
     }
 
@@ -63,6 +77,8 @@ impl NewspaperEdition {
     ) -> String {
         match self {
             Self::Founding => "Groundwork Laid for a New City".to_owned(),
+            Self::MacStandard => "City News".to_owned(),
+            Self::MacDisaster => "Disaster Report".to_owned(),
             Self::Subscription => {
                 "Subscription active. City hall news delivery is available.".to_owned()
             }
@@ -94,6 +110,10 @@ impl NewspaperEdition {
             Self::Founding => format!(
                 "A new chapter begins for {city_name}. City hall has opened its doors, and the first neighborhoods are ready to take shape. The mayor's first priorities are power, road access, and places for residents to live and work. Local planners look forward to watching this landscape grow into a thriving city."
             ),
+            Self::MacStandard => format!("Reports from {city_name} cover the city's latest developments."),
+            Self::MacDisaster => {
+                format!("City hall reports that the disaster in {city_name} has ended.")
+            }
             Self::Subscription => format!(
                 "{} residents receive regular reports from {} on city services, budgets, and local growth.",
                 format_number(population.total_population),
@@ -238,6 +258,7 @@ impl CityInfoDialog {
                 | Self::TunnelQuote { .. }
                 | Self::HighwayWaterBridge { .. }
                 | Self::StadiumTeam { .. }
+                | Self::Newspaper(NewspaperEdition::MacDisaster | NewspaperEdition::MacStandard)
         )
     }
 

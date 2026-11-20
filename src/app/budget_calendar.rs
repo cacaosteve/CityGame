@@ -7,54 +7,62 @@
 
 use super::{
     BUDGET_ORDINANCE_ROW, BUDGET_SERVICE_CURRENT_FIELD, CityInfoDialog,
-    MISC_ARCOLOGY_POPULATION_OFFSET, PlacementSound, ViewerState, apply_mac_budget_ordinance_tail,
-    auto_budget_enabled_for_engine, budget_row_misc_offset_for_city,
-    budget_service_funding_raw_for_city, budget_tax_bases_for_city_with_fidelity,
-    live_traffic_count_for_city_with_power, mac_auto_budget_enabled_for_city,
-    mac_budget_clear_monthly_rci_scan_counters, mac_budget_month_snapshot_and_accrue,
-    mac_budget_refresh_derived_currents, mac_ordinance_raw_cash_total,
-    pe_attitude_demand_inputs_for_city_with_power, pe_budget_month_index,
-    pe_fiscal_crisis_after_settlement, pe_misc_mirror_storage_active, persist_pe_year_end_misc,
-    population_stats_for_city_with_fidelity, power_service_maps_with_entry_seed,
-    raw_tax_rate_for_city, set_auto_budget_enabled_for_engine, sync_bond_budget_row_for_city,
-    water_service_maps_with_entry_seed_and_fidelity,
+    MISC_ARCOLOGY_POPULATION_OFFSET, NewspaperEdition, PlacementSound, ViewerState,
+    apply_mac_budget_ordinance_tail, auto_budget_enabled_for_engine,
+    budget_row_misc_offset_for_city, budget_service_funding_raw_for_city,
+    budget_tax_bases_for_city_with_fidelity, live_traffic_count_for_city_with_power,
+    mac_auto_budget_enabled_for_city, mac_budget_clear_monthly_rci_scan_counters,
+    mac_budget_month_snapshot_and_accrue, mac_budget_refresh_derived_currents,
+    mac_budget_service_funding_raw_for_city, mac_budget_tax_rate_raw_for_city,
+    mac_ordinance_raw_cash_total, pe_attitude_demand_inputs_for_city_with_power,
+    pe_budget_month_index, pe_fiscal_crisis_after_settlement, pe_misc_mirror_storage_active,
+    persist_pe_year_end_misc, population_stats_for_city_with_fidelity,
+    power_service_maps_with_entry_seed, set_auto_budget_enabled_for_engine,
+    sync_bond_budget_row_for_city,
 };
 use crate::city::{CityDate, CityFileKind};
 use crate::engine_fidelity::EngineFidelity;
 
 impl ViewerState {
-    /// Interleave arcology water passes with the QuickDraw-consuming rows.
+    /// Interleave arcology and zoo draws with the other XMIC rows.
     pub(super) fn refresh_mac_xmic_with_arcologies(
         &mut self,
         funding: [u32; 5],
         tax_rates: [u32; 3],
     ) {
-        let water_seed = self.pe_process_crt.seed();
         let arcology_count = self.city.mac_arcology_count_snapshot();
         let mut arcology_total = 0_u32;
         let game_rng = &mut self.mac_game_rng;
-        self.city.refresh_mac_monthly_random_xmic_rows_with_external_slots(
-            funding[0], funding[1], funding[2], funding[3], funding[4],
-            self.no_disasters_enabled, &mut self.mac_process_rng,
-            |city, slot| {
-                if city.microsim_at(slot).is_some_and(|row| row.tile_id == 0xda) {
-                    city.refresh_mac_monthly_zoo_microsim_at(slot, game_rng);
-                    return;
-                }
-                let maps = water_service_maps_with_entry_seed_and_fidelity(
-                    city, water_seed, EngineFidelity::Mac68k,
-                );
-                if let Some(water_percent) = maps.mac_worker_utilization_percent() {
-                    super::power_water_refresh::publish_mac_water_result_for_city(city, &maps);
-                    city.refresh_mac_monthly_arcology_microsim_at(slot, tax_rates, water_percent, arcology_count);
-                } else {
-                    log::debug!("Mac arcology slot {slot} skipped: water-worker inputs outside the recovered boundary");
-                }
-                if let Some(row) = city.microsim_at(slot) {
-                    arcology_total = arcology_total.wrapping_add(u32::from(row.stat2));
-                }
-            },
-        );
+        self.city
+            .refresh_mac_monthly_random_xmic_rows_with_external_slots(
+                funding[0],
+                funding[1],
+                funding[2],
+                funding[3],
+                funding[4],
+                self.no_disasters_enabled,
+                &mut self.mac_process_rng,
+                &mut self.mac_app_lfsr,
+                |city, slot, app_lfsr| {
+                    if city
+                        .microsim_at(slot)
+                        .is_some_and(|row| row.tile_id == 0xda)
+                    {
+                        city.refresh_mac_monthly_zoo_microsim_at(slot, game_rng);
+                        return;
+                    }
+                    let random = u32::from(app_lfsr.low_six_bits());
+                    city.refresh_mac_monthly_arcology_microsim_at(
+                        slot,
+                        tax_rates,
+                        random,
+                        arcology_count,
+                    );
+                    if let Some(row) = city.microsim_at(slot) {
+                        arcology_total = arcology_total.wrapping_add(u32::from(row.stat2));
+                    }
+                },
+            );
         // CODE 3 adds the value immediately after each arcology row, even if
         // a later slot removes that row before the sweep finishes.
         self.city.set_mac_arcology_resident_total(arcology_total);
@@ -87,11 +95,33 @@ impl ViewerState {
         );
     }
 
+    /// CODE 4 export 227 consumes the persisted byte only on a January pass.
+    pub(super) fn mac_annual_budget_due(&self, _year: u16, month: u8) -> bool {
+        month == 1
+            && self
+                .city
+                .mac_state_misc_u32_at(super::MISC_YEAR_END_OFFSET)
+                .unwrap_or(0) as u8
+                != 0
+    }
+
     pub(super) fn sim_calendar_day0_budget_and_date_at(&mut self, year: u16, month: u8, day: u8) {
         let previous_date = self.city.saved_date();
-        let year_rolled = previous_date.is_some_and(|date| {
-            date.month == 12 && month == 1 && year == date.year.saturating_add(1)
-        });
+        let year_rolled =
+            if self.engine_fidelity.uses_win95() && self.city.kind != CityFileKind::MacCity {
+                month == 1
+                    && self
+                        .city
+                        .misc_u32_at(super::MISC_YEAR_END_OFFSET)
+                        .unwrap_or(0)
+                        != 0
+            } else if !self.engine_fidelity.uses_win95() {
+                self.mac_annual_budget_due(year, month)
+            } else {
+                previous_date.is_some_and(|date| {
+                    date.month == 12 && month == 1 && year == date.year.saturating_add(1)
+                })
+            };
         if year_rolled {
             self.apply_budget_year_end_settlement();
             self.clear_budget_year_history();
@@ -223,13 +253,8 @@ impl ViewerState {
     }
 
     pub(super) fn finish_sim_calendar_day0_publication(&mut self, year: u16, month: u8, day: u8) {
-        // Native New City reset clears `ffffe4ae`; December's budget pass
-        // sets it and January's pass consumes it. Use the saved-date rollover
-        // as the selected-engine equivalent while preserving the overlapping
-        // native MISC byte on Win-layout cities.
-        let year_rolled = self.city.saved_date().is_some_and(|date| {
-            date.month == 12 && month == 1 && year == date.year.saturating_add(1)
-        });
+        let mac_annual_due =
+            !self.engine_fidelity.uses_win95() && self.mac_annual_budget_due(year, month);
         self.city
             .set_saved_date_and_day(CityDate { year, month }, day);
         if self.engine_fidelity.uses_win95() {
@@ -248,13 +273,16 @@ impl ViewerState {
             // Its XMIC sweep therefore runs once per year, before this
             // month's budget snapshot. Monthly budget snapshots, current-row
             // refresh, and the automatic-ordinance tail remain outside it.
-            if year_rolled {
-                let police_funding = budget_service_funding_raw_for_city(&self.city, 0);
-                let fire_funding = budget_service_funding_raw_for_city(&self.city, 1);
-                let health_funding = budget_service_funding_raw_for_city(&self.city, 2);
-                let school_funding = budget_service_funding_raw_for_city(&self.city, 3);
-                let college_funding = budget_service_funding_raw_for_city(&self.city, 4);
-                let tax_rates = [0, 1, 2].map(|row| raw_tax_rate_for_city(&self.city, row));
+            if mac_annual_due {
+                self.city
+                    .set_mac_state_misc_low_byte_at(super::MISC_YEAR_END_OFFSET, 0);
+                let police_funding = mac_budget_service_funding_raw_for_city(&self.city, 0);
+                let fire_funding = mac_budget_service_funding_raw_for_city(&self.city, 1);
+                let health_funding = mac_budget_service_funding_raw_for_city(&self.city, 2);
+                let school_funding = mac_budget_service_funding_raw_for_city(&self.city, 3);
+                let college_funding = mac_budget_service_funding_raw_for_city(&self.city, 4);
+                let tax_rates =
+                    [0, 1, 2].map(|row| mac_budget_tax_rate_raw_for_city(&self.city, row));
                 self.refresh_mac_xmic_with_arcologies(
                     [
                         police_funding,
@@ -277,52 +305,66 @@ impl ViewerState {
                     )
                 {
                     self.sync_edit_map_menu();
-                    self.set_sim_status_announcement("Fiscal crisis: Auto-Budget turned off");
+                    self.open_mac_fiscal_crisis_notice();
+                    return;
                 }
             }
 
-            // The monthly snapshot precedes the derived-current rebuild, so
-            // those refreshed values apply to the following month's history.
-            mac_budget_month_snapshot_and_accrue(&mut self.city, pe_budget_month_index(month));
-            mac_budget_refresh_derived_currents(&mut self.city);
-            let row_bases = [0, 1, 2].map(|row_index| {
-                budget_row_misc_offset_for_city(&self.city, row_index, BUDGET_SERVICE_CURRENT_FIELD)
-                    .and_then(|offset| self.city.budget_misc_u32_at(offset))
-                    .unwrap_or(0) as i32
-            });
-            let ordinance_current =
-                mac_ordinance_raw_cash_total(&self.city, row_bases[0], row_bases[1], row_bases[2]);
-            if let Some(offset) = budget_row_misc_offset_for_city(
-                &self.city,
-                BUDGET_ORDINANCE_ROW,
-                BUDGET_SERVICE_CURRENT_FIELD,
-            ) {
-                self.city
-                    .set_budget_misc_u32_values(offset, &[ordinance_current as u32]);
-            }
-
-            // CODE 4 export 227's automatic ordinance branch runs monthly,
-            // after the XMIC call when January's annual branch ran, and after
-            // monthly budget/current-row work on other months. It consumes
-            // the same process QuickDraw stream and mutates the saved Mac
-            // ordinance mask. Its story callback is presentation work and is
-            // intentionally not sent through the PE newspaper queue.
-            let _ = apply_mac_budget_ordinance_tail(
-                &mut self.city,
-                self.no_disasters_enabled,
-                &mut self.mac_process_rng,
-            );
-            // CODE 14 opens the subscribed paper directly after export 227.
-            if matches!(month, 4 | 8) && self.city.mac_newspaper_subscription_enabled() {
-                self.city
-                    .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
-            }
-            // These deterministic workers consume no QuickDraw draws, so they
-            // do not guess the shared Mac RNG chronology of other XMIC cases.
-            // CODE 14 phase 0 clears these scan accumulators after export 227
-            // and export 162 have consumed them.
-            mac_budget_clear_monthly_rci_scan_counters(&mut self.city);
+            self.finish_mac_monthly_budget_publication(month);
         }
+    }
+
+    pub(super) fn finish_mac_monthly_budget_publication(&mut self, month: u8) {
+        // The monthly snapshot precedes the derived-current rebuild, so
+        // those refreshed values apply to the following month's history.
+        mac_budget_month_snapshot_and_accrue(&mut self.city, pe_budget_month_index(month));
+        if month == 12 {
+            self.city
+                .set_mac_state_misc_low_byte_at(super::MISC_YEAR_END_OFFSET, 0xff);
+        }
+        mac_budget_refresh_derived_currents(&mut self.city);
+        let row_bases = [0, 1, 2].map(|row_index| {
+            budget_row_misc_offset_for_city(&self.city, row_index, BUDGET_SERVICE_CURRENT_FIELD)
+                .and_then(|offset| self.city.budget_misc_u32_at(offset))
+                .unwrap_or(0) as i32
+        });
+        let ordinance_current =
+            mac_ordinance_raw_cash_total(&self.city, row_bases[0], row_bases[1], row_bases[2]);
+        if let Some(offset) = budget_row_misc_offset_for_city(
+            &self.city,
+            BUDGET_ORDINANCE_ROW,
+            BUDGET_SERVICE_CURRENT_FIELD,
+        ) {
+            self.city
+                .set_budget_misc_u32_values(offset, &[ordinance_current as u32]);
+        }
+
+        // CODE 4 export 227's automatic ordinance branch runs monthly,
+        // after the XMIC call when January's annual branch ran, and after
+        // monthly budget/current-row work on other months. It consumes
+        // the same process QuickDraw stream and mutates the saved Mac
+        // ordinance mask. Its story callback is presentation work and is
+        // intentionally not sent through the PE newspaper queue.
+        let _ = apply_mac_budget_ordinance_tail(
+            &mut self.city,
+            self.no_disasters_enabled,
+            &mut self.mac_process_rng,
+        );
+        // CODE 14 opens the subscribed paper directly after export 227.
+        if matches!(month, 4 | 8) && self.city.mac_newspaper_subscription_enabled() {
+            self.city
+                .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+            if !self.city.mac_newspaper_suppressed() {
+                self.open_city_info_dialog(CityInfoDialog::Newspaper(
+                    NewspaperEdition::MacStandard,
+                ));
+            }
+        }
+        // These deterministic workers consume no QuickDraw draws, so they
+        // do not guess the shared Mac RNG chronology of other XMIC cases.
+        // CODE 14 phase 0 clears these scan accumulators after export 227
+        // and export 162 have consumed them.
+        mac_budget_clear_monthly_rci_scan_counters(&mut self.city);
     }
 
     pub(super) fn finish_mac_january_budget_review(&mut self) {

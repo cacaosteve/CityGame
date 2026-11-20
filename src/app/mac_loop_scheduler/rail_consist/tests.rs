@@ -80,6 +80,7 @@ fn verify_mac_rail_full_handler(fixture: &str, native_rng: bool, city_kind: City
         let (outcome, sound) = mac_rail_handler(
             &mut city,
             5,
+            &mut MacAppLfsrRng::new(0),
             || {
                 let value = if native_rng {
                     game_rng.bounded(2)
@@ -172,6 +173,7 @@ fn mac_rail_handler_suffix_matches_original_68020() {
             &mut city,
             5,
             13,
+            &mut MacAppLfsrRng::new(0),
             || {
                 quick_calls += 1;
                 quick
@@ -768,4 +770,27 @@ fn mac_rail_occupied_destination_leaves_records_and_markers_unchanged() {
     assert!(!mac_move_rail_consist(&mut city, 1, 2, 3));
     assert_eq!(city.traffic_overlays().unwrap(), before);
     assert_eq!(city.text_overlay_at(21, 20), Some(0xfa));
+}
+
+#[test]
+fn mac_rail_sound_draw_follows_lfsr_turn_gate() {
+    let mut city = City::new_blank("/tmp/mac-rail-sound-gate.sc2", "Rail").unwrap();
+    city.set_mac_object_slot_record(5, record("0a00001e32001e3200000000"));
+    city.set_mac_object_slot_record(13, record("0b00001d32001d3200000000"));
+    city.set_building(30, 49, 0x2c);
+    city.set_underground(30, 49, 1);
+    let mut draws = 0;
+    let result = mac_rail_handler_suffix(
+        &mut city,
+        5,
+        13,
+        &mut MacAppLfsrRng::new(1),
+        || {
+            draws += 1;
+            0
+        },
+        || 0,
+    );
+    assert_eq!(result, Some(false));
+    assert_eq!(draws, 0);
 }

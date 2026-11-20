@@ -19,7 +19,7 @@ pub(super) enum PlacementSound {
     FireTruck,
     Cheers,
     Mayday,
-    /// Win95 `0x208` / `520.WAV` from consume common path (`0x45d05c`).
+    /// Both editions request effect 520 at their disaster-start common tail.
     Disaster,
     Wind,
     Explode,
@@ -128,7 +128,9 @@ impl ViewerState {
         &self,
         sound: Option<&'a crate::audio::SoundPlayer>,
     ) -> Option<&'a crate::audio::SoundPlayer> {
-        sound.filter(|_| self.sound_effects_enabled)
+        sound.filter(|_| self.sound_effects_enabled).inspect(|player| {
+            player.set_mac_voice_mode(self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k);
+        })
     }
 
     pub(super) fn play_click_sound(&self, sound: Option<&crate::audio::SoundPlayer>) {
@@ -165,4 +167,39 @@ pub(super) fn play_placement_sound(
     if let Some(sound) = sound {
         effect.play(sound);
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DisasterEffectPlayback {
+    StopEffects,
+    Play(PlacementSound),
+}
+
+/// Resolve the frame's queued effects around CODE 10's stop-all boundary.
+pub(super) fn disaster_effect_playback(
+    reset: Option<(usize, bool)>, sounds: Vec<PlacementSound>,
+) -> Vec<DisasterEffectPlayback> {
+    let mut result = Vec::new();
+    let start = if let Some((boundary, alert)) = reset {
+        result.push(DisasterEffectPlayback::StopEffects);
+        if alert { result.push(DisasterEffectPlayback::Play(PlacementSound::Disaster)); }
+        boundary.min(sounds.len())
+    } else { 0 };
+    result.extend(sounds.into_iter().skip(start).map(DisasterEffectPlayback::Play));
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_disaster_effect_plan_cancels_earlier_requests_before_alert() {
+        assert_eq!(disaster_effect_playback(Some((1, true)), vec![PlacementSound::Fire, PlacementSound::Flood]),
+            [DisasterEffectPlayback::StopEffects, DisasterEffectPlayback::Play(PlacementSound::Disaster),
+                DisasterEffectPlayback::Play(PlacementSound::Flood)]);
+        assert_eq!(disaster_effect_playback(Some((1, false)), vec![PlacementSound::Fire]),
+            [DisasterEffectPlayback::StopEffects]);
+    }
+
 }

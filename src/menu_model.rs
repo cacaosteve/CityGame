@@ -90,6 +90,8 @@ pub const CMD_TOGGLE_CITYGAME_CITY_MUSIC: i32 = 103;
 pub const CMD_APPEARANCE_SYSTEM: i32 = 130;
 pub const CMD_APPEARANCE_LIGHT: i32 = 131;
 pub const CMD_APPEARANCE_DARK: i32 = 132;
+pub const CMD_MAC_PAPER_FIRST: i32 = 140;
+pub const MAC_PAPER_NAMES: [&str; 6] = ["Picayune", "Courier", "Herald", "Journal", "Times", "Chronicle"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuEntry {
@@ -107,6 +109,46 @@ pub enum MenuEntry {
 pub struct MenuDef {
     pub title: &'static str,
     pub items: &'static [MenuEntry],
+}
+
+/// Select edition-specific rows before drawing and hit testing.
+pub fn visible_items(menu: &MenuDef, checks: MenuCheckState) -> Vec<MenuEntry> {
+    if menu.title == "File" && !checks.mac_fidelity {
+        // Win95 menu resource 3. Preserve the shared command IDs so that the
+        // visible rows and their hit targets use the same command routing.
+        let command = |id| {
+            *menu.items
+                .iter()
+                .find(|item| matches!(item, MenuEntry::Command { id: actual, .. } if *actual == id))
+                .expect("missing File command")
+        };
+        return vec![
+            command(CMD_OPEN_CITY),
+            command(CMD_NEW_CITY),
+            command(CMD_TOGGLE_EDIT_MAP),
+            command(CMD_LOAD_SCENARIO),
+            MenuEntry::Separator,
+            command(CMD_LOAD_TILE_SET),
+            MenuEntry::Separator,
+            command(CMD_SAVE_CITY),
+            command(CMD_SAVE_CITY_AS),
+            MenuEntry::Separator,
+            MenuEntry::Command {
+                id: CMD_QUIT,
+                label: "Exit",
+                accel: Some("Ctrl+X"),
+                checkable: false,
+            },
+        ];
+    }
+    if menu.title != "Newspaper" || !checks.mac_newspaper { return menu.items.to_vec(); }
+    let mut items = menu.items[..3].to_vec();
+    for i in 0..usize::from(checks.mac_paper_count.min(6)) {
+        if let Some(&label) = MAC_PAPER_NAMES.get(usize::from(checks.mac_paper_names[i])) {
+            items.push(MenuEntry::Command { id: CMD_MAC_PAPER_FIRST + i as i32, label, accel: None, checkable: true });
+        }
+    }
+    items
 }
 
 pub fn menus() -> &'static [MenuDef] {
@@ -687,8 +729,16 @@ pub struct MenuCheckState {
     pub sound_effects: bool,
     pub music: bool,
     pub no_disasters: bool,
+    pub mac_fidelity: bool,
+    /// True while the Mac engine has an open city. The original disables the
+    /// Speed, Disasters, Windows, and Paper menus on its title screen.
+    pub mac_city_active: bool,
     pub newspaper_subscription: bool,
     pub newspaper_extra: bool,
+    pub mac_newspaper: bool,
+    pub mac_paper_count: u8,
+    pub mac_paper_names: [u8; 6],
+    pub mac_paper_selected: u8,
     pub balloon_help: bool,
     pub prefer_replacement_graphics: bool,
     pub citygame_effects: bool,
@@ -711,8 +761,14 @@ impl Default for MenuCheckState {
             sound_effects: true,
             music: true,
             no_disasters: false,
+            mac_fidelity: false,
+            mac_city_active: false,
             newspaper_subscription: false,
             newspaper_extra: false,
+            mac_newspaper: false,
+            mac_paper_count: 0,
+            mac_paper_names: [0; 6],
+            mac_paper_selected: 0,
             balloon_help: false,
             prefer_replacement_graphics: false,
             citygame_effects: false,
@@ -726,6 +782,9 @@ impl Default for MenuCheckState {
 
 impl MenuCheckState {
     pub fn item_checked(self, id: i32) -> bool {
+        if (CMD_MAC_PAPER_FIRST..CMD_MAC_PAPER_FIRST+6).contains(&id) {
+            return self.mac_newspaper && id - CMD_MAC_PAPER_FIRST == i32::from(self.mac_paper_selected);
+        }
         match id {
             CMD_APPEARANCE_SYSTEM => {
                 self.appearance == crate::asset_profile::AppearancePreference::System
@@ -788,7 +847,10 @@ impl MenuCheckState {
         {
             return false;
         }
+        // The Mac menu keeps manual disaster commands available with this
+        // option checked; the option gates separate simulation paths.
         if self.no_disasters
+            && !self.mac_fidelity
             && matches!(
                 id,
                 CMD_START_FIRE
@@ -807,6 +869,12 @@ impl MenuCheckState {
     }
 
     pub fn menu_enabled(self, title: &str) -> bool {
-        !(self.edit_map && title == "Speed")
+        if self.mac_fidelity
+            && !self.mac_city_active
+            && matches!(title, "Speed" | "Disasters" | "Windows" | "Newspaper")
+        {
+            return false;
+        }
+        !(self.edit_map && (title == "Speed" || (self.mac_newspaper && title == "Newspaper")))
     }
 }

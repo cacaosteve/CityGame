@@ -3,16 +3,19 @@ unsafe extern "C" {
     fn sc2000_install_menu(
         callback: extern "C" fn(i32),
         document_open_callback: extern "C" fn(*const std::ffi::c_char),
+        win95_fidelity: i32,
     );
     fn sc2000_set_edit_map_mode(edit_map: i32);
+    fn sc2000_set_city_runtime_active(active: i32);
     fn sc2000_set_game_speed(speed_command: i32);
     fn sc2000_set_auto_budget(enabled: i32);
     fn sc2000_set_auto_goto(enabled: i32);
     fn sc2000_set_sound_effects(enabled: i32);
     fn sc2000_set_music(enabled: i32);
-    fn sc2000_set_no_disasters(enabled: i32);
+    fn sc2000_set_no_disasters(enabled: i32, manual_enabled: i32);
     fn sc2000_set_newspaper_subscription(enabled: i32);
     fn sc2000_set_newspaper_extra(enabled: i32);
+    fn sc2000_set_newspaper_papers(enabled: i32, names: *const u8, count: i32, selected: i32);
     fn sc2000_set_balloon_help(enabled: i32);
     fn sc2000_set_graphics_preference(prefer_replacement: i32);
     fn sc2000_set_citygame_overrides(effects: i32, music: i32, city_music: i32, toolbar: i32);
@@ -30,12 +33,18 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
+pub fn set_city_runtime_active(active: bool) {
+    unsafe { sc2000_set_city_runtime_active(i32::from(active)); }
+}
+
+#[cfg(target_os = "macos")]
 pub fn install(
     callback: extern "C" fn(i32),
     document_open_callback: extern "C" fn(*const std::ffi::c_char),
+    win95_fidelity: bool,
 ) {
     unsafe {
-        sc2000_install_menu(callback, document_open_callback);
+        sc2000_install_menu(callback, document_open_callback, i32::from(win95_fidelity));
     }
 }
 
@@ -89,9 +98,9 @@ pub fn set_music(enabled: bool) {
 }
 
 #[cfg(target_os = "macos")]
-pub fn set_no_disasters(enabled: bool) {
+pub fn set_no_disasters(enabled: bool, manual_enabled: bool) {
     unsafe {
-        sc2000_set_no_disasters(if enabled { 1 } else { 0 });
+        sc2000_set_no_disasters(i32::from(enabled), i32::from(manual_enabled));
     }
 }
 
@@ -107,6 +116,11 @@ pub fn set_newspaper_extra(enabled: bool) {
     unsafe {
         sc2000_set_newspaper_extra(if enabled { 1 } else { 0 });
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_newspaper_papers(enabled: bool, names: [u8; 6], count: u8, selected: u8) {
+    unsafe { sc2000_set_newspaper_papers(i32::from(enabled), names.as_ptr(), i32::from(count), i32::from(selected)); }
 }
 
 #[cfg(target_os = "macos")]
@@ -255,11 +269,15 @@ pub fn present_windows(main: &sdl3::video::Window, palette: &sdl3::video::Window
 pub fn install(
     _callback: extern "C" fn(i32),
     _document_open_callback: extern "C" fn(*const std::ffi::c_char),
+    _win95_fidelity: bool,
 ) {
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_edit_map_mode(_edit_map: bool) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_city_runtime_active(_active: bool) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_game_speed(_speed: crate::traffic::GameSpeed) {}
@@ -277,13 +295,16 @@ pub fn set_sound_effects(_enabled: bool) {}
 pub fn set_music(_enabled: bool) {}
 
 #[cfg(not(target_os = "macos"))]
-pub fn set_no_disasters(_enabled: bool) {}
+pub fn set_no_disasters(_enabled: bool, _manual_enabled: bool) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_newspaper_subscription(_enabled: bool) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_newspaper_extra(_enabled: bool) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_newspaper_papers(_enabled: bool, _names: [u8; 6], _count: u8, _selected: u8) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_balloon_help(_enabled: bool) {}

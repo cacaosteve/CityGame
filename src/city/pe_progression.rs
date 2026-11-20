@@ -6,6 +6,13 @@ const PE_TECH_UI_DEFAULTS_4E9560: [u32; 18] = [
 ];
 
 impl City {
+    /// These PE globals survive city replacement until the calendar publishes them.
+    pub(crate) fn inherit_pe_graph_calendar_words(&mut self, previous: &City) {
+        self.pe_w_calendar_month_mod = previous.pe_w_calendar_month_mod;
+        self.pe_w_season = previous.pe_w_season;
+        self.pe_w_local_fame_base = previous.pe_w_local_fame_base;
+    }
+
     /// Win95 local fame-base word @ `0x4cb020` (graph/UpdateGraphData; newspaper threshold addend).
     pub fn set_pe_w_local_fame_base(&mut self, fame: u16) {
         self.pe_w_local_fame_base = fame;

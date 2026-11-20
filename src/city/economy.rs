@@ -20,6 +20,7 @@ pub(super) const PE_INDUSTRY_POP_FIELD: usize = 8;
 
 /// CODE 8's zero-app-LFSR demand update narrows the product to a signed
 /// WORD before dividing by four.
+#[cfg(test)]
 fn mac_industry_smoothed_demand(prior: i16) -> i16 {
     (i32::from(prior.wrapping_mul(3)) / 4) as i16
 }
@@ -59,8 +60,25 @@ pub(super) fn mac_sane_industry_scale(
 /// standard SANE environment. The returned total is accumulated during the
 /// loop and may differ from the final weights after later row transforms.
 /// Original SANE runtime and the whole-session random sequence remain unverified.
+#[cfg(test)]
 pub(super) fn mac_industry_modified_residuals(
     prior: [i16; PE_INDUSTRY_COUNT],
+    taxes: [i16; PE_INDUSTRY_COUNT],
+    pollution_controls: bool,
+    growth_modifier: bool,
+    education: u32,
+) -> Option<([i16; PE_INDUSTRY_COUNT], [u32; PE_INDUSTRY_COUNT], u32)> {
+    mac_industry_residuals_from_demand(
+        prior.map(mac_industry_smoothed_demand),
+        taxes,
+        pollution_controls,
+        growth_modifier,
+        education,
+    )
+}
+
+fn mac_industry_residuals_from_demand(
+    updated: [i16; PE_INDUSTRY_COUNT],
     taxes: [i16; PE_INDUSTRY_COUNT],
     pollution_controls: bool,
     growth_modifier: bool,
@@ -70,7 +88,7 @@ pub(super) fn mac_industry_modified_residuals(
     const F09: u64 = 0xe666_6666_6666_6666;
     const F11: u64 = 0x8ccc_cccc_cccc_cccd;
     const F12: u64 = 0x9999_9999_9999_999a;
-    let updated = prior.map(mac_industry_smoothed_demand);
+
     let mut weights = [0_i32; PE_INDUSTRY_COUNT];
     let mut total = 0_u32;
     for i in 0..PE_INDUSTRY_COUNT {
@@ -105,7 +123,7 @@ pub(super) fn mac_industry_modified_residuals(
 /// Demand-to-residual path when pollution controls, the growth modifier, and
 /// all education modifiers are inactive. The SANE-modified paths and shared
 /// Toolbox chronology are still required before this can be scheduled.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn mac_industry_neutral_residuals(
     prior: [i16; PE_INDUSTRY_COUNT],
     taxes: [i16; PE_INDUSTRY_COUNT],
@@ -680,12 +698,31 @@ impl City {
     }
 
     /// Mac CODE 8 export 238's industry update (0x39770..0x39dea).
-    pub(crate) fn advance_mac_industry_mix_month(&mut self, rng: &mut MacToolboxRng) {
+    pub(crate) fn advance_mac_industry_mix_month(
+        &mut self,
+        rng: &mut MacToolboxRng,
+        app_lfsr: &mut MacAppLfsrRng,
+        current_year: u16,
+    ) {
         let read_row_field = |index, field| {
             self.mac_state_misc_u32_at(pe_industry_field_offset(index, field))
                 .unwrap_or(0)
         };
-        let prior = std::array::from_fn(|i| read_row_field(i, PE_INDUSTRY_DEMAND_FIELD) as i16);
+        let founded = self
+            .mac_state_misc_u32_at(MISC_YEAR_FOUNDED_OFFSET)
+            .map(|year| year as u16)
+            .filter(|&year| year != 0)
+            .unwrap_or(1900);
+        let weights = pe_industry_era_weights(
+            u32::from(founded),
+            u32::from(current_year.saturating_sub(founded)),
+        );
+        // CODE 8 updates each signed demand WORD with four CODE 13 draws.
+        let demand = std::array::from_fn(|i| {
+            let prior = read_row_field(i, PE_INDUSTRY_DEMAND_FIELD) as i16;
+            let jitter: i32 = (0..4).map(|_| i32::from(app_lfsr.low_seven_bits())).sum();
+            ((i32::from(prior.wrapping_mul(3)) + jitter * weights[i] / 256) / 4) as i16
+        });
         let taxes = std::array::from_fn(|i| read_row_field(i, PE_INDUSTRY_TAX_FIELD) as i16);
         let populations = std::array::from_fn(|i| read_row_field(i, PE_INDUSTRY_POP_FIELD));
         let pollution_controls =
@@ -694,8 +731,8 @@ impl City {
         let education = self
             .mac_state_misc_u32_at(MISC_CITY_EDUCATION_QUOTIENT_OFFSET)
             .unwrap_or(0);
-        let Some((demand, weights, weight_total)) = mac_industry_modified_residuals(
-            prior,
+        let Some((demand, weights, weight_total)) = mac_industry_residuals_from_demand(
+            demand,
             taxes,
             pollution_controls,
             growth_modifier,

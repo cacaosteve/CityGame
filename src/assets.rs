@@ -201,21 +201,23 @@ pub fn load_sprite_sources(asset_root: impl AsRef<Path>) -> Result<Vec<AtlasSour
 
 /// Private UI namespace, separate from the world sprite and traffic banks.
 pub const NEWSPAPER_PICTURE_BASE: u32 = 70_000;
+pub const WIN95_NEWSPAPER_PICTURE_BASE: u32 = 71_000;
 
 /// Load imported editorial pictures and Mac weather PICTs into a private UI atlas.
 /// Keep their UI IDs separate from road-traffic masks, which also use IDs 400..411.
 pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>> {
-    let mut atlas = RgbaImage::new(640, 624);
+    let mut atlas = RgbaImage::new(640, 936);
     let mut frames = Vec::new();
-    for picture in (400..=411u32).chain(700..=711) {
-        let path = roots.iter().find_map(|root| {
-            [
-                root.join(format!("pict/PICT_{picture:05}.png")),
-                root.join(format!("bitmaps_png/{picture}.png")),
-            ]
-            .into_iter()
-            .find(|path| path.is_file())
-        });
+    let pictures = (400..=411u32).map(|id| (id, false, id - 400))
+        .chain((400..=411u32).map(|id| (id, true, 12 + id - 400)))
+        .chain((700..=711u32).map(|id| (id, false, 24 + id - 700)));
+    for (picture, win95, index) in pictures {
+        let find = |windows: bool| roots.iter().map(|root| if windows {
+            root.join(format!("bitmaps_png/{picture}.png"))
+        } else {
+            root.join(format!("pict/PICT_{picture:05}.png"))
+        }).find(|path| path.is_file());
+        let path = find(win95).or_else(|| find(!win95));
         let Some(path) = path else { continue };
         let image = image::open(&path)
             .with_context(|| format!("loading newspaper picture {}", path.display()))?
@@ -225,12 +227,11 @@ pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>>
         } else {
             image
         };
-        let index = if picture < 700 { picture - 400 } else { 12 + picture - 700 };
         let (x, y) = ((index % 4) * 160 + 2, (index / 4) * 104 + 2);
         image::imageops::overlay(&mut atlas, &image, i64::from(x), i64::from(y));
         frames.push(AtlasFrame {
             index,
-            id: NEWSPAPER_PICTURE_BASE + picture,
+            id: if win95 { WIN95_NEWSPAPER_PICTURE_BASE } else { NEWSPAPER_PICTURE_BASE } + picture,
             file: path.to_string_lossy().into_owned(),
             source_offset: 0,
             x,

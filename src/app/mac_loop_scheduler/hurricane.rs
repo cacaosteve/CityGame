@@ -9,10 +9,12 @@ use super::*;
 pub(super) const WIND_DURATION: usize = 0x10b0;
 pub(super) const FLOOD_DURATION: usize = 0x10b4;
 
-pub(super) fn start(city: &mut City, rng: &mut MacToolboxRng, now: &mut u32) -> u16 {
-    // The reconstructed zero seed traps the original opener on its first
-    // empty lane. Use the smallest nonzero seed for a fresh hurricane.
-    let mut lfsr = MacAppLfsrRng::new(1);
+pub(super) fn start(
+    city: &mut City,
+    rng: &mut MacToolboxRng,
+    now: &mut u32,
+    lfsr: &mut MacAppLfsrRng,
+) {
     city.set_mac_pending_action(0);
     city.set_mac_state_misc_low_word_at(WIND_DURATION, 50);
     city.set_mac_state_misc_low_word_at(FLOOD_DURATION, 60);
@@ -66,11 +68,10 @@ pub(super) fn start(city: &mut City, rng: &mut MacToolboxRng, now: &mut u32) -> 
     // The original branches on an incidental sound/FreeMem return byte.
     // Admit the simulation once the opener finishes, independent of audio.
     begin_action(city, HURRICANE_ACTION);
-    lfsr.state()
 }
 
-pub(super) fn start_flood(city: &mut City, point: &mut (i16, i16)) -> bool {
-    if !seed_flood(city, point) {
+pub(super) fn start_flood(city: &mut City, point: &mut (i16, i16), lfsr: &mut MacAppLfsrRng) -> bool {
+    if !seed_flood(city, point, lfsr) {
         return false;
     }
     begin_action(city, FLOOD_ACTION);
@@ -83,6 +84,7 @@ pub(super) fn start_repeated_flood(
     city: &mut City,
     point: &mut (i16, i16),
     rng: &mut MacToolboxRng,
+    lfsr: &mut MacAppLfsrRng,
 ) -> usize {
     let (origin_x, origin_y) = *point;
     let mut successes = 0;
@@ -91,7 +93,7 @@ pub(super) fn start_repeated_flood(
         let y = origin_y.wrapping_add((rng.random_u16() % 32) as i16 - 16);
         if checked_tile(x, y).is_some() {
             *point = (x, y);
-            successes += usize::from(seed_flood(city, point));
+            successes += usize::from(seed_flood(city, point, lfsr));
         }
     }
     if successes != 0 {
@@ -102,7 +104,7 @@ pub(super) fn start_repeated_flood(
 
 /// CODE 10 FUN_3b8a0 scans increasing square radii, then X and Y offsets.
 /// Rank matching cells in that order to avoid revisiting the inner squares.
-fn seed_flood(city: &mut City, point: &mut (i16, i16)) -> bool {
+fn seed_flood(city: &mut City, point: &mut (i16, i16), lfsr: &mut MacAppLfsrRng) -> bool {
     let (origin_x, origin_y) = *point;
     let shore = (0..CITY_WIDTH)
         .flat_map(|x| (0..CITY_HEIGHT).map(move |y| (x, y)))
@@ -139,7 +141,6 @@ fn seed_flood(city: &mut City, point: &mut (i16, i16)) -> bool {
         }
         (x, y)
     } else {
-        let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
         let target = (0..200)
             .map(|_| {
                 (
@@ -254,6 +255,7 @@ fn damage(
     // FUN_3dc90's elevated bypass precedes export 80. Hurricane passes a
     // separate zero fire-fill flag even when enabling render RNG.
     if !matches!(city.building_at(x, y), 0x3f..=0x42) {
+        city.record_mac_disaster_damage_class_at(x, y);
         let waits = super::super::budget::mac_destroy_building_export80(city, x, y, rng, render);
         *now = now.wrapping_add(waits.wrapping_mul(MAC_EXPORT80_RENDER_WAIT_TICKS_PER_LOOP));
     }

@@ -98,9 +98,16 @@ pub(in crate::app) fn append_bond_rate_for_city(city: &mut City, rate_scaled: u3
 
 /// PE `FUN_0042E460`: Hard starts with one $10,000 bond at the national rate
 /// (3%). The base city setup already supplies the $10,000 starting funds.
-pub(in crate::app) fn initialize_hard_start_bond(city: &mut City) {
+pub(in crate::app) fn initialize_hard_start_bond(city: &mut City, fidelity: EngineFidelity) {
     if city.pe_w_city_difficulty == 3 && append_bond_rate_for_city(city, 3 * BOND_RATE_SCALE) {
         sync_bond_budget_row_for_city(city, 0);
+        if fidelity.uses_win95() {
+            // PE 0x42e662 / 0x42e68d also seed the first historical
+            // count/rate pair when Hard issues its founding bond.
+            if let Some(offset) = budget_row_misc_offset_for_city(city, BUDGET_BOND_ROW, 3) {
+                city.set_budget_misc_u32_values(offset, &[1, 3 * BOND_RATE_SCALE]);
+            }
+        }
         // PE Hard setup seeds row `+0x68` with count × average rate (one month).
         if let Some(offset) = budget_row_misc_offset_for_city(
             city,

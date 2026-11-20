@@ -123,6 +123,14 @@ impl ViewerState {
         let Some(sign_id) = self.user_sign_id_for_text_overlay(current) else {
             return false;
         };
+        if self.engine_fidelity == EngineFidelity::Mac68k {
+            self.open_sign_dialog(sign_id);
+            if let Some(dialog) = self.sign_dialog.as_mut() {
+                dialog.pending_mac_tile = Some((x, y));
+                dialog.select_all = current != 0 && !dialog.text.is_empty();
+            }
+            return true;
+        }
         self.city.set_text_overlay(x, y, sign_id);
         if self.city.label_at(sign_id).is_none_or(str::is_empty) {
             self.city.set_label(sign_id, "Sign");

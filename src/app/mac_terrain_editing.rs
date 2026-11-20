@@ -3,6 +3,83 @@
 use crate::city::{CITY_HEIGHT, CITY_WIDTH, City, TileBits};
 use crate::mac_random::MacToolboxRng;
 
+/// CODE 5 export 84. Failed validation leaves any already-written marks in
+/// place; an existing mark succeeds after the center's military-zone check.
+#[allow(dead_code)]
+pub(super) fn mac_mark_terrain_raise(city: &mut City, x: usize, y: usize) -> bool {
+    if x >= CITY_WIDTH || y >= CITY_HEIGHT { return true; }
+    if city.zone_at(x, y).is_some_and(|z| z.zone_id() == 7) { return false; }
+    let bits = city.tile_bits_at(x, y).unwrap_or(TileBits::new(0));
+    if bits.flatten_mark() { return true; }
+    city.set_tile_bits(x, y, bits.with_flatten_mark(true));
+    let land = city.altitude_at(x, y);
+    for (dx, dy) in NEIGHBORHOOD.iter().copied().take(8) {
+        if let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
+            && nx < CITY_WIDTH && ny < CITY_HEIGHT
+            && city.zone_at(nx, ny).is_some_and(|z| z.zone_id() == 7)
+        { return false; }
+    }
+    for (dx, dy) in [(-1, 0), (0, -1), (1, 0), (0, 1)] {
+        if let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
+            && nx < CITY_WIDTH && ny < CITY_HEIGHT && city.altitude_at(nx, ny) < land
+            && !mac_mark_terrain_raise(city, nx, ny)
+        { return false; }
+    }
+    true
+}
+
+/// CODE 5 export 85. Its WORD OR allows height 31+1 to spill into water.
+#[allow(dead_code)]
+pub(super) fn mac_apply_marked_terrain_raise(
+    city: &mut City, x: usize, y: usize, funds: &mut i32, rng: &mut MacToolboxRng,
+) {
+    mac_apply_marked_terrain_raise_with_destroy(city, x, y, funds, rng, &mut |city, x, y, rng| {
+        super::budget::mac_destroy_building_export80(city, x, y, rng, true)
+    });
+}
+
+/// Variant for callers that own the native destruction presentation tail.
+pub(super) fn mac_apply_marked_terrain_raise_with_destroy(
+    city: &mut City, x: usize, y: usize, funds: &mut i32, rng: &mut MacToolboxRng,
+    destroy: &mut impl FnMut(&mut City, usize, usize, &mut MacToolboxRng) -> u32,
+) {
+    mac_apply_marked_terrain_raise_with_callbacks(city, x, y, funds, rng, destroy, &mut |_, _, _| {});
+}
+
+/// The original neighborhood walk marks tile bounds before and after each
+/// classifier call; presentation state and shape dimensions belong to caller.
+pub(super) fn mac_apply_marked_terrain_raise_with_callbacks(
+    city: &mut City, x: usize, y: usize, funds: &mut i32, rng: &mut MacToolboxRng,
+    destroy: &mut impl FnMut(&mut City, usize, usize, &mut MacToolboxRng) -> u32,
+    mark_bounds: &mut impl FnMut(&City, usize, usize),
+) {
+    if x >= CITY_WIDTH || y >= CITY_HEIGHT { return; }
+    let bits = city.tile_bits_at(x, y).unwrap_or(TileBits::new(0));
+    if !bits.flatten_mark() { return; }
+    city.set_tile_bits(x, y, bits.with_flatten_mark(false));
+    let land = city.altitude_at(x, y);
+    for (dx, dy) in [(-1, 0), (0, -1), (1, 0), (0, 1)] {
+        if let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
+            && nx < CITY_WIDTH && ny < CITY_HEIGHT && city.altitude_at(nx, ny) < land
+        { mac_apply_marked_terrain_raise_with_callbacks(city, nx, ny, funds, rng, destroy, mark_bounds); }
+    }
+    if *funds < 25 { return; }
+    *funds -= 25;
+    let altm = city.altm_at(x, y);
+    let word = u16::from(altm.land) | (u16::from(altm.water) << 5) | (u16::from(altm.tunnel_levels) << 10);
+    city.set_altm_word(x, y, (word & !31) | (u16::from(land) + 1));
+    if let Some(zone) = city.zone_at(x, y) { city.set_zone(x, y, zone.raw_bits() & 0xf0); }
+    for (dx, dy) in NEIGHBORHOOD {
+        if let Some(nx) = x.checked_add_signed(dx)
+            && let Some(ny) = y.checked_add_signed(dy)
+        {
+            mark_bounds(city, nx, ny);
+            mac_classify_terrain_tile_with_destroy(city, nx, ny, rng, destroy);
+            mark_bounds(city, nx, ny);
+        }
+    }
+}
+
 /// CODE 3 export 138: rendered surface removal, mode-sensitive PlaceTile,
 /// XUND cleanup, then the height-neighbor/contour/water writes.
 pub(super) fn mac_classify_terrain_tile(
@@ -10,6 +87,18 @@ pub(super) fn mac_classify_terrain_tile(
     x: usize,
     y: usize,
     rng: &mut MacToolboxRng,
+) -> u32 {
+    mac_classify_terrain_tile_with_destroy(city, x, y, rng, &mut |city, x, y, rng| {
+        super::budget::mac_destroy_building_export80(city, x, y, rng, true)
+    })
+}
+
+fn mac_classify_terrain_tile_with_destroy(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    rng: &mut MacToolboxRng,
+    destroy: &mut impl FnMut(&mut City, usize, usize, &mut MacToolboxRng) -> u32,
 ) -> u32 {
     const DX: [isize; 8] = [0, 1, 1, 1, 0, -1, -1, -1];
     const DY: [isize; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
@@ -24,7 +113,7 @@ pub(super) fn mac_classify_terrain_tile(
     }
     let original_building = city.building_at(x, y);
     let nested_export80_waits = if original_building >= 13 {
-        super::budget::mac_destroy_building_export80(city, x, y, rng, true)
+        destroy(city, x, y, rng)
     } else {
         0
     };
@@ -345,6 +434,38 @@ pub(super) fn apply_drag_height(
 mod tests {
     use super::*;
     use crate::city::CityFileKind;
+
+    #[test]
+    fn mac_raise_validation_keeps_failed_marks_and_checks_center_first() {
+        let mut city = City::new_blank("/tmp/mac-raise-marks", "Marks").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_zone(11, 10, 7);
+        assert!(!mac_mark_terrain_raise(&mut city, 10, 10));
+        assert!(city.tile_bits_at(10, 10).unwrap().flatten_mark());
+        assert!(mac_mark_terrain_raise(&mut city, 10, 10));
+        city.set_zone(10, 10, 7);
+        assert!(!mac_mark_terrain_raise(&mut city, 10, 10));
+    }
+
+    #[test]
+    fn mac_marked_raise_spills_height_word_and_respects_remaining_funds() {
+        let mut city = City::new_blank("/tmp/mac-raise-spill", "Spill").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_mac_selected_water_height(0);
+        for x in 9..=11 { for y in 9..=11 { city.set_altm_word(x, y, 0); } }
+        city.set_altm_word(10, 10, 31);
+        city.set_tile_bits(10, 10, TileBits::new(8));
+        let mut rng = MacToolboxRng::new(1);
+        let mut funds = 24;
+        mac_apply_marked_terrain_raise(&mut city, 10, 10, &mut funds, &mut rng);
+        assert_eq!(city.altitude_at(10, 10), 31);
+        assert!(!city.tile_bits_at(10, 10).unwrap().flatten_mark());
+        city.set_tile_bits(10, 10, TileBits::new(8));
+        funds = 25;
+        mac_apply_marked_terrain_raise(&mut city, 10, 10, &mut funds, &mut rng);
+        assert_eq!(funds, 0);
+        assert_eq!((city.altitude_at(10, 10), city.water_height_at(10, 10)), (0, 1));
+    }
 
     #[test]
     fn mac_level_drag_direction_ties_and_map_edges() {

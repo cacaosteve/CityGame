@@ -394,6 +394,7 @@ pub(super) fn build_traffic_atlas(
 
     Ok(Some(BuiltAtlas {
         rgba,
+        source_indices: None,
         width,
         height,
         frames,
@@ -466,11 +467,20 @@ pub(super) fn build_animation_atlas(
         base_id: u32,
         sprite_id: u32,
         image: RgbaImage,
+        source_indices: RgbaImage,
     }
 
     let mut generated = Vec::new();
     let mut animation_counts = HashMap::new();
     let mut seen_base_ids = HashSet::new();
+    let mut palette_indices: HashMap<[u8; 3], Option<u8>> = HashMap::new();
+    for index in 0..=u8::MAX {
+        let color = palette.base_color_for_index(index);
+        palette_indices
+            .entry([color.r, color.g, color.b])
+            .and_modify(|value| *value = None)
+            .or_insert(Some(index));
+    }
 
     for source in sources {
         let image = source.load_rgba()?;
@@ -497,11 +507,35 @@ pub(super) fn build_animation_atlas(
                     sprite =
                         smoke_overlay_sprite_frame(&base_sprite, palette, frame.id, anim_frame);
                 }
+                let mut source_indices = RgbaImage::new(sprite.width(), sprite.height());
+                for (x, y, pixel) in sprite.enumerate_pixels() {
+                    if pixel.0[3] < 128 {
+                        continue;
+                    }
+                    let original = base_sprite.get_pixel(x, y).0;
+                    let index = if source.name.starts_with("replacement_") {
+                        None
+                    } else {
+                        palette_indices
+                            .get(&[original[0], original[1], original[2]])
+                            .copied()
+                            .flatten()
+                    };
+                    source_indices.put_pixel(
+                        x,
+                        y,
+                        image::Rgba(match index {
+                            Some(index) => [index, 255, 0, 255],
+                            None => [0, 0, 0, 255],
+                        }),
+                    );
+                }
                 generated.push(AnimationFrame {
                     frame: frame.clone(),
                     base_id: frame.id,
                     sprite_id: animated_sprite_id(frame.id, anim_frame),
                     image: sprite,
+                    source_indices,
                 });
             }
         }
@@ -554,8 +588,10 @@ pub(super) fn build_animation_atlas(
     );
     let width = width.max(1);
     let mut rgba = RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
+    let mut source_indices = RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
     for (frame, placement) in generated.iter().zip(placements.iter()) {
         blit_sprite_region(&mut rgba, placement, &frame.image);
+        blit_sprite_region(&mut source_indices, placement, &frame.source_indices);
     }
 
     let mut ids: Vec<u32> = generated.iter().map(|frame| frame.base_id).collect();
@@ -564,6 +600,7 @@ pub(super) fn build_animation_atlas(
 
     Ok(Some(BuiltAtlas {
         rgba,
+        source_indices: Some(source_indices),
         width,
         height,
         frames,

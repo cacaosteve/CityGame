@@ -1,10 +1,12 @@
 #import <Cocoa/Cocoa.h>
+#import "mac_document_open.h"
 
 typedef void (*SC2KMenuCallback)(int);
-typedef void (*SC2KDocumentOpenCallback)(const char *);
 
 static SC2KMenuCallback gCallback = NULL;
 static SC2KDocumentOpenCallback gDocumentOpenCallback = NULL;
+static BOOL gWin95Fidelity = NO;
+static BOOL gCityRuntimeActive = NO;
 static NSMenuItem *gAppearanceSystemItem = nil;
 static NSMenuItem *gAppearanceLightItem = nil;
 static NSMenuItem *gAppearanceDarkItem = nil;
@@ -74,6 +76,7 @@ enum {
     SC2KCommandToggleCityGameCityMusic = 103,
     SC2KCommandToggleCityGameToolbar = 101,
     SC2KCommandToggleCityGameNewspaper = 102,
+    SC2KCommandQuit = 100,
     SC2KCommandAppearanceSystem = 130,
     SC2KCommandAppearanceLight = 131,
     SC2KCommandAppearanceDark = 132,
@@ -98,6 +101,14 @@ enum {
 
 @implementation SC2KMenuTarget
 
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    if (gWin95Fidelity && gCityRuntimeActive && gCallback != NULL) {
+        gCallback(SC2KCommandQuit);
+        return NSTerminateCancel;
+    }
+    return NSTerminateNow;
+}
+
 - (void)sendCommand:(NSInteger)command {
     if (gCallback != NULL) {
         gCallback((int)command);
@@ -113,9 +124,7 @@ enum {
 }
 
 - (void)application:(NSApplication *)application openFiles:(NSArray<NSString *> *)filenames {
-    NSString *path = filenames.firstObject;
-    if (path != nil && gDocumentOpenCallback != NULL) {
-        gDocumentOpenCallback([path fileSystemRepresentation]);
+    if (sc2k_dispatch_document_open_paths(filenames, gDocumentOpenCallback)) {
         [application replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
     } else {
         [application replyToOpenOrPrint:NSApplicationDelegateReplyFailure];
@@ -138,6 +147,7 @@ enum {
 - (void)saveCityAs:(id)sender { [self sendCommand:SC2KCommandSaveCityAs]; }
 - (void)newCity:(id)sender { [self sendCommand:SC2KCommandNewCity]; }
 - (void)returnToTitle:(id)sender { [self sendCommand:SC2KCommandReturnToTitle]; }
+- (void)quitCityGame:(id)sender { [self sendCommand:SC2KCommandQuit]; }
 - (void)toggleEditMap:(id)sender { [self sendCommand:SC2KCommandToggleEditMap]; }
 - (void)loadTileSet:(id)sender { [self sendCommand:SC2KCommandLoadTileSet]; }
 - (void)loadScenario:(id)sender { [self sendCommand:SC2KCommandLoadScenario]; }
@@ -200,6 +210,7 @@ enum {
 - (void)startRioters:(id)sender { [self sendCommand:SC2KCommandStartRioters]; }
 - (void)openNewspaper:(id)sender { [self sendCommand:SC2KCommandOpenNewspaper]; }
 - (void)openCourier:(id)sender { [self sendCommand:SC2KCommandOpenCourier]; }
+- (void)openMacPaper:(NSMenuItem *)sender { [self sendCommand:140 + sender.tag]; }
 - (void)openExtra:(id)sender { [self sendCommand:SC2KCommandOpenExtra]; }
 - (void)openHelp:(id)sender { [self sendCommand:SC2KCommandOpenHelp]; }
 - (void)toggleBalloonHelp:(id)sender { [self sendCommand:SC2KCommandToggleBalloonHelp]; }
@@ -221,6 +232,10 @@ static NSMenuItem *gCityGameNewspaperItem = nil;
 static NSMenuItem *gNoDisastersItem = nil;
 static NSMenuItem *gNewspaperSubscriptionItem = nil;
 static NSMenuItem *gNewspaperExtraItem = nil;
+static NSMenuItem *gNewspaperRoot = nil;
+static NSMenu *gNewspaperMenu = nil;
+static BOOL gMacNewspaperMode = NO;
+static BOOL gEditMapMode = NO;
 static NSMenuItem *gBalloonHelpItem = nil;
 static NSMenuItem *gDataMapCityItem = nil;
 static NSMenuItem *gDataMapPowerItem = nil;
@@ -238,6 +253,8 @@ static NSMenuItem *gUndergroundItem = nil;
 #define SC2K_DISASTER_MENU_ITEM_COUNT 8
 static NSMenuItem *gDisasterItems[SC2K_DISASTER_MENU_ITEM_COUNT] = { nil };
 static NSMenuItem *gSpeedMenuRoot = nil;
+static NSMenuItem *gDisastersMenuRoot = nil;
+static NSMenuItem *gWindowsMenuRoot = nil;
 static NSMenuItem *gSpeedPauseItem = nil;
 static NSMenuItem *gSpeedTurtleItem = nil;
 static NSMenuItem *gSpeedLlamaItem = nil;
@@ -249,7 +266,7 @@ void sc2000_set_auto_budget(int enabled);
 void sc2000_set_auto_goto(int enabled);
 void sc2000_set_sound_effects(int enabled);
 void sc2000_set_music(int enabled);
-void sc2000_set_no_disasters(int enabled);
+void sc2000_set_no_disasters(int enabled, int manual_enabled);
 void sc2000_set_newspaper_subscription(int enabled);
 void sc2000_set_newspaper_extra(int enabled);
 void sc2000_set_balloon_help(int enabled);
@@ -280,10 +297,12 @@ static NSMenuItem *SC2KCheckedMenuItem(NSString *title, SEL action, NSString *ke
     return item;
 }
 
-void sc2000_install_menu(SC2KMenuCallback callback, SC2KDocumentOpenCallback documentOpenCallback) {
+void sc2000_install_menu(SC2KMenuCallback callback, SC2KDocumentOpenCallback documentOpenCallback, int win95Fidelity) {
     @autoreleasepool {
         gCallback = callback;
         gDocumentOpenCallback = documentOpenCallback;
+        gWin95Fidelity = win95Fidelity != 0;
+        gCityRuntimeActive = NO;
         if (gTarget == nil) {
             gTarget = [[SC2KMenuTarget alloc] init];
         }
@@ -312,21 +331,35 @@ void sc2000_install_menu(SC2KMenuCallback callback, SC2KDocumentOpenCallback doc
 
         NSMenuItem *fileRoot = [[NSMenuItem alloc] initWithTitle:@"File" action:nil keyEquivalent:@""];
         NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
-        [fileMenu addItem:SC2KMenuItem(@"Load Tile Set", @selector(loadTileSet:), @"", 0)];
+        if (!win95Fidelity) {
+            [fileMenu addItem:SC2KMenuItem(@"Load Tile Set", @selector(loadTileSet:), @"", 0)];
+            [fileMenu addItem:[NSMenuItem separatorItem]];
+        }
+        NSEventModifierFlags fileModifier = win95Fidelity ? NSEventModifierFlagControl : command;
+        [fileMenu addItem:SC2KMenuItem(@"Load City", @selector(openCity:), @"l", fileModifier)];
+        [fileMenu addItem:SC2KMenuItem(@"New City", @selector(newCity:), @"n", fileModifier)];
+        [fileMenu addItem:SC2KMenuItem(@"Edit New Map", @selector(toggleEditMap:), @"e", fileModifier)];
+        [fileMenu addItem:SC2KMenuItem(@"Load Scenario", @selector(loadScenario:), @"z", fileModifier)];
+        if (win95Fidelity) {
+            [fileMenu addItem:[NSMenuItem separatorItem]];
+            [fileMenu addItem:SC2KMenuItem(@"Load Tile Set", @selector(loadTileSet:), @"", 0)];
+        }
         [fileMenu addItem:[NSMenuItem separatorItem]];
-        [fileMenu addItem:SC2KMenuItem(@"Load City", @selector(openCity:), @"l", command)];
-        [fileMenu addItem:SC2KMenuItem(@"New City", @selector(newCity:), @"n", command)];
-        [fileMenu addItem:SC2KMenuItem(@"Edit New Map", @selector(toggleEditMap:), @"e", command)];
-        [fileMenu addItem:SC2KMenuItem(@"Load Scenario", @selector(loadScenario:), @"z", command)];
-        [fileMenu addItem:[NSMenuItem separatorItem]];
-        [fileMenu addItem:SC2KMenuItem(@"Save City", @selector(saveCity:), @"s", command)];
+        [fileMenu addItem:SC2KMenuItem(@"Save City", @selector(saveCity:), @"s", fileModifier)];
         [fileMenu addItem:SC2KMenuItem(@"Save City As...", @selector(saveCityAs:), @"", 0)];
         [fileMenu addItem:[NSMenuItem separatorItem]];
-        [fileMenu addItem:SC2KMenuItem(@"Return to Title Screen...", @selector(returnToTitle:), @"", 0)];
-        [fileMenu addItem:[NSMenuItem separatorItem]];
-        NSMenuItem *fileQuitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
-        fileQuitItem.target = NSApp;
-        fileQuitItem.keyEquivalentModifierMask = command;
+        if (!win95Fidelity) {
+            [fileMenu addItem:SC2KMenuItem(@"Return to Title Screen...", @selector(returnToTitle:), @"", 0)];
+            [fileMenu addItem:[NSMenuItem separatorItem]];
+        }
+        NSMenuItem *fileQuitItem;
+        if (win95Fidelity) {
+            fileQuitItem = SC2KMenuItem(@"Exit", @selector(quitCityGame:), @"x", NSEventModifierFlagControl);
+        } else {
+            fileQuitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
+            fileQuitItem.target = NSApp;
+            fileQuitItem.keyEquivalentModifierMask = command;
+        }
         [fileMenu addItem:fileQuitItem];
         fileRoot.submenu = fileMenu;
         [mainMenu addItem:fileRoot];
@@ -412,6 +445,7 @@ void sc2000_install_menu(SC2KMenuCallback callback, SC2KDocumentOpenCallback doc
         gNoDisastersItem = SC2KMenuItem(@"No Disasters", @selector(toggleNoDisasters:), @"", 0);
         [disastersMenu addItem:gNoDisastersItem];
         disastersRoot.submenu = disastersMenu;
+        gDisastersMenuRoot = disastersRoot;
         [mainMenu addItem:disastersRoot];
 
         NSMenuItem *viewRoot = [[NSMenuItem alloc] initWithTitle:@"View" action:nil keyEquivalent:@""];
@@ -455,10 +489,13 @@ void sc2000_install_menu(SC2KMenuCallback callback, SC2KDocumentOpenCallback doc
         [windowMenu addItem:SC2KMenuItem(@"Graphs", @selector(openGraphsWindow:), @"g", command)];
         [windowMenu addItem:SC2KMenuItem(@"Neighbors", @selector(openNeighborsWindow:), @"h", command)];
         windowRoot.submenu = windowMenu;
+        gWindowsMenuRoot = windowRoot;
         [mainMenu addItem:windowRoot];
 
         NSMenuItem *newspaperRoot = [[NSMenuItem alloc] initWithTitle:@"Newspaper" action:nil keyEquivalent:@""];
         NSMenu *newspaperMenu = [[NSMenu alloc] initWithTitle:@"Newspaper"];
+        gNewspaperRoot = newspaperRoot;
+        gNewspaperMenu = newspaperMenu;
         gNewspaperSubscriptionItem = SC2KMenuItem(@"Subscription", @selector(openNewspaper:), @"", 0);
         [newspaperMenu addItem:gNewspaperSubscriptionItem];
         gNewspaperExtraItem = SC2KMenuItem(@"Extra!!!", @selector(openExtra:), @"", 0);
@@ -503,13 +540,63 @@ void sc2000_install_menu(SC2KMenuCallback callback, SC2KDocumentOpenCallback doc
         [mainMenu addItem:debugRoot];
 
         [NSApp setMainMenu:mainMenu];
+        if (!gWin95Fidelity) {
+            gSpeedMenuRoot.enabled = NO;
+            gDisastersMenuRoot.enabled = NO;
+            gWindowsMenuRoot.enabled = NO;
+            gNewspaperRoot.enabled = NO;
+        }
+    }
+}
+
+void sc2000_set_city_runtime_active(int active) {
+    gCityRuntimeActive = active != 0;
+    if (!gWin95Fidelity) {
+        BOOL cityActive = gCityRuntimeActive;
+        if (gSpeedMenuRoot != nil) gSpeedMenuRoot.enabled = cityActive && !gEditMapMode;
+        if (gDisastersMenuRoot != nil) gDisastersMenuRoot.enabled = cityActive;
+        if (gWindowsMenuRoot != nil) gWindowsMenuRoot.enabled = cityActive;
+        if (gNewspaperRoot != nil) {
+            gNewspaperRoot.enabled = cityActive && !(gMacNewspaperMode && gEditMapMode);
+        }
     }
 }
 
 void sc2000_set_edit_map_mode(int edit_map) {
     @autoreleasepool {
+        gEditMapMode = edit_map != 0;
         if (gSpeedMenuRoot != nil) {
-            gSpeedMenuRoot.enabled = edit_map ? NO : YES;
+            gSpeedMenuRoot.enabled = gWin95Fidelity ? !gEditMapMode : (gCityRuntimeActive && !gEditMapMode);
+        }
+        if (gNewspaperRoot != nil) {
+            gNewspaperRoot.enabled = gWin95Fidelity
+                ? !(gMacNewspaperMode && gEditMapMode)
+                : (gCityRuntimeActive && !(gMacNewspaperMode && gEditMapMode));
+        }
+    }
+}
+
+void sc2000_set_newspaper_papers(int enabled, const unsigned char *names, int count, int selected) {
+    @autoreleasepool {
+        gMacNewspaperMode = enabled != 0;
+        if (gNewspaperRoot != nil) {
+            gNewspaperRoot.enabled = gWin95Fidelity
+                ? !(gMacNewspaperMode && gEditMapMode)
+                : (gCityRuntimeActive && !(gMacNewspaperMode && gEditMapMode));
+        }
+        if (gNewspaperMenu == nil) return;
+        while (gNewspaperMenu.numberOfItems > 3) [gNewspaperMenu removeItemAtIndex:3];
+        if (!gMacNewspaperMode) {
+            [gNewspaperMenu addItem:SC2KCheckedMenuItem(@"Courier", @selector(openCourier:), @"", 0)];
+            return;
+        }
+        NSString *labels[] = {@"Picayune", @"Courier", @"Herald", @"Journal", @"Times", @"Chronicle"};
+        for (int i = 0; i < count && i < 6; i++) {
+            if (names[i] >= 6) continue;
+            NSMenuItem *item = SC2KMenuItem(labels[names[i]], @selector(openMacPaper:), @"", 0);
+            item.tag = i;
+            item.state = i == selected ? NSControlStateValueOn : NSControlStateValueOff;
+            [gNewspaperMenu addItem:item];
         }
     }
 }
@@ -620,14 +707,14 @@ void sc2000_set_music(int enabled) {
     }
 }
 
-void sc2000_set_no_disasters(int enabled) {
+void sc2000_set_no_disasters(int enabled, int manual_enabled) {
     @autoreleasepool {
         if (gNoDisastersItem != nil) {
             gNoDisastersItem.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
         }
         for (NSUInteger i = 0; i < SC2K_DISASTER_MENU_ITEM_COUNT; i++) {
             if (gDisasterItems[i] != nil) {
-                gDisasterItems[i].enabled = !enabled;
+                gDisasterItems[i].enabled = manual_enabled != 0;
             }
         }
     }

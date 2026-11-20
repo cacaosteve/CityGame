@@ -174,12 +174,12 @@ pub(super) fn mac_publish_xgrp_cohort_metrics(city: &mut City) {
     city.set_chunk_u32_values(XGRP_CHUNK_NAME, 0, &values);
 }
 
-/// CODE 14 `0x26e46..0x26e6c`: national population, value, and the
+/// CODE 14 `0x26e46..0x26e6c`: national value, population, and the
 /// sign-extended national tax WORD, sampled after monthly economy drift.
 pub(super) fn mac_publish_xgrp_national(city: &mut City) {
     let latest = [
-        city.pe_dw_national_population,
         city.pe_dw_national_value,
+        city.pe_dw_national_population,
         i32::from(city.pe_w_national_tax as i16) as u32,
     ];
     let age = city.city_age_days().unwrap_or(0);
@@ -686,7 +686,7 @@ mod tests {
             mac_publish_xgrp_national(&mut city);
             let after = city.chunk_u32_values(XGRP_CHUNK_NAME, 0, XGRP_VALUES);
             assert_eq!(&after[..13 * 52], &before[..13 * 52]);
-            for (index, sample) in [4_000_001, 3_000_001, u32::MAX].into_iter().enumerate() {
+            for (index, sample) in [3_000_001, 4_000_001, u32::MAX].into_iter().enumerate() {
                 let start = (13 + index) * 52;
                 assert_eq!(
                     (after[start], after[start + 12], after[start + 32]),

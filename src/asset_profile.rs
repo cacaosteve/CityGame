@@ -161,6 +161,9 @@ struct AssetSettings {
     appearance_preference: AppearancePreference,
     #[serde(default = "default_citygame_newspaper_enabled")]
     citygame_newspaper_enabled: bool,
+    /// Optional equivalent of the Win95 registration profile's MAYOR NAME.
+    #[serde(default)]
+    win95_mayor_name: Option<String>,
 }
 
 fn default_citygame_newspaper_enabled() -> bool {
@@ -185,6 +188,7 @@ impl Default for AssetSettings {
             toolbar_palette_preference: ToolbarPalettePreference::default(),
             appearance_preference: AppearancePreference::default(),
             citygame_newspaper_enabled: true,
+            win95_mayor_name: None,
         }
     }
 }
@@ -350,6 +354,16 @@ impl AssetProfile {
 
     pub fn citygame_newspaper_enabled(&self) -> bool {
         self.settings.citygame_newspaper_enabled
+    }
+
+    pub(crate) fn win95_mayor_name(&self) -> &str {
+        self.settings
+            .win95_mayor_name
+            .as_deref()
+            .unwrap_or("Mayor McSim")
+            .split('\0')
+            .next()
+            .unwrap_or("")
     }
 
     pub fn set_citygame_newspaper_enabled(&mut self, enabled: bool) -> Result<()> {
@@ -632,6 +646,112 @@ impl AssetProfile {
         self.ordered_sources(OriginalMedia::Music)
             .into_iter()
             .map(|root| root.join(format!("catalog/sounds/{id}.MID")))
+            .find(|path| path.is_file())
+    }
+
+    /// Driver resources must come from the same pack as the chosen MIDI cue.
+    pub(crate) fn mac_audio_resource_directory_for_song(&self, id: u16) -> Option<PathBuf> {
+        let midi = self.original_music_path(id)?;
+        let root = midi.parent()?.parent()?.parent()?;
+        let resources = root.join("catalog/mac-audio");
+        resources.is_dir().then_some(resources)
+    }
+
+    /// Win95 newspaper DATA pair; retain the first partial candidate only if
+    /// no complete archive is available from the ordered graphics sources.
+    pub(crate) fn win95_newspaper_data_paths(&self) -> Option<(PathBuf, PathBuf)> {
+        let roots = self.ordered_sources(OriginalMedia::Graphics);
+        let paths = |root: &PathBuf| {
+            let directory = root.join("catalog/data");
+            (
+                directory.join("DATA_USA.DAT"),
+                directory.join("DATA_USA.IDX"),
+            )
+        };
+        roots
+            .iter()
+            .map(paths)
+            .find(|(data, index)| data.is_file() && index.is_file())
+            .or_else(|| {
+                roots
+                    .iter()
+                    .map(paths)
+                    .find(|(data, index)| data.is_file() || index.is_file())
+            })
+    }
+
+    pub(crate) fn win95_new_city_labels_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .map(|root| root.join("catalog/data/win95-new-city-labels.json"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn win95_save_feedback_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .map(|root| root.join("catalog/data/win95-save-feedback.json"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn win95_city_open_failure_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .map(|root| root.join("catalog/data/win95-city-open-failure.json"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn win95_read_error_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .map(|root| root.join("catalog/data/win95-read-error.json"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn win95_not_iff_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .map(|root| root.join("catalog/data/win95-not-iff.json"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn win95_wrong_iff_city_type_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .map(|root| root.join("catalog/data/win95-wrong-iff-city-type.json"))
+            .find(|path| path.is_file())
+    }
+
+    /// The four token resources must come from the same imported Macintosh pack.
+    pub(crate) fn mac_newspaper_data_paths(&self) -> Option<[PathBuf; 4]> {
+        self.ordered_sources(OriginalMedia::Graphics).into_iter().find_map(|root| {
+            let dir = root.join("catalog/mac-newspaper");
+            let paths = [1000, 1001, 1002, 1003].map(|id| dir.join(format!("{id}.bin")));
+            paths.iter().all(|path| path.is_file()).then_some(paths)
+        })
+    }
+
+    pub(crate) fn mac_newspaper_font_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+            .map(|root| root.join("catalog/mac-newspaper/new-york.bin"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn mac_system_chicago_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+            .map(|root| root.join("catalog/mac-system/chicago.bin"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn mac_newspaper_strings_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+            .map(|root| root.join("catalog/mac-newspaper/strs-0.bin"))
+            .find(|path| path.is_file())
+    }
+
+    pub(crate) fn mac_newspaper_picture_index_path(&self) -> Option<PathBuf> {
+        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+            .map(|root| root.join("catalog/mac-newspaper/pictures.bin"))
             .find(|path| path.is_file())
     }
 

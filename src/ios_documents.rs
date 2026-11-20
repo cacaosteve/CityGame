@@ -48,7 +48,7 @@ extern "C" fn external_document_opened(path: *const c_char, error: *const c_char
         log::info!("opened city directly from Files: {}", working.display());
         // Both title and gameplay loops consume this command. No provider URL
         // survives in settings, so Continue also works after an ordinary restart.
-        app::queue_document_open(working, true);
+        app::queue_document_open(working, true, false);
         Ok(())
     });
     match result {
@@ -157,7 +157,7 @@ fn report_error(window: *mut c_void, error: &anyhow::Error) {
     }
 }
 
-pub fn open_city(window: &Window, from_title: bool) {
+pub fn open_city(window: &Window, from_title: bool, scenario: bool) {
     if is_presenting() {
         return;
     }
@@ -183,7 +183,7 @@ pub fn open_city(window: &Window, from_title: bool) {
                 match imported {
                     Ok(Some(path)) => {
                         log::info!("imported city from Files to {}", path.display());
-                        app::queue_document_open(path, from_title);
+                        app::queue_document_open(path, from_title, scenario);
                     }
                     Ok(None) => {}
                     Err(error) => report_error(native, &error),
@@ -205,7 +205,12 @@ impl Drop for ExportFile {
     }
 }
 
-pub fn save_city(window: &Window, mut snapshot: City, previous_path: PathBuf) -> Result<()> {
+pub fn save_city(
+    window: &Window,
+    mut snapshot: City,
+    previous_path: PathBuf,
+    pe_city: bool,
+) -> Result<()> {
     if is_presenting() {
         return Ok(());
     }
@@ -226,9 +231,12 @@ pub fn save_city(window: &Window, mut snapshot: City, previous_path: PathBuf) ->
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| document_files::city_filename(&snapshot.name));
     let staged = temporary.directory.join(filename);
-    snapshot
-        .save(&staged)
-        .context("prepare the city for Files")?;
+    let saved = if pe_city {
+        snapshot.save_pe_city(&staged)
+    } else {
+        snapshot.save(&staged)
+    };
+    saved.context("prepare the city for Files")?;
     let native = native_window(window);
     let initial = cities.clone();
     let export_path = staged.clone();

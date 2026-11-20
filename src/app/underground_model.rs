@@ -8,8 +8,7 @@ use super::power_water::{
     underground_user_pipe_tile, water_source_connects_as_building_pipe,
 };
 use super::underground::{
-    UNDER_TILE_BUILDING_PIPES, UNDER_TILE_CROSSOVER_PIPES_LR_SUBWAY_TB,
-    UNDER_TILE_CROSSOVER_PIPES_TB_SUBWAY_LR, UNDER_TILE_GREY_BOX_1, UNDER_TILE_GREY_BOX_2,
+    UNDER_TILE_BUILDING_PIPES, UNDER_TILE_GREY_BOX_1, UNDER_TILE_GREY_BOX_2,
     UndergroundKind, underground_crossover_axis,
 };
 use crate::city::City;
@@ -112,31 +111,7 @@ pub(super) fn underground_building_pipe_overlay_tile(
 }
 
 pub(super) fn rotated_underground_tile(tile: u8, rotation: u8) -> u8 {
-    let rotation = rotation & 3;
-    match tile {
-        1..=15 => rotated_underground_family_tile(1, tile - 1, rotation),
-        16..=30 => rotated_underground_family_tile(16, tile - 16, rotation),
-        UNDER_TILE_CROSSOVER_PIPES_TB_SUBWAY_LR if rotation & 1 == 1 => {
-            UNDER_TILE_CROSSOVER_PIPES_LR_SUBWAY_TB
-        }
-        UNDER_TILE_CROSSOVER_PIPES_LR_SUBWAY_TB if rotation & 1 == 1 => {
-            UNDER_TILE_CROSSOVER_PIPES_TB_SUBWAY_LR
-        }
-        _ => tile,
-    }
-}
-
-fn rotated_underground_family_tile(base: u8, offset: u8, rotation: u8) -> u8 {
-    let rotated_offset = match offset {
-        0 | 1 if rotation & 1 == 1 => offset ^ 1,
-        0 | 1 => offset,
-        2..=5 => 2 + ((offset - 2 + rotation) & 3),
-        6..=9 => 6 + ((offset - 6 + rotation) & 3),
-        10..=13 => 10 + ((offset - 10 + rotation) & 3),
-        14 => 14,
-        _ => offset,
-    };
-    base + rotated_offset
+    crate::tiles::rotated_underground_id(tile, rotation)
 }
 
 pub(super) fn underground_tile_source(

@@ -1215,6 +1215,7 @@ fn january_year_roll_consumes_process_lfsr_for_arco() {
         },
         1,
     );
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     let before_lfsr = state.pe_process_lfsr_state();
     state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
@@ -1327,6 +1328,7 @@ fn simulation_day0_january_occupancy_reads_leftover_eq_le_buckets() {
         month: 12,
     });
     assert!(set_city_auto_budget_enabled(&mut city, true));
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.no_disasters_enabled = true;
     state.traffic.set_speed(GameSpeed::Llama);
@@ -1841,7 +1843,11 @@ fn mac_newspaper_poll_matches_native_quickdraw_and_mayor_rows() {
             assert_eq!(state.mac_process_rng.seed(), 123);
             state.city.set_mac_newspaper_suppressed(false);
             assert!(state.apply_state_app_command(&command).is_some());
-            assert_eq!(state.city_info_dialog, None);
+            assert_eq!(
+                state.city_info_dialog,
+                (mode == AppMode::CityView)
+                    .then_some(CityInfoDialog::Newspaper(NewspaperEdition::MacStandard))
+            );
             let (seed, score) = if admitted {
                 (200_870_715, 29)
             } else {

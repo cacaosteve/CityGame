@@ -1,6 +1,151 @@
 use super::*;
 
 #[test]
+fn mac_budget_dialog_groups_tax_and_service_adjustments() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/mac-budget-groups.sc2", "Groups").unwrap();
+        city.kind = kind;
+        ensure_budget_misc_defaults_before_extension(&mut city);
+        for (index, rate) in [20, 0, 20].into_iter().enumerate() {
+            let offset = budget_row_misc_offset_for_city(&city, index, 0).unwrap();
+            city.set_budget_misc_u32_values(offset, &[1234, rate, 5678]);
+        }
+        for index in 0..INDUSTRY_COUNT {
+            city.set_mac_state_misc_u32_at(
+                industry_tax_misc_offset(index).unwrap(),
+                [0, 7, 20][index % 3],
+            );
+        }
+        for index in 0..BUDGET_SERVICE_COUNT {
+            let offset = budget_service_misc_offset_for_city(&city, index, 0).unwrap();
+            city.set_budget_misc_u32_values(offset, &[42, 100, 5678]);
+        }
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+
+        assert!(state.adjust_mac_budget_property_tax(1));
+        assert_eq!(
+            (0..3)
+                .map(|i| raw_tax_rate_for_city(&state.city, i))
+                .collect::<Vec<_>>(),
+            [20, 1, 20]
+        );
+        assert_eq!(
+            mac_industry_stats_for_city(&state.city).map(|r| r.tax),
+            [0, 7, 20, 0, 7, 20, 0, 7, 20, 0, 7]
+        );
+        assert!(state.adjust_mac_budget_property_tax(-1));
+        assert_eq!(
+            (0..3)
+                .map(|i| raw_tax_rate_for_city(&state.city, i))
+                .collect::<Vec<_>>(),
+            [19, 0, 7]
+        );
+        assert_eq!(
+            mac_industry_stats_for_city(&state.city).map(|r| r.tax),
+            [0, 6, 19, 0, 6, 19, 0, 6, 19, 0, 6]
+        );
+        for index in 0..3 {
+            let offset = budget_row_misc_offset_for_city(&state.city, index, 0).unwrap();
+            let row = state.city.budget_misc_u32_values(offset, 3);
+            assert_eq!((row[0], row[2]), (1234, 5678));
+        }
+
+        assert!(state.adjust_budget_service_funding_from_dialog(3, -5));
+        assert_eq!(
+            (0..11)
+                .map(|i| budget_service_funding_raw_for_city(&state.city, i))
+                .collect::<Vec<_>>(),
+            [100, 100, 100, 95, 95, 100, 100, 100, 100, 100, 100]
+        );
+        for (index, value) in [0u32, 3, 5, 99, 100, 210].into_iter().enumerate() {
+            let offset =
+                budget_service_funding_misc_offset_for_city(&state.city, index + 5).unwrap();
+            state.city.set_budget_misc_u32_values(offset, &[value]);
+        }
+        assert!(state.adjust_budget_service_funding_from_dialog(7, -5));
+        assert_eq!(
+            (5..11)
+                .map(|i| budget_service_funding_raw_for_city(&state.city, i) as i32)
+                .collect::<Vec<_>>(),
+            [0, -2, 0, 94, 95, 205]
+        );
+        for index in 0..11 {
+            let offset = budget_service_misc_offset_for_city(&state.city, index, 0).unwrap();
+            let row = state.city.budget_misc_u32_values(offset, 3);
+            assert_eq!((row[0], row[2]), (42, 5678));
+        }
+    }
+}
+
+#[test]
+fn win95_budget_dialog_keeps_service_adjustments_independent() {
+    let mut city = City::new_blank("/tmp/win-budget-groups.sc2", "Groups").unwrap();
+    for index in 0..BUDGET_SERVICE_COUNT {
+        set_budget_funding_for_test(&mut city, index, 100);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Win95;
+    assert!(state.adjust_budget_service_funding_from_dialog(3, -5));
+    assert_eq!(budget_service_funding_raw_for_city(&state.city, 3), 95);
+    assert_eq!(budget_service_funding_raw_for_city(&state.city, 4), 100);
+}
+
+#[test]
+fn mac_budget_dialog_preserves_zeroed_rows_during_edits() {
+    let mut city = City::new_blank("/tmp/mac-budget-zeroes.sc2", "Zeroes").unwrap();
+    city.kind = CityFileKind::MacCity;
+    for row in 0..16 {
+        let offset = budget_row_misc_offset_for_city(&city, row, 0).unwrap();
+        city.set_budget_misc_u32_values(offset, &[0; BUDGET_SERVICE_MISC_STRIDE]);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    assert!(!state.adjust_budget_service_funding_from_dialog(3, -5));
+    assert!(!state.adjust_mac_budget_property_tax(-1));
+    for row in 0..16 {
+        let offset = budget_row_misc_offset_for_city(&state.city, row, 0).unwrap();
+        assert_eq!(
+            state
+                .city
+                .budget_misc_u32_values(offset, BUDGET_SERVICE_MISC_STRIDE),
+            [0; BUDGET_SERVICE_MISC_STRIDE]
+        );
+    }
+}
+
+#[test]
+fn mac_zero_budget_rows_feed_native_consumers_without_default_fallback() {
+    for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
+        let mut city = City::new_blank("/tmp/mac-zero-budget.sc2", "Zeroes").unwrap();
+        city.kind = kind;
+        for row in [0, BUDGET_SERVICE_ROW_START + 5] {
+            let offset = budget_row_misc_offset_for_city(&city, row, 0).unwrap();
+            city.set_budget_misc_u32_values(offset, &[0; BUDGET_SERVICE_MISC_STRIDE]);
+        }
+        assert_eq!(mac_budget_tax_rate_raw_for_city(&city, 0), 0);
+        assert_eq!(mac_budget_service_funding_raw_for_city(&city, 5), 0);
+        // Win95's existing generated-row fallback remains separate.
+        assert_eq!(raw_tax_rate_for_city(&city, 0), DEFAULT_TAX_RATE);
+        assert_eq!(budget_service_funding_raw_for_city(&city, 5), 100);
+
+        city.set_building(20, 20, 0x1d);
+        city.set_zone(20, 20, 0);
+        let mut rng = MacToolboxRng::new(1);
+        mac_budget_decay_road_or_rail_at(&mut city, 20, 20, &mut rng);
+        let mut expected = MacToolboxRng::new(1);
+        expected.random_i16();
+        expected.random_i16();
+        assert_eq!(
+            rng.seed(),
+            expected.seed(),
+            "zero funding consumes upkeep and rubble draws"
+        );
+        assert!((1..=4).contains(&city.building_at(20, 20)));
+    }
+}
+
+#[test]
 fn day22_impeaches_mayor_when_funds_below_negative_100000() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     city.set_city_funds(-100_000);
@@ -107,6 +252,26 @@ fn mac_engine_speed_uses_four_native_selectors_and_persists_them() {
     let loaded = City::load(path).expect("reload Mac speed selector");
     assert_eq!(loaded.kind, CityFileKind::MacCity);
     assert_eq!(loaded.misc_u32_at(MISC_SPEED_OFFSET), Some(0xcafe_0001));
+}
+
+#[test]
+fn mac_january_review_requests_native_budget_song_from_shared_lfsr() {
+    for (seed, next, song) in [
+        (0x0000, 0x0000, 10_016),
+        (0x8000, 0x1bf5, 10_005),
+        (0x0001, 0x0002, 10_002),
+        (0x8001, 0x1bf7, 10_010),
+    ] {
+        let mut city = City::new_blank("/tmp/mac-budget-song.sc2", "test").unwrap();
+        city.kind = CityFileKind::MacCity;
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(seed);
+        state.open_january_budget_review();
+        assert_eq!(state.mac_app_lfsr.state(), next);
+        assert_eq!(state.pending_newspaper_music, Some(song));
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+    }
 }
 
 #[test]
@@ -1218,37 +1383,49 @@ fn mac_rci_rotating_gate_accepts_native_building_range_below_ae() {
 
 #[test]
 fn mac_rci_rotated_edge_places_native_marker_oriented_anchors() {
-    let cases = [
-        (0x10, [(-1, 1), (0, 1), (0, 0), (-1, 0)]),
-        (0x20, [(-1, 0), (0, 0), (0, -1), (-1, -1)]),
-        (0x40, [(0, 0), (1, 0), (1, -1), (0, -1)]),
+    // Captured from FUN_000378c6 for all four view rotations and markers.
+    let footprints = [
+        [(-1, 1), (0, 1), (0, 0), (-1, 0)],
+        [(-1, 0), (0, 0), (0, -1), (-1, -1)],
+        [(0, 0), (1, 0), (1, -1), (0, -1)],
+        [(0, 1), (1, 1), (1, 0), (0, 0)],
     ];
-    for (marker, offsets) in cases {
-        let mut city = City::new_blank(
-            format!("/tmp/sc2000-mac-rci-edge-marker-{marker:02x}.sc2"),
-            "MacEdgeMarker",
-        )
-        .expect("blank city");
-        city.set_zone(50, 50, marker | 2);
-        let mut rng = MacToolboxRng::new(17);
-        let mut expected_rng = MacToolboxRng::new(17);
-        for _ in 0..4 {
-            expected_rng.random_i16();
-        }
+    let native = [[3, 0, 1, 2], [2, 3, 0, 1], [1, 2, 3, 0], [0, 1, 2, 3]];
+    for (rotation, row) in native.into_iter().enumerate() {
+        for (marker_index, footprint) in row.into_iter().enumerate() {
+            let marker = 0x10u8 << marker_index;
+            let offsets = footprints[footprint];
+            let mut city = City::new_blank(
+                format!("/tmp/sc2000-mac-rci-edge-marker-{rotation}-{marker:02x}.sc2"),
+                "MacEdgeMarker",
+            )
+            .expect("blank city");
+            city.saved_rotation = rotation as u8;
+            city.set_zone(50, 50, marker | 2);
+            let mut rng = MacToolboxRng::new(17);
+            let mut expected_rng = MacToolboxRng::new(17);
+            let tiles = offsets.map(|_| 0x8a + (expected_rng.random_u16() % 2) as u8);
 
-        super::super::budget::mac_budget_place_generic_rotated_edge(&mut city, 50, 50, &mut rng);
+            super::super::budget::mac_budget_place_generic_rotated_edge(
+                &mut city, 50, 50, &mut rng,
+            );
 
-        let expected = offsets.map(|(dx, dy)| ((50isize + dx) as usize, (50isize + dy) as usize));
-        for x in 49..=51 {
-            for y in 49..=51 {
-                assert_eq!(
-                    city.building_at(x, y) != 0,
-                    expected.contains(&(x, y)),
-                    "marker {marker:#04x} at ({x},{y})",
-                );
+            let expected =
+                offsets.map(|(dx, dy)| ((50isize + dx) as usize, (50isize + dy) as usize));
+            for x in 49..=51 {
+                for y in 49..=51 {
+                    assert_eq!(
+                        city.building_at(x, y) != 0,
+                        expected.contains(&(x, y)),
+                        "rotation {rotation}, marker {marker:#04x} at ({x},{y})",
+                    );
+                    if let Some(i) = expected.iter().position(|&point| point == (x, y)) {
+                        assert_eq!(city.building_at(x, y), tiles[i]);
+                    }
+                }
             }
+            assert_eq!(rng.seed(), expected_rng.seed());
         }
-        assert_eq!(rng.seed(), expected_rng.seed());
     }
 }
 
@@ -4644,6 +4821,7 @@ fn january_year_roll_passes_raw_saved_service_funding() {
         set_budget_funding_for_test(&mut city, budget_index, 120);
     }
 
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
@@ -6405,7 +6583,9 @@ fn mac68k_day21_uses_mac_service_history_without_pe_publishers() {
 
     assert_eq!(
         state.city.misc_i32_values(RCI_DEMAND_MISC_OFFSET, 3),
-        [-489, -378, 2000],
+        // The blank city's Mac budget rows contain a real zero tax rate;
+        // CODE 8 reads that value instead of the Win95 default of 7%.
+        [-289, -178, 2000],
         "Mac publishes its own demand even when PE publishers are disabled"
     );
     assert_eq!(state.city.pe_w_city_garbage, 444);
@@ -7528,7 +7708,7 @@ fn mac68k_day20_clears_water_work_bit_and_keeps_unpiped_tower_service() {
 }
 
 #[test]
-fn mac_annual_arcology_uses_saved_xbit_water_result_for_population_and_map() {
+fn mac_annual_arcology_draws_lfsr_without_mutating_water_map() {
     let mut city = City::new_blank("/tmp/sc2000-mac-arco-water-worker.sc2", "MacArcoWater")
         .expect("blank city");
     city.kind = CityFileKind::MacCity;
@@ -7570,17 +7750,22 @@ fn mac_annual_arcology_uses_saved_xbit_water_result_for_population_and_map() {
     city.set_microsim_stat0(second, 5);
     city.set_microsim_stat2(second, 200);
 
+    city.set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
+    let mut expected_lfsr = state.mac_app_lfsr;
+    expected_lfsr.low_six_bits();
+    expected_lfsr.low_six_bits();
     state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
     let served_arcology = state.city.tile_bits_at(41, 40).expect("served arcology");
     let geometry_only_arcology = state.city.tile_bits_at(61, 60).expect("other arcology");
-    assert!(served_arcology.piped() && served_arcology.watered());
+    assert!(served_arcology.piped() && !served_arcology.watered());
     assert!(!geometry_only_arcology.piped() && !geometry_only_arcology.watered());
-    assert_eq!(state.city.microsim_at(first).unwrap().stat2, 227);
-    assert_eq!(state.city.microsim_at(second).unwrap().stat2, 329);
-    assert_eq!(state.city.mac_state_misc_u32_at(1032 * 4), Some(556));
+    assert_eq!(state.mac_app_lfsr.state(), expected_lfsr.state());
+    let total = u32::from(state.city.microsim_at(first).unwrap().stat2)
+        + u32::from(state.city.microsim_at(second).unwrap().stat2);
+    assert_eq!(state.city.mac_state_misc_u32_at(1032 * 4), Some(total));
 }
 
 #[test]
@@ -7650,6 +7835,7 @@ fn mac_january_xmic_caller_preserves_raw_funding_dwords() {
         .expect("college XMIC row");
     let college = usize::from(college - MIN_SIM_TEXT_ENTRIES);
 
+    city.set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
@@ -8592,18 +8778,16 @@ fn pe_new_city_budget_reset_seeds_first_month_service_accrual() {
         let values = state
             .city
             .budget_misc_u32_values(offset, BUDGET_SERVICE_MISC_STRIDE);
-        assert_eq!(
-            values[BUDGET_SERVICE_CURRENT_FIELD], value,
-            "row {row} current"
-        );
+        assert_eq!(values[BUDGET_SERVICE_CURRENT_FIELD], 0, "row {row} current");
         assert_eq!(
             values[BUDGET_SERVICE_FUNDING_FIELD], value,
             "row {row} funding"
         );
+        assert_eq!(values[4], value, "row {row} initial month funding");
     }
 
-    // The PE's first monthly pass snapshots the initialized service currents
-    // before rebuilding them from the (still empty) map census.
+    // The first monthly pass snapshots the zero current before rebuilding it
+    // from the (still empty) map census.
     state.refresh_monthly_budget_rows(PopulationStats::default());
     let (history_current, history_funding) = pe_budget_month_history_fields(0);
     for row in BUDGET_SERVICE_ROW_START..BUDGET_TOTAL_COUNT {
@@ -8612,15 +8796,37 @@ fn pe_new_city_budget_reset_seeds_first_month_service_accrual() {
         let values = state
             .city
             .budget_misc_u32_values(offset, BUDGET_SERVICE_MISC_STRIDE);
-        assert_eq!(values[history_current], 100, "row {row} month current");
+        assert_eq!(values[history_current], 0, "row {row} month current");
         assert_eq!(values[history_funding], 100, "row {row} month funding");
         assert_eq!(
-            values[BUDGET_SERVICE_YEAR_TO_DATE_FIELD], 10_000,
+            values[BUDGET_SERVICE_YEAR_TO_DATE_FIELD], 0,
             "row {row} YTD"
         );
         assert_eq!(
             values[BUDGET_SERVICE_CURRENT_FIELD], 0,
             "row {row} rebuilt current"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires private original Win95 budget-reset fixture"]
+fn pe_new_city_budget_reset_matches_original_row_book() {
+    let path = std::env::var_os("CITYGAME_WIN95_BUDGET_RESET").unwrap();
+    let rows: Vec<Vec<u32>> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(rows.len(), BUDGET_TOTAL_COUNT);
+    let mut city = City::new_blank("/tmp/pe-budget-reset.sc2", "Budget").unwrap();
+    for row in 0..BUDGET_TOTAL_COUNT {
+        let offset = budget_row_misc_offset_for_city(&city, row, 0).unwrap();
+        city.set_budget_misc_u32_values(offset, &[0x12345678; BUDGET_SERVICE_MISC_STRIDE]);
+    }
+    initialize_new_city_budget_rows(&mut city, EngineFidelity::Win95);
+    for (row, expected) in rows.iter().enumerate() {
+        let offset = budget_row_misc_offset_for_city(&city, row, 0).unwrap();
+        assert_eq!(
+            city.budget_misc_u32_values(offset, BUDGET_SERVICE_MISC_STRIDE),
+            *expected,
+            "row {row}"
         );
     }
 }
@@ -9901,6 +10107,7 @@ fn pe_service_coverage_uses_raw_funding_and_signed_prison_word() {
 #[test]
 fn mac_service_coverage_uses_saved_anchor_and_same_tile_power_bit() {
     let mut city = City::new_blank("/tmp/sc2000-mac-service.sc2", "test").expect("blank city");
+    initialize_new_city_budget_rows(&mut city, EngineFidelity::Mac68k);
     city.set_building(24, 20, 210);
     city.set_zone(24, 20, 0x81);
     let center = density_map_index(24, 20);
@@ -10171,6 +10378,7 @@ fn mac_phase0_prison_gate_feeds_phase2_police_coverage() {
         "zero gate gives five times funding divided by two"
     );
 
+    city.set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     // At the December-to-January rollover, phase 0 runs the CODE 3 XMIC
@@ -10398,6 +10606,7 @@ fn assert_mac_native_phase1_to_phase2_join(
 fn mac_service_coverage_preserves_asymmetric_row_table_axes() {
     let mut city =
         City::new_blank("/tmp/sc2000-mac-service-asymmetric.sc2", "test").expect("blank city");
+    initialize_new_city_budget_rows(&mut city, EngineFidelity::Mac68k);
     // Keep the X and Y coordinates distinct: the native Mac row table indexes
     // its first coordinate as the plane row and its second as the byte offset.
     city.set_building(44, 20, 210);
@@ -10418,6 +10627,7 @@ fn mac_service_coverage_preserves_asymmetric_row_table_axes() {
 fn mac_service_coverage_uses_one_rotated_anchor_even_for_partial_footprints() {
     let mut reference =
         City::new_blank("/tmp/sc2000-mac-service-anchor.sc2", "test").expect("blank city");
+    initialize_new_city_budget_rows(&mut reference, EngineFidelity::Mac68k);
     reference.set_building(40, 40, 210);
     reference.set_zone(40, 40, 0x81);
     let expected = super::super::density::live_mac_service_coverage_map(
@@ -10433,6 +10643,7 @@ fn mac_service_coverage_uses_one_rotated_anchor_even_for_partial_footprints() {
     for (anchor_x, anchor_y) in [(40, 40), (42, 40), (40, 42), (42, 42)] {
         let mut city =
             City::new_blank("/tmp/sc2000-mac-service-rotated.sc2", "test").expect("blank city");
+        initialize_new_city_budget_rows(&mut city, EngineFidelity::Mac68k);
         for y in 40..43 {
             for x in 40..43 {
                 city.set_building(x, y, 210);
@@ -11531,6 +11742,7 @@ fn budget_year_rollover_settles_saved_year_to_date_into_city_funds() {
         city.set_misc_u32_at(budget_row_misc_offset(row, current_field).unwrap(), current);
         city.set_misc_u32_at(budget_row_misc_offset(row, funding_field).unwrap(), funding);
     }
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.game_clock = GameClock::new(1901, 1);
 
@@ -11594,6 +11806,126 @@ fn win95_budget_settlement_wraps_city_funds_like_pe_add() {
         state.city.city_funds(),
         (i32::MAX - 5).wrapping_add(120),
         "PE adds the settled tax amount to the funds DWORD with 32-bit wrap"
+    );
+}
+
+#[test]
+fn mac_budget_settlement_matches_captured_2014_row_rounding() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-mac-budget-2014-settlement.sc2", "MacBudget")
+            .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(-5_032);
+    let raw_accumulators = [
+        202_370, 37_800, 206_850, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
+    ];
+    for (row, raw) in raw_accumulators.into_iter().enumerate() {
+        let offset = budget_row_misc_offset_for_city(
+            &city,
+            row,
+            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
+        )
+        .expect("Mac budget accumulator offset");
+        city.set_budget_misc_u32_values(offset, &[raw]);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+
+    state.apply_budget_year_end_settlement();
+
+    assert_eq!(
+        state.city.city_funds(),
+        -4_785,
+        "the captured row-by-row settlements total +247, one less than the panel's +248 projection"
+    );
+}
+
+#[test]
+fn mac_budget_settlement_matches_captured_2015_row_rounding() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-mac-budget-2015-settlement.sc2", "MacBudget")
+            .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(-4_785);
+    let raw_accumulators = [
+        203_630, 37_800, 217_000, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
+    ];
+    for (row, raw) in raw_accumulators.into_iter().enumerate() {
+        let offset = budget_row_misc_offset_for_city(
+            &city,
+            row,
+            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
+        )
+        .expect("Mac budget accumulator offset");
+        city.set_budget_misc_u32_values(offset, &[raw]);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+
+    state.apply_budget_year_end_settlement();
+
+    assert_eq!(
+        state.city.city_funds(),
+        -4_524,
+        "the captured row-by-row settlements total +261, one more than the panel's +260 projection"
+    );
+}
+
+#[test]
+fn mac_budget_settlement_matches_captured_2016_rows() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-mac-budget-2016-settlement.sc2", "MacBudget")
+            .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(-4_524);
+    let raw_accumulators = [
+        209_160, 37_800, 212_380, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
+    ];
+    for (row, raw) in raw_accumulators.into_iter().enumerate() {
+        let offset = budget_row_misc_offset_for_city(
+            &city,
+            row,
+            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
+        )
+        .expect("Mac budget accumulator offset");
+        city.set_budget_misc_u32_values(offset, &[raw]);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+
+    state.apply_budget_year_end_settlement();
+
+    assert_eq!(state.city.city_funds(), -4_263);
+}
+
+#[test]
+fn mac_budget_settlement_matches_captured_2017_row_rounding() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-mac-budget-2017-settlement.sc2", "MacBudget")
+            .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_city_funds(-4_263);
+    let raw_accumulators = [
+        208_950, 37_800, 180_110, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
+    ];
+    for (row, raw) in raw_accumulators.into_iter().enumerate() {
+        let offset = budget_row_misc_offset_for_city(
+            &city,
+            row,
+            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
+        )
+        .expect("Mac budget accumulator offset");
+        city.set_budget_misc_u32_values(offset, &[raw]);
+    }
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+
+    state.apply_budget_year_end_settlement();
+
+    assert_eq!(
+        state.city.city_funds(),
+        -4_037,
+        "row-by-row settlement is +226 while the panel summary projects +225"
     );
 }
 
@@ -11685,6 +12017,7 @@ fn simulation_day0_january_opens_budget_when_auto_budget_is_off() {
         month: 12,
     });
     assert!(!auto_budget_enabled_for_city(&city));
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.traffic.set_speed(GameSpeed::Llama);
     state.game_clock = GameClock::new_with_day(1900, 12, 24);
@@ -11706,6 +12039,7 @@ fn simulation_january_month_keeps_budget_status_line() {
         month: 12,
     });
     assert!(!auto_budget_enabled_for_city(&city));
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.traffic.set_speed(GameSpeed::Llama);
     state.game_clock = GameClock::new(1901, 1);
@@ -11735,17 +12069,54 @@ fn mac_native_auto_budget_turns_off_after_negative_annual_settlement() {
             true,
         ));
 
+        city.set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.traffic.set_speed(GameSpeed::Llama);
+        state.game_clock = GameClock::new(1901, 1);
         state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
         assert_eq!(state.city.city_funds(), -1);
         assert!(!mac_auto_budget_enabled_for_city(&state.city));
         assert!(!state.menu_checks.auto_budget);
-        assert_eq!(state.city_info_dialog, None);
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::FiscalCrisis));
         assert_eq!(state.traffic.speed(), GameSpeed::Llama);
-        assert_eq!(state.query_line, "Fiscal crisis: Auto-Budget turned off");
+        let held_book = state.city.budget_misc_u32_at(expense);
+        let waits = state.begin_mac_frame_actor_phase(Duration::from_secs(29));
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+                .days,
+            0
+        );
+        assert_eq!(state.city.budget_misc_u32_at(expense), held_book);
+        // A press dismisses the notice, but native waits for button release.
+        let notice = state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap();
+        notice.dismissed = true;
+        notice.button_down = true;
+        let waits = state.begin_mac_frame_actor_phase(Duration::from_secs(2));
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+                .days,
+            0
+        );
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::FiscalCrisis));
+        state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .as_mut()
+            .unwrap()
+            .button_down = false;
+        let waits = state.begin_mac_frame_actor_phase(Duration::ZERO);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+                .days,
+            1
+        );
+        assert_eq!(state.city_info_dialog, None);
+        assert!(state.mac_loop_scheduler.fiscal_notice.is_none());
     }
 }
 
@@ -12156,6 +12527,7 @@ fn january_year_roll_attitude_tax_bases_use_ready_p_zone_pops() {
     );
     city.set_pe_zone_pops([50, 20, 10]);
     city.set_traffic_density(10, 10, 100);
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
 
@@ -19416,6 +19788,7 @@ fn pe_fiscal_notice_gates_follow_native_january_return() {
         city.set_city_funds(funds);
         city.set_saved_date_and_day(CityDate { year: 1900, month }, 24);
         set_city_auto_budget_enabled(&mut city, enabled);
+        city.set_misc_u32_at(MISC_YEAR_END_OFFSET, u32::from(month == 12));
         let mut state = test_state(city);
         state.no_disasters_enabled = true;
         state.game_clock = GameClock::new_with_day(1900, month, 24);
@@ -19467,6 +19840,7 @@ fn pe_fiscal_notice_live_january_waits_after_settlement_without_pausing_speed() 
         } else {
             set_mac_auto_budget_enabled(&mut city, true);
         }
+        city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
         let mut state = test_state(city);
         state.no_disasters_enabled = true;
         state.game_clock = GameClock::new_with_day(1900, 12, 24);
@@ -20303,6 +20677,123 @@ fn mac_phase21_pre_weather_event_prefix_consumes_native_draw_count() {
         13,
         "a nonzero stadium census adds exactly one mask-choice draw"
     );
+}
+
+#[test]
+fn mac_phase21_story_gates_insert_native_selectors_on_both_layouts() {
+    for path in ["mac-phase21-stories.city", "mac-phase21-stories.sc2"] {
+        let mut city = blank_city_layout_fixture(path, "Mac story gates");
+        for (row, value) in [(4, 80), (5, 90), (7, 100)] {
+            city.set_chunk_u32_values("XGRP", row * 52 * 4, &[value]);
+        }
+        city.set_mac_state_misc_u32_at(0x0fa4, 7);
+        city.set_mac_state_misc_u32_at(0x4c, 83);
+        city.set_mac_state_misc_u32_at(0x48, 58);
+        let mut words = [1, 10, 0, 10, 0, 10, 0, 0, 0, 0, 59, 7].into_iter();
+        super::super::rci::mac_consume_phase21_pre_weather_event_draws(&mut city, 1994, || {
+            words.next().expect("native gate draw")
+        });
+        assert_eq!(words.next(), None);
+        let mut selectors = (0..7)
+            .map(|i| city.mac_story_record(i)[0])
+            .collect::<Vec<_>>();
+        selectors.sort_unstable();
+        assert_eq!(selectors, [11, 16, 17, 18, 20, 21, 64]);
+    }
+}
+
+#[test]
+fn mac_phase21_story_gate_calls_match_native_boundary_replays() {
+    // Selector/parameter calls from the original CODE 8 instruction replay,
+    // before its technology gate; the replay stubs only the queue callee.
+    let cases: &[(
+        [u32; 3],
+        u32,
+        u32,
+        u32,
+        bool,
+        u32,
+        u32,
+        &[u16],
+        &[(u16, u8)],
+    )] = &[
+        (
+            [0, 0, 0],
+            0,
+            0,
+            0,
+            false,
+            0,
+            3,
+            &[0, 0, 0, 127, 15, 127, 15, 127, 15, 63, 3, 79, 59],
+            &[
+                (6, 0),
+                (7, 3),
+                (62, 0),
+                (63, 0),
+                (61, 0),
+                (66, 0),
+                (19, 0),
+                (20, 0),
+            ],
+        ),
+        (
+            [0, 16, 127],
+            u32::MAX,
+            80,
+            60,
+            true,
+            8,
+            2,
+            &[5, 3, 0, 0, 15, 15, 126, 15, 0, 0, 0, 0],
+            &[(15, 0), (8, 3), (18, 0), (16, 0), (66, 0)],
+        ),
+        (
+            [127, 128, 1],
+            1,
+            159,
+            119,
+            false,
+            0,
+            1,
+            &[3, 127, 15, 127, 15, 1, 2, 1, 1, 79, 58],
+            &[(13, 0), (18, 0), (61, 0), (65, 0)],
+        ),
+    ];
+    for (scores, unemployment, education, life, stadium, mask, trend, words, calls) in cases {
+        let mut city = blank_city_layout_fixture("mac-phase21-native-gates.city", "Gate replay");
+        for (row, value) in [4, 5, 7].into_iter().zip(scores) {
+            city.set_chunk_u32_values("XGRP", row * 52 * 4, &[*value]);
+        }
+        for (offset, value) in [
+            (0xfa4, *unemployment),
+            (0x4c, *education),
+            (0x48, *life),
+            (0x1028, *mask),
+            (0x5c, *trend),
+        ] {
+            city.set_mac_state_misc_u32_at(offset, value);
+        }
+        if *stadium {
+            city.set_building(10, 10, 0xd7);
+        }
+        let mut expected = city.clone();
+        for &(selector, parameter) in *calls {
+            expected.queue_mac_newspaper_story(selector, parameter);
+        }
+        let mut draws = words.iter().copied().chain([7]);
+        super::super::rci::mac_consume_phase21_pre_weather_event_draws(&mut city, 1994, || {
+            draws.next().expect("native gate draw")
+        });
+        assert_eq!(draws.next(), None);
+        for index in 0..7 {
+            assert_eq!(
+                city.mac_story_record(index),
+                expected.mac_story_record(index),
+                "row {index}"
+            );
+        }
+    }
 }
 
 #[test]

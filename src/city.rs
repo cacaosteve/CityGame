@@ -102,6 +102,8 @@ use misc_state::{
 #[cfg(test)]
 use queries::density_sum;
 mod save;
+pub(crate) mod mac_roman;
+pub(crate) mod win1252;
 mod yearly_microsim_schedule;
 mod yearly_microsims;
 use economy::*;
@@ -109,7 +111,7 @@ use economy::*;
 pub use economy::{pe_national_prosperity, pe_national_trend_from_prosperity};
 use file_format::{
     CITYGAME_EXTENSION_CHUNK, city_rle_decode, decode_citygame_extension,
-    encode_citygame_extension, upsert_chunk, upsert_chunk_for_kind,
+    encode_citygame_extension, encode_scdh_file_for_kind, upsert_chunk, upsert_chunk_for_kind,
 };
 #[allow(unused_imports)]
 pub use file_format::{SAVE_CHUNK_ORDER, chunk_tags_in_file, sc2_rle_encode};
@@ -117,6 +119,8 @@ pub use file_format::{
     detect_city_kind, encode_scdh_file, mac_rle_decode, mac_rle_encode, parse_scdh_chunks,
     sc2_rle_decode,
 };
+pub(crate) use file_format::{CityReadEof, NotIffCityFile, WrongIffCityType};
+pub(crate) use construction::CityOpenIoError;
 use layer_codec::{
     CITYGAME_FIRE_COVERAGE_CHUNK, CITYGAME_FIRE_COVERAGE_VERSION, CITYGAME_MAP_PLANES_CHUNK,
     CITYGAME_MAP_PLANES_VERSION, cnam_text, decode_altm, decode_city_date, decode_city_view,
@@ -567,6 +571,8 @@ pub enum AppMode {
 #[derive(Debug, Clone)]
 pub struct City {
     pub path: PathBuf,
+    /// A blank city has a proposed path but has not adopted a saved file.
+    has_backing_file: bool,
     pub kind: CityFileKind,
     pub name: String,
     pub chunks: Vec<CityChunk>,
@@ -582,6 +588,9 @@ pub struct City {
     zones: Option<Vec<ZoneFlags>>,
     text_overlays: Option<Vec<u8>>,
     labels: Option<Vec<String>>,
+    /// Win95 resident C-string buffers, including bytes past the terminator.
+    pe_label_backing: Option<Vec<u8>>,
+    mac_label_backing: Option<Vec<u8>>,
     microsims: Option<Vec<MicrosimRecord>>,
     tile_bits: Option<Vec<TileBits>>,
     traffic_density: Option<Vec<u8>>,
@@ -686,6 +695,8 @@ pub struct City {
     pub(crate) mac_road_neighbor_link_count_runtime: Option<u16>,
     /// Mac CODE 4 `ffffdc74` command-strip latch when PE owns MISC `+0x78`.
     pub(crate) mac_cross_layout_saved_civic_latch: Option<u32>,
+    /// Mac annual settlement byte when PE owns MISC +0xe3c.
+    pub(crate) mac_cross_layout_annual_flag: Option<u8>,
     /// Mac saved XBLD census when running a Windows-layout city.
     pub(crate) mac_xbld_census_runtime: [u16; 256],
     /// True when this Win-layout city restored the Mac-owned state snapshot
@@ -745,6 +756,9 @@ pub struct City {
     mac_monthly_arrest_total: u16,
     /// Mac process approval word. The session carries it across city changes.
     mac_mayor_approval: u16,
+    /// Mac process-global, descending opinion poll buckets and their source indices.
+    mac_opinion_counts: [u16; 7],
+    mac_opinion_order: [u16; 7],
     /// Mac process background flag at ffff8c7e. Excluded from saves.
     mac_newspaper_suppressed: bool,
     /// Mac police gate for Win95-layout cities, whose MISC slot belongs to PE.
@@ -792,6 +806,10 @@ pub struct City {
     /// OpenSC2K / PE damage-class for disaster-end newspaper param (`0x4e8848` weights).
     /// `-1` means unset (OpenSC2K `disaster_damage_class`).
     pe_disaster_damage_class: i16,
+    /// Mac CODE 10 transient affected-class WORD at A5-0x3126.
+    mac_disaster_damage_class: i16,
+    /// Mac story rows on a Win-layout city must not overwrite PE-owned MISC.
+    mac_story_runtime: Option<Box<[u32; 54]>>,
     /// Win95 `0x4c9ee8` `dwDisasterActive` (MISC `0x1048`); hydrate `0x431c3b`, persist `0x4342f2`.
     pe_dw_disaster_active: u32,
     /// Win95 `0x4c94c0` `dwCityHasOcean` (MISC `0x0e44`); hydrate `0x43189a`, persist `0x433ed8`.
@@ -828,6 +846,9 @@ pub struct City {
     pe_life_expectancy: u8,
     /// Win95 `0x4E9904` approval score latched by the opinion poll.
     pe_mayor_approval: u16,
+    /// Sorted poll counts and their issue IDs, native globals 0x4c9400/0x4c9410.
+    pe_opinion_counts: [u16; 7],
+    pe_opinion_order: [u16; 7],
     /// Win95 `0x4CA5F8` unemployment percent; app refreshes before January microsims.
     pe_unemployment_percent: u32,
     /// Win95 `0x4CC4B4` city EQ average / opinion-poll input, stored as a dword.

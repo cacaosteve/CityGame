@@ -171,7 +171,8 @@ impl MenubarUi {
         dark: bool,
         solids: &mut Vec<UiSolid>,
     ) {
-        let (panel_w, panel_h, _) = dropdown_metrics(menu, text_scale, scale);
+        let items = menu_model::visible_items(menu, checks);
+        let (panel_w, panel_h, _) = dropdown_metrics(&items, text_scale, scale);
         let y0 = bar_h;
         solids.push(UiSolid {
             x: origin_x,
@@ -226,7 +227,7 @@ impl MenubarUi {
 
         let row_h = row_height(text_scale, scale);
         let mut y = y0 + 2.0 * scale;
-        for item in menu.items {
+        for item in &items {
             match item {
                 MenuEntry::Separator => {
                     solids.push(UiSolid {
@@ -350,7 +351,8 @@ impl MenubarUi {
         if let Some(index) = self.open {
             let menu = &menu_model::menus()[index];
             let (tab_x0, _) = tabs[index];
-            let (panel_w, panel_h, rows) = dropdown_metrics(menu, text_scale, scale);
+            let items = menu_model::visible_items(menu, checks);
+            let (panel_w, panel_h, rows) = dropdown_metrics(&items, text_scale, scale);
             let y0 = bar_y + bar_h;
             let in_panel = screen.x >= tab_x0
                 && screen.x < tab_x0 + panel_w
@@ -362,7 +364,7 @@ impl MenubarUi {
             }
             let row_h = row_height(text_scale, scale);
             let mut y = y0 + 2.0 * scale;
-            for (entry, _) in menu.items.iter().zip(rows.iter()) {
+            for (entry, _) in items.iter().zip(rows.iter()) {
                 match entry {
                     MenuEntry::Separator => {
                         y += row_h * 0.55;
@@ -405,7 +407,7 @@ fn tab_layout(text_scale: f32, scale: f32) -> Vec<(f32, f32)> {
 }
 
 fn dropdown_metrics(
-    menu: &menu_model::MenuDef,
+    items: &[MenuEntry],
     text_scale: f32,
     scale: f32,
 ) -> (f32, f32, Vec<()>) {
@@ -414,7 +416,7 @@ fn dropdown_metrics(
     let mut max_accel = 0.0f32;
     let mut height = 4.0 * scale;
     let mut rows = Vec::new();
-    for item in menu.items {
+    for item in items {
         match item {
             MenuEntry::Separator => {
                 height += row_h * 0.55;
@@ -446,7 +448,7 @@ mod tests {
             return;
         }
         let mut ui = MenubarUi::new();
-        let checks = MenuCheckState::default();
+        let checks = MenuCheckState { mac_fidelity: true, ..MenuCheckState::default() };
         let scale = 1.0;
         assert_eq!(
             ui.handle_click(Vec2::new(20.0, 8.0), (800, 600), scale, checks),
@@ -459,6 +461,27 @@ mod tests {
     }
 
     #[test]
+    fn win95_file_rows_follow_original_menu_and_hit_targets() {
+        use crate::menu_model::*;
+        let menu = menus().iter().find(|m| m.title == "File").unwrap();
+        let win = visible_items(menu, MenuCheckState::default());
+        let ids: Vec<_> = win.iter().map(|item| match item {
+            MenuEntry::Command { id, .. } => Some(*id),
+            MenuEntry::Separator => None,
+        }).collect();
+        assert_eq!(ids, vec![Some(CMD_OPEN_CITY), Some(CMD_NEW_CITY), Some(CMD_TOGGLE_EDIT_MAP), Some(CMD_LOAD_SCENARIO), None, Some(CMD_LOAD_TILE_SET), None, Some(CMD_SAVE_CITY), Some(CMD_SAVE_CITY_AS), None, Some(CMD_QUIT)]);
+        assert!(matches!(win.last(), Some(MenuEntry::Command { label: "Exit", accel: Some("Ctrl+X"), .. })));
+        let mac = MenuCheckState { mac_fidelity: true, ..MenuCheckState::default() };
+        assert_eq!(visible_items(menu, mac), menu.items);
+        if MenubarUi::is_enabled() {
+            let mut ui = MenubarUi::new();
+            let checks = MenuCheckState::default();
+            assert_eq!(ui.handle_click(Vec2::new(20.0, 8.0), (800, 600), 1.0, checks), MenubarClick::Consumed);
+            assert_eq!(ui.handle_click(Vec2::new(30.0, 30.0), (800, 600), 1.0, checks), MenubarClick::Command(CMD_OPEN_CITY));
+        }
+    }
+
+    #[test]
     fn menu_check_state_speed_and_disaster_gates() {
         let mut checks = MenuCheckState::default();
         checks.speed = GameSpeed::Cheetah;
@@ -467,7 +490,69 @@ mod tests {
         checks.no_disasters = true;
         assert!(!checks.item_enabled(crate::menu_model::CMD_START_FIRE));
         assert!(checks.item_enabled(crate::menu_model::CMD_TOGGLE_NO_DISASTERS));
+        checks.mac_fidelity = true;
+        for command in [
+            crate::menu_model::CMD_START_FIRE,
+            crate::menu_model::CMD_START_FLOOD,
+            crate::menu_model::CMD_START_AIR_CRASH,
+            crate::menu_model::CMD_START_TORNADO,
+            crate::menu_model::CMD_START_EARTHQUAKE,
+            crate::menu_model::CMD_START_MONSTER,
+            crate::menu_model::CMD_START_HURRICANE,
+            crate::menu_model::CMD_START_RIOTERS,
+        ] {
+            assert!(checks.item_enabled(command));
+        }
         checks.edit_map = true;
         assert!(!checks.menu_enabled("Speed"));
+    }
+
+    #[test]
+    fn mac_title_screen_disables_only_city_runtime_menus() {
+        let title = MenuCheckState {
+            mac_fidelity: true,
+            mac_city_active: false,
+            ..MenuCheckState::default()
+        };
+        for menu in ["Speed", "Disasters", "Windows", "Newspaper"] {
+            assert!(!title.menu_enabled(menu), "{menu}");
+        }
+        for menu in ["File", "Options", "View", "Help"] {
+            assert!(title.menu_enabled(menu), "{menu}");
+        }
+
+        let city = MenuCheckState {
+            mac_fidelity: true,
+            mac_city_active: true,
+            ..MenuCheckState::default()
+        };
+        for menu in ["Speed", "Disasters", "Windows", "Newspaper"] {
+            assert!(city.menu_enabled(menu), "{menu}");
+        }
+
+        // The Mac menu-resource rule must not alter the Win95 menu set.
+        let win95 = MenuCheckState::default();
+        for menu in ["Speed", "Disasters", "Windows", "Newspaper"] {
+            assert!(win95.menu_enabled(menu), "{menu}");
+        }
+    }
+
+    #[test]
+    fn mac_newspaper_items_follow_saved_order_and_selection() {
+        let menu = menu_model::menus().iter().find(|m| m.title == "Newspaper").unwrap();
+        let mut checks = MenuCheckState::default();
+        assert_eq!(menu_model::visible_items(menu, checks), menu.items);
+        checks.mac_newspaper = true;
+        checks.mac_paper_count = 2;
+        checks.mac_paper_names = [0, 5, 2, 1, 3, 4];
+        checks.mac_paper_selected = 1;
+        let items = menu_model::visible_items(menu, checks);
+        assert_eq!(items.len(), 5);
+        assert!(matches!(items[3], MenuEntry::Command { id: 140, label: "Picayune", .. }));
+        assert!(matches!(items[4], MenuEntry::Command { id: 141, label: "Chronicle", .. }));
+        assert!(!checks.item_checked(140));
+        assert!(checks.item_checked(141));
+        checks.edit_map = true;
+        assert!(!checks.menu_enabled("Newspaper"));
     }
 }

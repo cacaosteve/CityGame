@@ -17,12 +17,62 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Win95CloseAction {
+    Quit,
+    LoadCity,
+    NewCity,
+    EditMap,
+    OpenPath(PathBuf),
+    OpenScenarioPath(PathBuf),
+    OpenExternalPath(PathBuf),
+}
+
+impl Win95CloseAction {
+    pub(super) fn command(self) -> AppCommand {
+        match self {
+            Self::Quit => AppCommand::Quit,
+            Self::LoadCity => AppCommand::OpenCityDialog,
+            Self::NewCity => AppCommand::NewCity,
+            Self::EditMap => AppCommand::ToggleEditMap,
+            Self::OpenPath(path) => AppCommand::OpenPath(path),
+            Self::OpenScenarioPath(path) => AppCommand::OpenScenarioPath(path),
+            Self::OpenExternalPath(path) => AppCommand::OpenTitlePath(path),
+        }
+    }
+
+    pub(super) fn from_command(command: &AppCommand) -> Option<Self> {
+        match command {
+            AppCommand::Quit => Some(Self::Quit),
+            AppCommand::OpenCityDialog => Some(Self::LoadCity),
+            AppCommand::NewCity => Some(Self::NewCity),
+            AppCommand::ToggleEditMap => Some(Self::EditMap),
+            AppCommand::OpenPath(path) => Some(Self::OpenPath(path.clone())),
+            AppCommand::OpenScenarioPath(path) => Some(Self::OpenScenarioPath(path.clone())),
+            AppCommand::OpenTitlePath(path) => Some(Self::OpenExternalPath(path.clone())),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Win95FileDialog {
+    City,
+    Scenario,
+    SaveAs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AppCommand {
     OpenCityDialog,
     OpenScenarioDialog,
+    Win95FileDialogResult(Win95FileDialog, Option<PathBuf>),
     OpenPath(PathBuf),
+    OpenConfirmedCityPath(PathBuf),
+    OpenScenarioPath(PathBuf),
+    OpenTitleScenarioPath(PathBuf),
     StartMacScenario(PathBuf),
     OpenTitlePath(PathBuf),
+    OpenTitleDialogPath(PathBuf),
     SaveCity,
     SaveCityAs,
     SaveToPath(PathBuf),
@@ -41,6 +91,7 @@ pub(super) enum AppCommand {
         start_flow: title_screen::NewCityStartFlow,
     },
     ToggleEditMap,
+    FinishWin95Charter,
     ReloadAssets,
     OpenTileSetDialog,
     LoadTileSet(PathBuf),
@@ -81,10 +132,13 @@ pub(super) enum AppCommand {
     InspectHoverTile,
     ReturnToTitle,
     OpenCityInfo(CityInfoDialog),
+    OpenMacPaper(u8),
     SetSpeed(GameSpeed),
     SetTool(EditTool),
     RotateView(i32),
     Quit,
+    CloseSaveDialogResult(Option<PathBuf>),
+    ContinueAfterClose(Win95CloseAction),
 }
 
 static COMMAND_QUEUE: OnceLock<Mutex<VecDeque<AppCommand>>> = OnceLock::new();
@@ -125,6 +179,28 @@ pub(super) fn windows_menu_shortcut(
         _ => return None,
     };
     Some(AppCommand::OpenCityInfo(dialog))
+}
+
+/// Win95 File menu accelerators that differ from the portable map keys.
+pub(super) fn win95_file_menu_shortcut(
+    key: Keycode,
+    modifiers: sdl3::keyboard::Mod,
+) -> Option<AppCommand> {
+    use sdl3::keyboard::Mod;
+    if !modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+        || modifiers.intersects(
+            Mod::LSHIFTMOD | Mod::RSHIFTMOD | Mod::LALTMOD | Mod::RALTMOD | Mod::LGUIMOD | Mod::RGUIMOD,
+        )
+    {
+        return None;
+    }
+    Some(match key {
+        Keycode::L => AppCommand::OpenCityDialog,
+        Keycode::E => AppCommand::ToggleEditMap,
+        Keycode::Z => AppCommand::OpenScenarioDialog,
+        Keycode::X => AppCommand::Quit,
+        _ => return None,
+    })
 }
 
 pub(super) fn app_command_for_menu_command(command: i32) -> Option<AppCommand> {
@@ -191,6 +267,7 @@ pub(super) fn app_command_for_menu_command(command: i32) -> Option<AppCommand> {
         70 => AppCommand::ToggleNewspaperSubscription,
         71 => AppCommand::OpenCityInfo(CityInfoDialog::Newspaper(NewspaperEdition::Courier)),
         72 => AppCommand::ToggleNewspaperExtra,
+        menu_model::CMD_MAC_PAPER_FIRST..=145 => AppCommand::OpenMacPaper((command - menu_model::CMD_MAC_PAPER_FIRST) as u8),
         80 => AppCommand::OpenCityInfo(CityInfoDialog::Help),
         81 => AppCommand::ToggleBalloonHelp,
         90 => AppCommand::OpenImportOriginalAssetsDialog,

@@ -146,6 +146,15 @@ pub(in crate::app) fn raw_tax_rate_for_city(city: &City, tax_index: usize) -> u3
         .unwrap_or(DEFAULT_TAX_RATE)
 }
 
+/// CODE 4 and CODE 8 read the active-document dword even when every field in
+/// its row is zero. The separate Win95 presentation fallback treats an empty
+/// row as uninitialized and must not replace a valid native Mac zero.
+pub(in crate::app) fn mac_budget_tax_rate_raw_for_city(city: &City, tax_index: usize) -> u32 {
+    tax_rate_misc_offset_for_city(city, tax_index)
+        .and_then(|offset| city.budget_misc_u32_at(offset))
+        .unwrap_or(DEFAULT_TAX_RATE)
+}
+
 pub(in crate::app) fn tax_rate_for_city(city: &City, tax_index: usize) -> u32 {
     if budget_row_is_unset(city, tax_index) {
         return DEFAULT_TAX_RATE;
@@ -226,6 +235,16 @@ pub(in crate::app) fn budget_service_funding_raw_for_city(city: &City, budget_in
         return 100;
     };
     city.budget_misc_u32_at(offset).unwrap_or(100)
+}
+
+/// Raw Mac active-document funding; an all-zero row is valid saved state.
+pub(in crate::app) fn mac_budget_service_funding_raw_for_city(
+    city: &City,
+    budget_index: usize,
+) -> u32 {
+    budget_service_funding_misc_offset_for_city(city, budget_index)
+        .and_then(|offset| city.budget_misc_u32_at(offset))
+        .unwrap_or(100)
 }
 
 pub(in crate::app) fn education_budget_funding_percent_for_city(city: &City) -> u32 {

@@ -8,6 +8,49 @@ pub fn import_mac(source: &Path, output: &Path) -> Result<(usize, usize)> {
     let sound_dir = output.join("catalog/sounds");
     let mut effects = 0;
     let mut music = 0;
+    // Preserve the user's raw driver inputs locally: the normalized WAV/MIDI
+    // files do not retain SONG mappings, instrument descriptors or loop data.
+    for (kind, prefix) in [("SONG", "SONG_"), ("INST", "INST_"), ("snd", "snd_")] {
+        if let Some(directory) = find_dir(source, kind) {
+            for path in files_with_prefix(&directory, prefix) {
+                if !path
+                    .extension()
+                    .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("bin"))
+                {
+                    continue;
+                }
+                let Some(id) = resource_id(&path, prefix) else {
+                    continue;
+                };
+                let destination = output.join("catalog/mac-audio").join(kind);
+                fs::create_dir_all(&destination)?;
+                fs::copy(&path, destination.join(format!("{id}.bin")))
+                    .with_context(|| format!("copying Mac audio resource {}", path.display()))?;
+            }
+        }
+    }
+    let destination = output.join("catalog/mac-audio/MDRV");
+    let table_path = destination.join("11-pitch.bin");
+    if table_path.exists() {
+        fs::remove_file(&table_path)?;
+    }
+    if let Some(directory) = find_dir(source, "MDRV") {
+        for path in files_with_prefix(&directory, "MDRV_") {
+            if resource_id(&path, "MDRV_") != Some(11)
+                || !path.extension().is_some_and(|ext| ext == "bin")
+            {
+                continue;
+            }
+            let data = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            if let Ok(driver) = crate::mac_mdrv::decode_mdrv(&data) {
+                if let Some(table) = crate::mac_mdrv::verified_pitch_table(&driver) {
+                    fs::create_dir_all(&destination)?;
+                    fs::write(&table_path, table)?;
+                    break;
+                }
+            }
+        }
+    }
     let snd_dir = find_dir(source, "snd");
     if let Some(snd_dir) = snd_dir {
         for path in files_with_prefix(&snd_dir, "snd_") {
@@ -400,6 +443,107 @@ fn resource_id(path: &Path, prefix: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mac_import_preserves_original_music_driver_resources() {
+        let root = std::env::temp_dir().join(format!("citygame-mac-audio-{}", std::process::id()));
+        let source = root.join("source");
+        let output = root.join("pack");
+        for kind in ["SONG", "INST", "snd"] {
+            fs::create_dir_all(source.join(kind)).unwrap();
+        }
+        fs::write(source.join("SONG/SONG_10018_Theme.bin"), [0x27, 0x22, 1]).unwrap();
+        fs::write(source.join("INST/INST_00001_Kick.bin"), [0x27, 0x11, 2]).unwrap();
+        fs::write(source.join("snd/snd_10001_Kick.bin"), [0x27, 0x11, 3]).unwrap();
+        fs::write(source.join("INST/INST_00002_unrelated.txt"), [9]).unwrap();
+        fs::create_dir_all(output.join("catalog/mac-audio/MDRV")).unwrap();
+        fs::write(
+            output.join("catalog/mac-audio/MDRV/11-pitch.bin"),
+            [1, 2, 3],
+        )
+        .unwrap();
+        assert_eq!(import_mac(&source, &output).unwrap(), (0, 0));
+        assert!(!output.join("catalog/mac-audio/MDRV/11-pitch.bin").exists());
+        assert_eq!(
+            fs::read(output.join("catalog/mac-audio/SONG/10018.bin")).unwrap(),
+            [0x27, 0x22, 1]
+        );
+        assert_eq!(
+            fs::read(output.join("catalog/mac-audio/INST/1.bin")).unwrap(),
+            [0x27, 0x11, 2]
+        );
+        assert_eq!(
+            fs::read(output.join("catalog/mac-audio/snd/10001.bin")).unwrap(),
+            [0x27, 0x11, 3]
+        );
+        assert!(!output.join("catalog/mac-audio/INST/2.bin").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the user's extracted original Mac resources"]
+    fn imported_mac_music_driver_resources_match_source() {
+        let source = PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCE_ROOT").unwrap());
+        let output = std::env::temp_dir().join(format!(
+            "citygame-mac-audio-original-{}",
+            std::process::id()
+        ));
+        let (_, music) = import_mac(&source, &output).unwrap();
+        assert!(music > 0);
+        let reference_driver =
+            fs::read(std::env::var_os("CITYGAME_MAC_MDRV_DECODED").unwrap()).unwrap();
+        let table = fs::read(output.join("catalog/mac-audio/MDRV/11-pitch.bin")).unwrap();
+        assert_eq!(table, reference_driver[0x64a4..0x64a4 + 132 * 4]);
+        assert_eq!(
+            crate::mac_midi::mac_midi_pitch_table(&table).unwrap().len(),
+            132
+        );
+        for (kind, source_name, id) in [
+            ("SONG", "SONG_10018_Theme.bin", 10018),
+            ("INST", "INST_00001_Kick.bin", 1),
+            ("snd", "snd_10001_01KICK.bin", 10001),
+        ] {
+            assert_eq!(
+                fs::read(source.join(kind).join(source_name)).unwrap(),
+                fs::read(
+                    output
+                        .join("catalog/mac-audio")
+                        .join(kind)
+                        .join(format!("{id}.bin"))
+                )
+                .unwrap()
+            );
+        }
+        for (kind, prefix) in [("SONG", "SONG_"), ("INST", "INST_"), ("snd", "snd_")] {
+            let mut checked = 0;
+            for path in files_with_prefix(&source.join(kind), prefix) {
+                if !path
+                    .extension()
+                    .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("bin"))
+                {
+                    continue;
+                }
+                let Some(id) = resource_id(&path, prefix) else {
+                    continue;
+                };
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    fs::read(
+                        output
+                            .join("catalog/mac-audio")
+                            .join(kind)
+                            .join(format!("{id}.bin"))
+                    )
+                    .unwrap(),
+                    "{}",
+                    path.display()
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "missing {kind} source resources");
+        }
+        fs::remove_dir_all(output).unwrap();
+    }
 
     #[test]
     fn wraps_unsigned_pcm_samples_as_wav() {

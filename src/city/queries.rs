@@ -385,11 +385,12 @@ impl City {
     /// Update the Win95 MISC saved camera target and selector.
     /// Returns false when this file format or the supplied values are unsupported.
     pub fn set_saved_view(&mut self, view: CityView) -> bool {
-        if !self.kind.is_win95() || view.mode > 2 || view.x > 0x7f || view.y > 0x7f {
+        let no_target = view.x == 64 && view.y == 128;
+        if !self.kind.is_win95() || view.mode > 2 || (!no_target && (view.x > 0x7f || view.y > 0x7f)) {
             return false;
         }
 
-        let packed_target = (u32::from(view.y) << 8) | u32::from(view.x);
+        let packed_target = if no_target { u32::MAX } else { (u32::from(view.y) << 8) | u32::from(view.x) };
         self.set_misc_u32_values(MISC_SAVED_VIEW_TARGET_OFFSET, &[packed_target, view.mode]);
         self.saved_view = Some(view);
         true

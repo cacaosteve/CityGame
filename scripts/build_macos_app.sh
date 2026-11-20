@@ -12,7 +12,7 @@ if [ ! -f "$root/assets/CityGame.icns" ] ||
     sh "$root/scripts/build_app_icons.sh" --macos-only
 fi
 
-cargo build --release
+RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable}" cargo build --release
 
 bundle="$root/target/CityGame.app"
 contents="$bundle/Contents"
@@ -65,6 +65,7 @@ cat > "$contents/Info.plist" <<'PLIST'
                 <key>public.filename-extension</key>
                 <array>
                     <string>sc2</string>
+                    <string>city</string>
                 </array>
             </dict>
         </dict>

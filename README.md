@@ -33,6 +33,10 @@ To build and open the named macOS app bundle with its CityGame icon:
 open target/CityGame.app
 ```
 
+The app-bundle script uses Rust stable for its Cargo build when
+`RUSTUP_TOOLCHAIN` is unset. Set `RUSTUP_TOOLCHAIN` to select another installed
+toolchain for that build.
+
 ### Linux
 
 Install Rust, SDL3 development libraries, and `pkg-config` (for example, `libsdl3-dev` on Debian-based distributions).
@@ -67,6 +71,10 @@ These are debug hosts, not store-ready releases. iPadOS requires Xcode, `xcodege
 ## First launch and basic use
 
 CityGame requires an import from a locally owned SimCity 2000™ installation. On first launch, choose **Asset Library → Import Game Edition** and select the installation folder. CityGame extracts its base assets into its application-support folder.
+
+For Mac 68k newspaper simulation, include the extracted `DATA`, `STRS`, and `PICT` resource folders in the import source. Place a locally owned classic Mac OS New York font suitcase, as a MacBinary or resource-fork file, at `mac-system/New York.bin` in that source folder. For the Mac fiscal notice, an optional Chicago suitcase can be supplied at `mac-system/Chicago.bin` or `mac-system/Chicago.macbin`. Reimport an existing Mac pack to add these optional resources. Imported game and font data remain local.
+
+For Mac 68k original music, include the extracted `MDRV`, `SONG`, `INST`, `snd`, and `MIDI` resource folders. Reimport an older Mac pack to add the music resources; CityGame keeps them in the local imported pack.
 
 To use the included pack, enable **Prefer High-Res CityGame Graphics** and **Use CityGame Sounds** in the **Assets** menu. The Asset Library on the title screen has the same controls. Run the asset browser to inspect imported and authored packs.
 
@@ -106,5 +114,7 @@ To include your own pack in a local macOS or mobile build, set `CITYGAME_REPLACE
 - **Sound effects:** replacement WAVs go under `audio/effects/` in a replacement pack and use `citygame.sound.<slot>` keys in its manifest. Keep them as short, non-looping PCM cues.
 
 The asset browser can preview images and WAV files and compare packs. It runs locally and does not upload or modify assets. Avoid putting imported game files into public source control; keep only original or properly licensed CityGame-created work in a pack you share.
+
+For new Win95 cities, the optional `win95_mayor_name` field in `asset-settings.json` supplies the registered mayor name; when absent, CityGame uses the original fallback, `Mayor McSim`. On macOS the file is normally in `~/Library/Application Support/CityGame/`. Win95 reserved city labels are read from a locally imported executable; import the installation again to add them to an older asset pack.
 
 The artwork tests use the included pack by default. Set `CITYGAME_TEST_REPLACEMENT_ROOT=/path/to/your/pack` to test a different pack.

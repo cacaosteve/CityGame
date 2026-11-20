@@ -208,6 +208,7 @@ mod traffic_rendering;
 mod transport_maintenance;
 mod underground;
 mod underground_model;
+mod win95_new_city_setup;
 mod view_navigation;
 mod weather;
 mod window_support;
@@ -234,23 +235,24 @@ use calendar::*;
 use city_attitude::*;
 #[cfg(test)]
 use city_options::{
-    AUTO_GOTO_MISC_OFFSET, MISC_NEWSPAPER_CHOICE_OFFSET, MISC_NEWSPAPER_EXTRA_OFFSET,
-    MISC_NEWSPAPER_SUBSCRIPTION_OFFSET, MUSIC_MISC_OFFSET, NO_DISASTERS_MISC_OFFSET,
-    SOUND_EFFECTS_MISC_OFFSET, auto_goto_enabled_for_city, ensure_default_city_options,
+    AUTO_GOTO_MISC_OFFSET, MISC_NEWSPAPER_EXTRA_OFFSET, MISC_NEWSPAPER_SUBSCRIPTION_OFFSET,
+    NO_DISASTERS_MISC_OFFSET,
+    auto_goto_enabled_for_city, ensure_default_city_options,
     ensure_newspaper_list_misc_defaults_before_extension, music_enabled_for_city,
     set_city_auto_goto_enabled, set_city_music_enabled, set_city_sound_effects_enabled,
     sound_effects_enabled_for_city,
 };
 use city_options::{
-    CITY_OPTION_DISABLED_VALUE, CITY_OPTION_ENABLED_VALUE, auto_goto_enabled_for_engine,
-    city_difficulty_for_city, ensure_default_city_options_for_engine, music_enabled_for_engine,
-    newspaper_choice_for_city, newspaper_extra_enabled_for_city, newspaper_max_choice_for_city,
-    newspaper_subscription_enabled_for_city, no_disasters_enabled_for_city,
-    no_disasters_enabled_for_engine, set_auto_goto_enabled_for_engine, set_city_newspaper_choice,
-    set_city_newspaper_extra_enabled, set_city_newspaper_subscription_enabled,
-    set_city_no_disasters_enabled, set_music_enabled_for_engine,
-    set_no_disasters_enabled_for_engine, set_sound_effects_enabled_for_engine,
-    sound_effects_enabled_for_engine,
+    CITY_OPTION_DISABLED_VALUE, CITY_OPTION_ENABLED_VALUE, MISC_NEWSPAPER_CHOICE_OFFSET,
+    MUSIC_MISC_OFFSET, SOUND_EFFECTS_MISC_OFFSET,
+    auto_goto_enabled_for_engine, city_difficulty_for_city, ensure_default_city_options_for_engine,
+    music_enabled_for_engine, newspaper_choice_for_city, newspaper_extra_enabled_for_city,
+    newspaper_max_choice_for_city, newspaper_subscription_enabled_for_city,
+    no_disasters_enabled_for_city, no_disasters_enabled_for_engine,
+    set_auto_goto_enabled_for_engine, set_city_newspaper_choice, set_city_newspaper_extra_enabled,
+    set_city_newspaper_subscription_enabled, set_city_no_disasters_enabled,
+    set_music_enabled_for_engine, set_no_disasters_enabled_for_engine,
+    set_sound_effects_enabled_for_engine, sound_effects_enabled_for_engine,
 };
 #[cfg(test)]
 use city_publication::pe_year_end_flag;
@@ -274,8 +276,8 @@ use city_valuation::{
     sc2kfix_pe_city_value_total,
 };
 use command_bus::{
-    AppCommand, app_command_for_menu_command, command_queue, menu_callback, pop_command,
-    push_command, windows_menu_shortcut,
+    AppCommand, Win95CloseAction, Win95FileDialog, app_command_for_menu_command, command_queue, menu_callback, pop_command,
+    push_command, win95_file_menu_shortcut, windows_menu_shortcut,
 };
 
 pub(crate) extern "C" fn document_open_callback(path: *const std::ffi::c_char) {
@@ -291,9 +293,13 @@ pub(crate) extern "C" fn document_open_callback(path: *const std::ffi::c_char) {
 }
 
 #[cfg(target_os = "ios")]
-pub(crate) fn queue_document_open(path: std::path::PathBuf, from_title: bool) {
-    push_command(if from_title {
-        AppCommand::OpenTitlePath(path)
+pub(crate) fn queue_document_open(path: std::path::PathBuf, from_title: bool, scenario: bool) {
+    push_command(if scenario && from_title {
+        AppCommand::OpenTitleScenarioPath(path)
+    } else if scenario {
+        AppCommand::OpenScenarioPath(path)
+    } else if from_title {
+        AppCommand::OpenTitleDialogPath(path)
     } else {
         AppCommand::OpenPath(path)
     });
@@ -334,7 +340,7 @@ use density::*;
 use dialogs::{
     ARCOLOGY_CHOICES, ArcologyDialogState, CityInfoDialog, MilitaryBaseDialogState,
     NewspaperEdition, PowerPlantDialogState, SignDialogState, arcology_choice_for_tool,
-    arcology_dialog_hit_test, city_info_dialog_rect_for, handle_modal_pointer_down,
+    arcology_dialog_hit_test, handle_modal_pointer_down,
     handle_modal_pointer_up, military_base_dialog_hit_test, power_plant_choice_for_tool,
     power_plant_dialog_hit_test, sync_sign_text_input,
 };
@@ -344,7 +350,7 @@ use dialogs::{
     arcology_cancel_rect, arcology_card_rect, arcology_dialog_rect, arcology_info_rect,
     budget_auto_budget_rect, budget_bond_button_rect, budget_service_funding_adjust_rect,
     budget_tax_adjust_rect, city_info_close_rect, city_info_dialog_hit_test, city_info_dialog_rect,
-    city_map_cell_color, city_map_cell_rect_for_tile, city_map_panel_rect_and_cell,
+    city_info_dialog_rect_for, city_map_cell_color, city_map_cell_rect_for_tile, city_map_panel_rect_and_cell,
     city_map_tile_for_point, graph_legend_rect, graph_panel_xgrp_series, graph_scale_rect,
     industry_tax_adjust_rect, ordinance_row_rect, point_in_arcology_dialog,
     point_in_power_plant_dialog, population_panel_demographic_rows,
@@ -362,7 +368,7 @@ use disaster_progression::{
 };
 use disaster_start::*;
 use disasters::*;
-use effect_sound::{PlacementSound, disaster_start_sound, play_placement_sound};
+use effect_sound::{DisasterEffectPlayback, PlacementSound, disaster_effect_playback, disaster_start_sound, play_placement_sound};
 #[cfg(test)]
 use graph_history::XGRP_SAMPLES_PER_SERIES;
 use graph_history::{
@@ -487,9 +493,7 @@ use ordinances::*;
 use power_water::*;
 use rci::*;
 use scenario::*;
-use scenario_lifecycle::{
-    reward_available_status_line,
-};
+use scenario_lifecycle::reward_available_status_line;
 #[cfg(test)]
 use session::{
     AppCommandStateEffect, apply_new_city_title_selections, game_speed_from_sc2k_misc,
@@ -499,7 +503,7 @@ use session::{
 use session::{
     open_city_dialog, open_scenario_dialog, open_title_city_dialog, open_title_scenario_dialog,
     pe_city_mode_misc_value, persist_pe_city_mode_misc, persist_speed_misc_value_to_city,
-    save_city_dialog, sc2k_speed_misc_value, set_window_title, speed_misc_value_for_city,
+    save_city_dialog, save_city_dialog_before_close, sc2k_speed_misc_value, set_window_title, speed_misc_value_for_city,
 };
 use special_building_growth::*;
 use special_zone_growth::*;
@@ -1004,14 +1008,29 @@ struct ViewerState {
     win95_overlay_sim: Win95OverlaySim,
     /// Win95 shared CRT `rand()` stream consumed by weather, day-1 power recalc, growth, etc.
     pe_process_crt: Win95CrtRand,
+    /// Signed low word of the first Win95 view's GetTickCount, retained at
+    /// 0x4ea150 independently of later CRT draws and city opens.
+    pe_document_tick_word: Option<i16>,
+    /// RT_STRING 401–405 from the locally imported Win95 executable.
+    pe_new_city_reserved_labels: Option<[String; 5]>,
+    pe_registered_mayor_name: String,
+    pe_newspaper_data: Option<std::sync::Arc<crate::win95_newspaper::PeNewspaperData>>,
+    pe_newspaper_paint: Option<crate::win95_newspaper::PeNewspaperPaint>,
+    pe_newspaper_paint_attempted: bool,
+    pe_newspaper_article: Option<newspaper_state::PePaperArticle>,
+    mac_newspaper: newspaper_state::MacPaperRuntime,
+    mac_system_font: Option<std::sync::Arc<crate::mac_font_metrics::MacBitmapFontMetrics>>,
     /// QuickDraw process `_Random` stream. Starts at InitGraf's seed; each
     /// recovered Mac caller must share this state instead of reseeding locally.
     mac_process_rng: MacToolboxRng,
+    /// Shared CODE 13 LFSR for Mac scans, their producers, and industry.
+    mac_app_lfsr: MacAppLfsrRng,
     /// Mac CODE 6 `ffffa0a2`: process-global kind-2 sound deadline.
     /// It is reset by the native New City worker, not by opening a saved city.
     mac_kind2_sound_deadline: u32,
     /// Mac CODE 13 app-owned game-LCG shared by map-generation and XMIC zoo calls.
     mac_game_rng: MacGameLcgRng,
+    mac_music: title_flow::MacMusicSelector,
     /// Win95 game-specific LCG (`0x4cdb80`), separate from CRT and Game_Random.
     pe_process_game_rand: Win95GameRand,
     /// Whether a held editor height tool has made any accepted edit.
@@ -1102,14 +1121,17 @@ struct ViewerState {
     power_plant_dialog: Option<PowerPlantDialogState>,
     arcology_dialog: Option<ArcologyDialogState>,
     sign_dialog: Option<SignDialogState>,
+    win95_new_city_setup: Option<win95_new_city_setup::Setup>,
     military_base_dialog: Option<MilitaryBaseDialogState>,
     city_info_dialog: Option<CityInfoDialog>,
+    pending_newspaper_music: Option<u16>,
     status_panel_origin: Option<Vec2>,
     status_panel_grab: Option<Vec2>,
     info_panel_origin: Option<Vec2>,
     info_panel_scale: f32,
     info_panel_drag: Option<(bool, Vec2, Vec2, f32)>,
     founding_newspaper_pending: bool,
+    pe_founding_mode_transition_pending: bool,
     graph_series_visible: [bool; GRAPH_HISTORY_TOTAL_SERIES],
     graph_scale: GraphScale,
     query_line: String,

@@ -8,12 +8,13 @@ pub(super) use super::dialog_layout::*;
 use super::{
     GraphScale, MILITARY_BASE_AIR_FORCE, MILITARY_BASE_ARMY, MILITARY_BASE_DECLINED,
     MILITARY_BASE_MISSILE_SILOS, MILITARY_BASE_NAVY, MISC_MILITARY_BASE_TYPE_OFFSET,
-    PlacementSound, SIGN_LABEL_MAX_BYTES, ViewerState, newspaper_open_choice_for_edition,
-    ordinance_enabled_for_city_with_fidelity, ordinance_index_is_valid,
-    pe_powerline_post_place_power_recalc_43f396, raw_tax_rate_for_city, set_city_newspaper_choice,
-    set_city_ordinance_enabled_with_fidelity,
+    PlacementSound, SIGN_LABEL_MAX_BYTES, ViewerState, newspaper_choice_for_city,
+    newspaper_open_choice_for_edition, ordinance_enabled_for_city_with_fidelity,
+    ordinance_index_is_valid, pe_powerline_post_place_power_recalc_43f396, raw_tax_rate_for_city,
+    set_city_newspaper_choice, set_city_ordinance_enabled_with_fidelity,
 };
 use crate::city::CityFileKind;
+use crate::engine_fidelity::EngineFidelity;
 use crate::ui::EditTool;
 
 pub(super) use super::dialog_content::*;
@@ -21,6 +22,7 @@ pub(super) use super::dialog_input::*;
 
 impl ViewerState {
     pub(super) fn close_other_modal_dialogs(&mut self) {
+        self.win95_new_city_setup = None;
         self.power_plant_dialog = None;
         self.arcology_dialog = None;
         self.cancel_sign_dialog();
@@ -28,8 +30,14 @@ impl ViewerState {
     }
 
     pub(super) fn close_modal_dialogs(&mut self) {
+        self.pe_founding_mode_transition_pending = false;
         self.close_other_modal_dialogs();
         self.city_info_dialog = None;
+        self.mac_newspaper.detail_open = false;
+        self.mac_newspaper.paint = None;
+        self.pe_newspaper_paint = None;
+        self.pe_newspaper_article = None;
+        self.pe_newspaper_paint_attempted = false;
         self.sync_pe_city_info_modal_state();
     }
 
@@ -171,7 +179,12 @@ impl ViewerState {
     pub(super) fn open_sign_dialog(&mut self, sign_id: u8) {
         self.close_tool_menu();
         self.close_modal_dialogs();
-        let text = self.city.label_at(sign_id).unwrap_or("Sign").to_owned();
+        let fallback = if self.engine_fidelity.uses_win95() {
+            "Sign"
+        } else {
+            ""
+        };
+        let text = self.city.label_at(sign_id).unwrap_or(fallback).to_owned();
         self.cancel_zone_drag();
         self.cancel_network_drag();
         self.cancel_underground_drag();
@@ -184,6 +197,9 @@ impl ViewerState {
         self.cancel_nature_drag();
         self.sign_dialog = Some(SignDialogState {
             sign_id,
+            pending_mac_tile: None,
+            select_all: false,
+            caret: text.chars().count(),
             original_text: text.clone(),
             text,
         });
@@ -193,7 +209,9 @@ impl ViewerState {
 
     pub(super) fn cancel_sign_dialog(&mut self) {
         if let Some(dialog) = self.sign_dialog.take() {
-            self.city.set_label(dialog.sign_id, dialog.original_text);
+            if dialog.pending_mac_tile.is_none() {
+                self.city.set_label(dialog.sign_id, dialog.original_text);
+            }
         }
     }
 
@@ -206,6 +224,7 @@ impl ViewerState {
         // out of Mac-layout saves even when the selected simulation is Win95.
         // The authored founding edition bypasses those saved PE fields entirely.
         if let CityInfoDialog::Newspaper(edition) = dialog
+            && !edition.is_mac()
             && (!self.menu_checks.citygame_newspaper
                 || (edition != NewspaperEdition::Founding
                     && (!self.engine_fidelity.uses_win95()
@@ -215,22 +234,50 @@ impl ViewerState {
         }
         if let CityInfoDialog::Newspaper(edition) = dialog
             && edition != NewspaperEdition::Founding
+            && !edition.is_mac()
         {
             let choice = newspaper_open_choice_for_edition(&self.city, edition);
             set_city_newspaper_choice(&mut self.city, choice);
+        }
+        let next_dialog = (self.city_info_dialog != Some(dialog)).then_some(dialog);
+        if matches!(self.city_info_dialog, Some(CityInfoDialog::Newspaper(_)))
+            || matches!(next_dialog, Some(CityInfoDialog::Newspaper(_)))
+        {
+            self.pe_newspaper_paint = None;
+            self.pe_newspaper_article = None;
+            self.pe_newspaper_paint_attempted = false;
+        }
+        if self.engine_fidelity.uses_win95()
+            && let Some(CityInfoDialog::Newspaper(edition)) = next_dialog
+        {
             let tax_rate = raw_tax_rate_for_city(&self.city, 0);
-            if self.city_info_dialog != Some(dialog)
-                && self
-                    .city
-                    .run_pe_opinion_poll_with_rng(tax_rate, &mut self.pe_process_crt)
+            if self
+                .city
+                .run_pe_opinion_poll_with_rng(tax_rate, &mut self.pe_process_crt)
             {
                 self.queue_disaster_extra_sounds(PlacementSound::Cheers, 1);
             }
+            let paper = if edition == NewspaperEdition::Founding {
+                0
+            } else {
+                newspaper_choice_for_city(&self.city) as usize
+            };
+            let _ = self.city.prepare_pe_newspaper_open_rows(paper);
+            // PE newspaper initialization at 0x477a37 chooses one of five
+            // audio cues from the shared Game_Random stream, even when the
+            // city has no population and the opinion poll makes no draws.
+            let choice = usize::from(self.pe_process_lfsr.random_mod(5));
+            self.pending_newspaper_music = Some([10_009, 10_015, 10_014, 10_006, 10_002][choice]);
         }
-        let next_dialog = (self.city_info_dialog != Some(dialog)).then_some(dialog);
         if next_dialog == Some(CityInfoDialog::Budget) {
             self.info_panel_origin = None;
             self.info_panel_scale = 1.0;
+            if self.engine_fidelity == EngineFidelity::Mac68k {
+                // CODE 4 export 225 selects a SONG on both manual and annual
+                // opens, including when music playback is unavailable.
+                let choice = usize::from(self.mac_app_lfsr.bounded(4));
+                self.pending_newspaper_music = Some([10_016, 10_005, 10_002, 10_010][choice]);
+            }
         }
         self.close_tool_menu();
         // Replacing one native modal with another retains its outer speed
@@ -247,12 +294,49 @@ impl ViewerState {
         self.cancel_edit_map_spread_hold();
         self.cancel_nature_drag();
         self.city_info_dialog = next_dialog;
+        if matches!(next_dialog, Some(CityInfoDialog::Newspaper(edition)) if edition.is_mac()) {
+            let page =
+                if next_dialog == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStandard)) {
+                    self.city
+                        .mac_state_misc_u32_at(super::MISC_NEWSPAPER_CHOICE_OFFSET)
+                        .unwrap_or(0) as u16 as usize
+                } else {
+                    0
+                };
+            let _ = self.city.prepare_mac_newspaper_open_rows(page);
+            self.prepare_mac_paper_headline();
+            // When the original Mac paper resources are loaded,
+            // prepare_mac_paper_headline synchronously executes its first
+            // paint before CODE 7 export 233 selects a song and enters the
+            // modal event loop. The selection advances the app LFSR even
+            // when music playback is disabled.
+            let choice = usize::from(self.mac_app_lfsr.bounded(5));
+            self.pending_newspaper_music = Some([10_009, 10_015, 10_014, 10_006, 10_002][choice]);
+        } else {
+            self.mac_newspaper.detail_open = false;
+            self.mac_newspaper.paint = None;
+        }
         self.sync_pe_city_info_modal_state();
     }
 
     pub(super) fn close_city_info_dialog(&mut self) {
         let closed = self.city_info_dialog.take();
+        if closed == Some(CityInfoDialog::Budget) {
+            self.mac_loop_scheduler.january_budget_review_started_at = None;
+        }
+        if matches!(closed, Some(CityInfoDialog::Newspaper(_))) {
+            self.pe_newspaper_article = None;
+            self.pe_newspaper_paint = None;
+            self.pe_newspaper_paint_attempted = false;
+            self.mac_newspaper.headline = None;
+            self.mac_newspaper.article = None;
+            self.mac_newspaper.detail_open = false;
+            self.mac_newspaper.paint = None;
+        }
         self.sync_pe_city_info_modal_state();
+        if closed == Some(CityInfoDialog::Newspaper(NewspaperEdition::Founding)) {
+            self.finish_pe_founding_mode_transition();
+        }
         // The original dry tool succeeds even when its optional bridge is
         // canceled or refused. Its dispatcher refreshes power on that return.
         if matches!(
@@ -307,6 +391,18 @@ impl ViewerState {
 
     pub(super) fn commit_sign_dialog(&mut self) {
         if let Some(dialog) = self.sign_dialog.take() {
+            if let Some((x, y)) = dialog.pending_mac_tile {
+                if dialog.text.is_empty() {
+                    if self.city.text_overlay_at(x, y).unwrap_or(0) != 0 {
+                        self.city.set_label(dialog.sign_id, "");
+                        self.city.set_text_overlay(x, y, 0);
+                    }
+                } else {
+                    self.city.set_label(dialog.sign_id, dialog.text);
+                    self.city.set_text_overlay(x, y, dialog.sign_id);
+                }
+                return;
+            }
             let text = if dialog.text.is_empty() {
                 "Sign".to_owned()
             } else {
@@ -317,20 +413,83 @@ impl ViewerState {
     }
 
     pub(super) fn append_sign_dialog_text(&mut self, text: &str) {
+        let mac_label = self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k
+            && self.city.kind == CityFileKind::MacCity;
         let Some(dialog) = self.sign_dialog.as_mut() else {
             return;
         };
+        if mac_label {
+            for ch in text
+                .chars()
+                .filter(|ch| !ch.is_control() && crate::city::mac_roman::encode_char(*ch).is_some())
+            {
+                if dialog.select_all {
+                    dialog.text.clear();
+                    dialog.caret = 0;
+                    dialog.select_all = false;
+                }
+                if dialog.text.chars().count() >= 24 {
+                    break;
+                }
+                let byte = dialog
+                    .text
+                    .char_indices()
+                    .nth(dialog.caret)
+                    .map_or(dialog.text.len(), |(i, _)| i);
+                dialog.caret = dialog.caret.min(dialog.text.chars().count());
+                dialog.text.insert(byte, ch);
+                dialog.caret += 1;
+            }
+            return;
+        }
         for ch in text.chars().filter(|ch| ch.is_ascii() && !ch.is_control()) {
+            if dialog.select_all {
+                dialog.text.clear();
+                dialog.caret = 0;
+                dialog.select_all = false;
+            }
             if dialog.text.len() + ch.len_utf8() > SIGN_LABEL_MAX_BYTES {
                 break;
             }
-            dialog.text.push(ch);
+            let byte = dialog
+                .text
+                .char_indices()
+                .nth(dialog.caret)
+                .map_or(dialog.text.len(), |(i, _)| i);
+            dialog.caret = dialog.caret.min(dialog.text.chars().count());
+            dialog.text.insert(byte, ch);
+            dialog.caret += 1;
         }
     }
 
     pub(super) fn backspace_sign_dialog_text(&mut self) {
         if let Some(dialog) = self.sign_dialog.as_mut() {
-            dialog.text.pop();
+            if dialog.select_all {
+                dialog.text.clear();
+                dialog.caret = 0;
+                dialog.select_all = false;
+            } else {
+                dialog.caret = dialog.caret.min(dialog.text.chars().count());
+                if dialog.caret > 0 {
+                    let byte = dialog.text.char_indices().nth(dialog.caret - 1).unwrap().0;
+                    dialog.text.remove(byte);
+                    dialog.caret -= 1;
+                }
+            }
+        }
+    }
+
+    pub(super) fn move_sign_dialog_caret(&mut self, right: bool) {
+        if let Some(dialog) = self.sign_dialog.as_mut() {
+            let len = dialog.text.chars().count();
+            if dialog.select_all {
+                dialog.caret = if right { len } else { 0 };
+                dialog.select_all = false;
+            } else if right {
+                dialog.caret = dialog.caret.saturating_add(1).min(len);
+            } else {
+                dialog.caret = dialog.caret.min(len).saturating_sub(1);
+            }
         }
     }
 

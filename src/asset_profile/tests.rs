@@ -231,6 +231,8 @@ fn independent_sources_and_missing_slot_fallback() {
     fs::write(win.join("catalog/sounds/505.WAV"), b"win click").unwrap();
     fs::write(win.join("catalog/sounds/514.WAV"), b"zap").unwrap();
     fs::write(win.join("catalog/sounds/10018.MID"), b"win theme").unwrap();
+    fs::create_dir_all(win.join("catalog/data")).unwrap();
+    fs::write(win.join("catalog/data/DATA_USA.DAT"), b"data").unwrap();
     let mut profile = AssetProfile {
         settings: AssetSettings {
             original_graphics: Some(mac.clone()),
@@ -254,12 +256,96 @@ fn independent_sources_and_missing_slot_fallback() {
         bundled_replacement: None,
     };
     let effects = profile.sound_paths().effects;
+    assert_eq!(profile.mac_newspaper_data_paths(), None);
+    let mac_data = mac.join("catalog/mac-newspaper");
+    fs::create_dir_all(&mac_data).unwrap();
+    for id in 1000..1003 { fs::write(mac_data.join(format!("{id}.bin")), b"data").unwrap(); }
+    assert_eq!(profile.mac_newspaper_data_paths(), None);
+    fs::write(mac_data.join("1003.bin"), b"data").unwrap();
+    assert_eq!(profile.mac_newspaper_data_paths(), Some([1000, 1001, 1002, 1003].map(|id| mac_data.join(format!("{id}.bin")))));
+    assert_eq!(
+        profile.win95_newspaper_data_paths(),
+        Some((
+            win.join("catalog/data/DATA_USA.DAT"),
+            win.join("catalog/data/DATA_USA.IDX"),
+        ))
+    );
+    let (partial_data, partial_index) = profile.win95_newspaper_data_paths().unwrap();
+    let error = match crate::win95_newspaper::PeNewspaperData::load(&partial_data, &partial_index) {
+        Err(error) => error,
+        Ok(_) => panic!("DAT-only newspaper archive unexpectedly loaded"),
+    };
+    assert_eq!(
+        error
+            .downcast_ref::<crate::win95_newspaper::PeArchiveOpenError>()
+            .unwrap()
+            .path,
+        partial_index
+    );
+    fs::write(win.join("catalog/data/DATA_USA.IDX"), b"index").unwrap();
+    assert_eq!(
+        profile.win95_newspaper_data_paths(),
+        Some((
+            win.join("catalog/data/DATA_USA.DAT"),
+            win.join("catalog/data/DATA_USA.IDX"),
+        ))
+    );
+    let mac_archive = mac.join("catalog/data");
+    fs::create_dir_all(&mac_archive).unwrap();
+    fs::write(mac_archive.join("DATA_USA.DAT"), b"partial first source").unwrap();
+    // A complete later source remains preferred over an earlier partial pair.
+    assert_eq!(
+        profile.win95_newspaper_data_paths(),
+        Some((
+            win.join("catalog/data/DATA_USA.DAT"),
+            win.join("catalog/data/DATA_USA.IDX"),
+        ))
+    );
+    fs::remove_file(win.join("catalog/data/DATA_USA.IDX")).unwrap();
+    // With no complete pair, retain the first partial pair so the native-style
+    // DATA-then-IDX open can update the process-wide file-error cause.
+    assert_eq!(
+        profile.win95_newspaper_data_paths(),
+        Some((
+            mac.join("catalog/data/DATA_USA.DAT"),
+            mac.join("catalog/data/DATA_USA.IDX"),
+        ))
+    );
+    fs::remove_file(mac_archive.join("DATA_USA.DAT")).unwrap();
+    fs::write(win.join("catalog/data/DATA_USA.IDX"), b"index").unwrap();
+    fs::remove_file(win.join("catalog/data/DATA_USA.DAT")).unwrap();
+    // An IDX-only source is still attempted as a pair: the loader opens DATA
+    // first and records that missing-file cause before it can reach IDX.
+    assert_eq!(
+        profile.win95_newspaper_data_paths(),
+        Some((
+            win.join("catalog/data/DATA_USA.DAT"),
+            win.join("catalog/data/DATA_USA.IDX"),
+        ))
+    );
+    let (missing_data, present_index) = profile.win95_newspaper_data_paths().unwrap();
+    let error = match crate::win95_newspaper::PeNewspaperData::load(&missing_data, &present_index) {
+        Err(error) => error,
+        Ok(_) => panic!("IDX-only newspaper archive unexpectedly loaded"),
+    };
+    assert_eq!(
+        error
+            .downcast_ref::<crate::win95_newspaper::PeArchiveOpenError>()
+            .unwrap()
+            .path,
+        missing_data
+    );
     assert_eq!(effects.get(&505), Some(&mac.join("catalog/sounds/505.WAV")));
     assert_eq!(effects.get(&514), Some(&win.join("catalog/sounds/514.WAV")));
     assert_eq!(
         profile.original_music_path(10018),
         Some(win.join("catalog/sounds/10018.MID"))
     );
+    let mac_audio = mac.join("catalog/mac-audio");
+    fs::create_dir_all(&mac_audio).unwrap();
+    assert_eq!(profile.mac_audio_resource_directory_for_song(10018), None);
+    profile.settings.original_music = Some(mac.clone());
+    assert_eq!(profile.mac_audio_resource_directory_for_song(10018), Some(mac_audio));
     profile.cycle_source(OriginalMedia::Effects).unwrap();
     assert_eq!(
         profile.sound_paths().effects.get(&505),

@@ -595,6 +595,12 @@ impl ViewerState {
         if self.show_underground {
             self.show_traffic = false;
         }
+        if !self.engine_fidelity.uses_win95() {
+            // The Mac view-mode switch redraws immediately. In underground
+            // mode the redraw services the palette on every map diagonal;
+            // the surface path also accounts for visible marker RNG.
+            self.redraw_mac_map();
+        }
         self.invalidate_sprite_cache();
         self.refresh_idle_status_line();
     }
@@ -652,7 +658,11 @@ impl ViewerState {
                 true
             }
             UiAction::DoneEditMap => {
-                self.finish_edit_map_state();
+                if self.engine_fidelity.uses_win95() && self.founding_newspaper_pending {
+                    self.begin_win95_new_city_setup();
+                } else {
+                    self.finish_edit_map_state();
+                }
                 true
             }
             UiAction::RotateViewCcw => {

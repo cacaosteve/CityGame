@@ -10,6 +10,7 @@ fn run_sweep(city: &mut City, quickdraw: &mut MacToolboxRng) -> Vec<PlacementSou
         city,
         quickdraw,
         &mut game_rng,
+        &mut crate::mac_random::MacAppLfsrRng::new(0),
         &mut sound_deadline,
         0,
         &mut now,

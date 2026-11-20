@@ -26,7 +26,11 @@ impl ViewerState {
     }
 
     pub(super) fn info_panel_transform(&self, size: (u32, u32)) -> Option<(FloatRect, Vec2, f32)> {
-        let base = city_info_dialog_rect_for(self.movable_info_dialog()?, size);
+        let base = city_info_dialog_rect_for_engine(
+            self.movable_info_dialog()?,
+            size,
+            self.engine_fidelity,
+        );
         let scale = self.info_panel_scale.clamp(0.5, 2.0);
         let origin = self.info_panel_origin.unwrap_or(Vec2::new(base.x, base.y));
         let origin = Vec2::new(
@@ -107,10 +111,18 @@ pub(super) fn city_info_dialog_rect_for(
     dialog: CityInfoDialog,
     window_size: (u32, u32),
 ) -> FloatRect {
+    city_info_dialog_rect_for_engine(dialog, window_size, EngineFidelity::Win95)
+}
+
+pub(super) fn city_info_dialog_rect_for_engine(
+    dialog: CityInfoDialog,
+    window_size: (u32, u32),
+    fidelity: EngineFidelity,
+) -> FloatRect {
     if matches!(dialog, CityInfoDialog::Newspaper(_)) {
         newspaper::page_rect(window_size)
     } else if dialog == CityInfoDialog::Budget {
-        budget_window::page_rect(window_size)
+        budget_window::page_rect_for_engine(window_size, fidelity)
     } else if matches!(
         dialog,
         CityInfoDialog::RoadBridge { .. }

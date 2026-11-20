@@ -40,31 +40,32 @@ struct MacTransitRouteNode {
     cost: u16,
 }
 
+// CODE 14 loads each pair as (dy, dx) before indexing the X-major map.
 const MAC_TRANSIT_ROUTE_SEED_OFFSETS: [(isize, isize); 24] = [
-    (0, 1),
     (1, 0),
-    (0, -1),
+    (0, 1),
     (-1, 0),
-    (0, 2),
+    (0, -1),
     (2, 0),
-    (0, -2),
+    (0, 2),
     (-2, 0),
-    (0, 3),
+    (0, -2),
     (3, 0),
-    (0, -3),
+    (0, 3),
     (-3, 0),
+    (0, -3),
     (1, 1),
-    (-1, 1),
     (1, -1),
+    (-1, 1),
     (-1, -1),
-    (2, 1),
-    (-2, 1),
-    (2, -1),
-    (-2, -1),
     (1, 2),
-    (-1, 2),
     (1, -2),
+    (-1, 2),
     (-1, -2),
+    (2, 1),
+    (2, -1),
+    (-2, 1),
+    (-2, -1),
 ];
 
 /// Mac CODE 14 `export_217`'s ordered 24-cell transit-family seed scan.
@@ -315,6 +316,29 @@ pub(in crate::app) fn mac_transit_route_search<F, R>(
     zone_category: usize,
     coefficient: u16,
     cost_limit: u16,
+    cell_at: F,
+    random_i16: R,
+) -> Option<MacTransitRouteResult>
+where
+    F: FnMut(usize, usize) -> MacTransitRouteCell,
+    R: FnMut() -> i16,
+{
+    mac_transit_route_search_with_root_cost(
+        x, y, zone_category, coefficient, cost_limit, 0, cell_at, random_i16,
+    )
+}
+
+/// The root node's stored cost is an uninitialized byte in the original
+/// worker. It is read only after backtracking to that node. The caller-facing
+/// wrapper retains the existing zero approximation until native stack history
+/// can be modeled across drawing and event dispatch.
+pub(in crate::app) fn mac_transit_route_search_with_root_cost<F, R>(
+    x: usize,
+    y: usize,
+    zone_category: usize,
+    coefficient: u16,
+    cost_limit: u16,
+    root_cost: u8,
     mut cell_at: F,
     mut random_i16: R,
 ) -> Option<MacTransitRouteResult>
@@ -331,9 +355,10 @@ where
         mac_transit_route_seed(x, y, |sx, sy| cell_at(sx, sy).building)?;
 
     // The native table at A5-0x4426 is [0x0b, 0x07, 0x0e, 0x0d]. These are
-    // the remaining direction masks after entering from W/S/E/N respectively.
+    // the remaining direction masks after stepping north/east/south/west.
     const ENTERED_DIRECTION_MASKS: [u8; 4] = [0x0b, 0x07, 0x0e, 0x0d];
-    const DIRECTIONS: [(isize, isize); 4] = [(-1, 0), (0, 1), (1, 0), (0, -1)];
+    // CODE 14 uses separate X and Y tables in this same index order.
+    const DIRECTIONS: [(isize, isize); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
     let mut draws = 0;
     let stride = ((random_i16() as u16 & 1) * 2 + 1) as u8;
@@ -343,7 +368,7 @@ where
         y: seed_y,
         state: seed_state,
         directions_left: 0x0f,
-        cost: 0,
+        cost: u16::from(root_cost),
     }];
     let mut cost = 0_u16;
     let mut succeeded = false;
@@ -361,7 +386,9 @@ where
                 break;
             }
         }
-        if route.is_empty() {
+        // Restoring the parent's stored cost can itself reach the native
+        // loop ceiling. Recheck before consuming the next direction draw.
+        if route.is_empty() || cost >= cost_limit {
             break;
         }
 

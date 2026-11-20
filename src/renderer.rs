@@ -20,6 +20,7 @@ use wgpu::{InstanceDescriptor, SurfaceConfiguration};
 
 mod atlas_upload;
 mod geometry;
+mod mac_shadow;
 mod sprite_baking;
 use sprite_baking::*;
 
@@ -41,6 +42,13 @@ pub struct RenderSprite {
     pub flip_x: bool,
     /// When true, `anchor` is the sprite bottom-left (OpenSC2K traffic origin) instead of bottom-center.
     pub bottom_left_anchor: bool,
+    pub effect: SpriteEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpriteEffect {
+    Normal,
+    MacPaletteShadow,
 }
 
 #[repr(C)]
@@ -71,10 +79,14 @@ struct GpuAtlas {
     animation_counts: HashMap<u32, u8>,
     ids: Vec<u32>,
     bind_group: wgpu::BindGroup,
+    index_bind_group: Option<wgpu::BindGroup>,
 }
 
 struct BuiltAtlas {
     rgba: RgbaImage,
+    /// Original palette index and validity, before animated colors are baked.
+    /// R is the index, G is 255 when known, and alpha follows sprite coverage.
+    source_indices: Option<RgbaImage>,
     width: u32,
     height: u32,
     frames: HashMap<u32, AtlasFrame>,
@@ -162,6 +174,11 @@ pub struct Renderer<'window> {
     queue: wgpu::Queue,
     config: SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    mac_world_pipeline: wgpu::RenderPipeline,
+    mac_shadow_pipeline: wgpu::RenderPipeline,
+    mac_shadow_background_layout: wgpu::BindGroupLayout,
+    mac_shadow_index_layout: wgpu::BindGroupLayout,
+    mac_shadow_unknown_index_bind_group: wgpu::BindGroup,
     ui_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     atlases: Vec<GpuAtlas>,
@@ -178,6 +195,7 @@ pub struct Renderer<'window> {
     citygame_toolbar_palette: bool,
     dark_appearance: bool,
     asset_root: PathBuf,
+    mac_sprite_pack: bool,
     palette: AnimatedPalette,
 }
 
@@ -397,6 +415,85 @@ impl<'window> Renderer<'window> {
             cache: None,
         });
 
+        let mac_world_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Mac indexed world sprite shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("mac_world.wgsl").into()),
+        });
+
+        let mac_shadow_index_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Mac shadow sprite index texture layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+        let mac_world_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Mac indexed world sprite pipeline layout"),
+            bind_group_layouts: &[Some(&bind_group_layout), Some(&mac_shadow_index_layout)],
+            immediate_size: 0,
+        });
+        let mac_world_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Mac indexed world sprite pipeline"),
+            layout: Some(&mac_world_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &mac_world_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Vertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &mac_world_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Uint,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let unknown_index_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("unknown Mac sprite palette indices"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &unknown_index_texture, mip_level: 0,
+                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &[0, 0, 0, 255],
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let unknown_index_view = unknown_index_texture.create_view(&Default::default());
+        let mac_shadow_unknown_index_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("unknown Mac sprite palette index binding"), layout: &mac_shadow_index_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&unknown_index_view) }],
+        });
+        let (mac_shadow_pipeline, mac_shadow_background_layout) =
+            mac_shadow::create_pipeline(&device, &bind_group_layout, &mac_shadow_index_layout, surface_format);
+
         let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ui shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("ui_shader.wgsl").into()),
@@ -448,6 +545,11 @@ impl<'window> Renderer<'window> {
             queue,
             config,
             pipeline,
+            mac_world_pipeline,
+            mac_shadow_pipeline,
+            mac_shadow_background_layout,
+            mac_shadow_index_layout,
+            mac_shadow_unknown_index_bind_group,
             ui_pipeline,
             bind_group_layout,
             atlases: Vec::new(),
@@ -464,6 +566,9 @@ impl<'window> Renderer<'window> {
             citygame_toolbar_palette: true,
             dark_appearance: false,
             asset_root: asset_root.to_path_buf(),
+            mac_sprite_pack: asset_root
+                .join("sprites/SPRT_00128_ShapeData/atlas.json")
+                .is_file(),
             palette,
         };
         if let Some((asset_root, replacement_root, tile_set_root, prefer_replacement)) = assets {
@@ -516,6 +621,9 @@ impl<'window> Renderer<'window> {
             .first()
             .context("no original graphics source")?;
         self.asset_root = asset_root.to_path_buf();
+        self.mac_sprite_pack = asset_root
+            .join("sprites/SPRT_00128_ShapeData/atlas.json")
+            .is_file();
         self.palette = AnimatedPalette::load(asset_root)?;
         let originals = load_sprite_sources(asset_root)?;
         let mut fallback = Vec::new();
@@ -577,7 +685,8 @@ impl<'window> Renderer<'window> {
         sources.extend(tile_set);
         sources.extend(originals);
         sources.extend(fallback);
-        let toolbar_root = graphics_roots.iter()
+        let toolbar_root = graphics_roots
+            .iter()
             .find(|root| root.join("pict/PICT_00500.png").is_file())
             .unwrap_or(asset_root);
         let ui_sources = load_ui_palette_sources(toolbar_root)?;
@@ -753,6 +862,10 @@ impl<'window> Renderer<'window> {
         (self.config.width, self.config.height)
     }
 
+    pub(crate) fn output_is_srgb(&self) -> bool {
+        self.config.format.is_srgb()
+    }
+
     pub fn has_sprite(&self, atlas: usize, sprite_id: u32) -> bool {
         self.atlases
             .get(atlas)
@@ -763,6 +876,11 @@ impl<'window> Renderer<'window> {
         self.atlases
             .iter()
             .position(|atlas| atlas.frames.contains_key(&sprite_id))
+    }
+
+    /// Whether the selected original world sprite source is a Mac SPRT pack.
+    pub(crate) fn uses_mac_sprite_pack(&self) -> bool {
+        self.mac_sprite_pack
     }
 
     pub fn sprite_frame_rect(&self, atlas: usize, sprite_id: u32) -> Option<[u32; 4]> {
@@ -859,7 +977,24 @@ impl<'window> Renderer<'window> {
             .iter()
             .partition(|sprite| sprite.depth < UI_SPRITE_DEPTH_MIN);
 
-        let (world_vertices, world_ranges) = self.build_vertices_from_refs(&world_sprites);
+        let has_mac_shadow = world_sprites
+            .iter()
+            .any(|sprite| sprite.effect == SpriteEffect::MacPaletteShadow);
+        let clear = wgpu::Color {
+            r: clear_color[0],
+            g: clear_color[1],
+            b: clear_color[2],
+            a: clear_color[3],
+        };
+        if has_mac_shadow {
+            self.render_world_with_mac_shadows(&mut encoder, &output, &world_sprites, clear);
+        }
+
+        let (world_vertices, world_ranges) = if has_mac_shadow {
+            (Vec::new(), Vec::new())
+        } else {
+            self.build_vertices_from_refs(&world_sprites)
+        };
         let world_buffer = (!world_vertices.is_empty()).then(|| {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -887,12 +1022,11 @@ impl<'window> Renderer<'window> {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear_color[0],
-                            g: clear_color[1],
-                            b: clear_color[2],
-                            a: clear_color[3],
-                        }),
+                        load: if has_mac_shadow {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(clear)
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -902,7 +1036,9 @@ impl<'window> Renderer<'window> {
                 multiview_mask: None,
             });
 
-            if let Some(vertex_buffer) = &world_buffer {
+            if let Some(vertex_buffer) = &world_buffer
+                && !has_mac_shadow
+            {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 for (atlas_index, start, count) in world_ranges {

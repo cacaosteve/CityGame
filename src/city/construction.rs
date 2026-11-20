@@ -2,6 +2,20 @@
 
 use super::layers::infer_corner_key_bits;
 use super::*;
+use std::io::Read;
+
+#[derive(Debug)]
+pub(crate) struct CityOpenIoError(pub std::io::Error);
+
+impl std::fmt::Display for CityOpenIoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for CityOpenIoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+}
 
 pub(super) fn city_name_from_chunks(
     path: &Path,
@@ -11,7 +25,16 @@ pub(super) fn city_name_from_chunks(
     let name = chunks
         .iter()
         .find(|chunk| chunk.name == "CNAM")
-        .map(|chunk| cnam_text(&chunk.data));
+        .map(|chunk| {
+            if kind.is_win95() {
+                super::layer_codec::win_cnam_text(
+                    &chunk.data,
+                    super::layer_codec::win_cnam_is_utf8(chunks),
+                )
+            } else {
+                cnam_text(&chunk.data)
+            }
+        });
     if kind.is_win95() {
         // The Win95 loader resets the city-name string to empty before dispatching
         // chunks. A missing or zero-length CNAM therefore stays empty; it does not
@@ -30,7 +53,10 @@ pub(super) fn city_name_from_chunks(
 impl City {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let bytes = fs::read(&path).with_context(|| format!("reading city {}", path.display()))?;
+        let mut file = fs::File::open(&path).map_err(CityOpenIoError)
+            .with_context(|| format!("reading city {}", path.display()))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).with_context(|| format!("reading city {}", path.display()))?;
         let kind = detect_city_kind(&path, &bytes)?;
         let chunks = parse_scdh_chunks(&bytes)?;
         let mac_budget_book = if kind == CityFileKind::MacCity {
@@ -85,6 +111,32 @@ impl City {
         let labels = decode_optional_chunk_layer(&chunks, "XLAB", kind, |chunks| {
             decode_labels(chunks, kind)
         })?;
+        let mac_label_backing = if kind == CityFileKind::MacCity && labels.is_some() {
+            Some(decode_expected_chunk_for_kind(
+                &chunks,
+                "XLAB",
+                CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+                kind,
+            )?)
+        } else {
+            None
+        };
+        let pe_label_backing = if kind.is_win95() && labels.is_some() {
+            let mut raw = decode_expected_chunk_for_kind(
+                &chunks,
+                "XLAB",
+                CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+                kind,
+            )?;
+            for row in raw.chunks_exact_mut(CITY_LABEL_RECORD_LEN) {
+                let len = usize::from(row[0]).min(CITY_LABEL_TEXT_MAX);
+                row.copy_within(1..1 + len, 0);
+                row[len] = 0;
+            }
+            Some(raw)
+        } else {
+            None
+        };
         let microsims =
             decode_optional_chunk_layer(&chunks, "XMIC", kind, |chunks| decode_xmic(chunks, kind))?;
         let tile_bits = decode_optional_chunk_layer(&chunks, "XBIT", kind, |chunks| {
@@ -155,6 +207,7 @@ impl City {
             .unwrap_or(0);
 
         let mut city = Self {
+            has_backing_file: true,
             path,
             kind,
             name,
@@ -168,6 +221,8 @@ impl City {
             zones,
             text_overlays,
             labels,
+            pe_label_backing,
+            mac_label_backing,
             microsims,
             tile_bits,
             traffic_density,
@@ -250,6 +305,7 @@ impl City {
                 .as_ref()
                 .and_then(|extension| extension.pe_monster_xthg_index),
             mac_cross_layout_active: false,
+            mac_cross_layout_annual_flag: mac_saved_state.and_then(|state| state.annual_flag),
             mac_road_neighbor_link_count_runtime: mac_saved_state
                 .and_then(|state| state.road_neighbor_links),
             mac_residential_total_runtime: mac_saved_state
@@ -282,6 +338,8 @@ impl City {
             pe_dw_subway_passengers: 0,
             mac_monthly_arrest_total: 0,
             mac_mayor_approval: 0,
+            mac_opinion_counts: [0; 7],
+            mac_opinion_order: [0; 7],
             mac_newspaper_suppressed: false,
             mac_police_gate_runtime: mac_saved_state.map(|state| state.police_gate).unwrap_or(0),
             mac_arcology_total_runtime: mac_saved_state.and_then(|state| state.arcology_total),
@@ -308,6 +366,8 @@ impl City {
             pe_w_monster_xthg_index: 0xffff,
             pe_w_current_disaster_type: 0,
             pe_disaster_damage_class: -1,
+            mac_disaster_damage_class: -1,
+            mac_story_runtime: None,
             pe_dw_disaster_active: 0,
             pe_dw_city_has_ocean: 0,
             pe_dw_city_has_river: 0,
@@ -326,6 +386,8 @@ impl City {
             pe_eq_averages_ready: false,
             pe_life_expectancy: 70,
             pe_mayor_approval: 0,
+            pe_opinion_counts: [0; 7],
+            pe_opinion_order: [0; 7],
             pe_unemployment_percent: 0,
             pe_city_crime: 0,
             pe_city_pollution: 0,
@@ -390,7 +452,10 @@ impl City {
         } else {
             mac_saved_state
                 .and_then(|state| state.police_arrest_subtotal)
-                .unwrap_or(0)
+                // CODE 4 loads the saved WORD on first Mac open even when
+                // this is a Windows-layout file. Later Mac saves preserve
+                // their independent continuation in CGEX.
+                .unwrap_or_else(|| city.misc_u32_at(1038 * MISC_FIELD_LEN).unwrap_or(0) as u16)
         };
         city.hydrate_pe_eq_le_from_misc();
         // PE MISC→BSS arco pop @ `0x431b8e` (`[MISC+0x1020]` → `[0x4c94c4]`).
@@ -451,27 +516,19 @@ impl City {
                 .unwrap_or(0)
                 .min(u32::from(u16::MAX)) as u16;
             // PE MISC→BSS prison bonus @ `0x431c04` (word `[MISC+0x103C]` → `[0x4ca1dc]`).
-            city.pe_w_prison_bonus = city
-                .misc_u32_at(MISC_PRISON_BONUS_OFFSET)
-                .unwrap_or(0)
-                .min(u32::from(u16::MAX)) as u16;
+            city.pe_w_prison_bonus = city.misc_u32_at(MISC_PRISON_BONUS_OFFSET).unwrap_or(0) as u16;
             // PE MISC→BSS monster XTHG index @ `0x431c0e` (word `[MISC+0x1040]` → `[0x4ca81c]`).
             city.pe_w_monster_xthg_index = city
                 .misc_u32_at(MISC_MONSTER_XTHG_INDEX_OFFSET)
-                .unwrap_or(0xffff)
-                .min(u32::from(u16::MAX)) as u16;
+                .unwrap_or(0xffff) as u16;
             // PE MISC→BSS current disaster type @ `0x431c2c` (word `[MISC+0x1044]` → `[0x4ca93c]`).
             city.pe_w_current_disaster_type = city
                 .misc_u32_at(MISC_CURRENT_DISASTER_TYPE_OFFSET)
-                .unwrap_or(0)
-                .min(u32::from(u16::MAX)) as u16;
+                .unwrap_or(0) as u16;
             // PE MISC→BSS disaster active @ `0x431c3b` (`[MISC+0x1048]` → `[0x4c9ee8]`).
             city.pe_dw_disaster_active = city.misc_u32_at(MISC_DISASTER_ACTIVE_OFFSET).unwrap_or(0);
             // PE MISC→BSS sewer bonus @ `0x431c45` (word `[MISC+0x1050]` → `[0x4cb3dc]`).
-            city.pe_w_sewer_bonus = city
-                .misc_u32_at(MISC_SEWER_BONUS_OFFSET)
-                .unwrap_or(0)
-                .min(u32::from(u16::MAX)) as u16;
+            city.pe_w_sewer_bonus = city.misc_u32_at(MISC_SEWER_BONUS_OFFSET).unwrap_or(0) as u16;
         }
         // PE MISC→BSS ocean/river @ `0x43189a`/`0x4318ab` (`[MISC+0x0e44]`/`[MISC+0x0e48]`).
         // Mac CODE 4 saves its native coast/river options in the same slots.
@@ -519,7 +576,6 @@ impl City {
         // 25 per month and 300 per year, the same numeric scale used by the
         // PE age-in-days field. Keep the shared date/age cache hydration.
         city.pe_dw_city_age = city.misc_u32_at(MISC_CITY_AGE_OFFSET).unwrap_or(0);
-        city.pe_publish_graph_calendar_words_from_city_age_41354e();
         // PE MISC→BSS difficulty @ `0x43145f` (word `[MISC+0x1c]` → `[0x4cb404]`).
         city.pe_w_city_difficulty = city
             .misc_u32_at(MISC_DIFFICULTY_OFFSET)
@@ -676,6 +732,7 @@ impl City {
         let tile_bits = vec![TileBits::new(0); CITY_TILES];
         let traffic_density = vec![0u8; CITY_TILES];
         let mut city = Self {
+            has_backing_file: false,
             path,
             kind: CityFileKind::WinSc2,
             name: name.clone(),
@@ -689,6 +746,8 @@ impl City {
             zones: Some(zones),
             text_overlays: Some(text_overlays),
             labels: Some(labels),
+            pe_label_backing: Some(vec![0; CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN]),
+            mac_label_backing: None,
             microsims: Some(vec![MicrosimRecord::default(); MICROSIM_COUNT]),
             tile_bits: Some(tile_bits),
             traffic_density: Some(traffic_density),
@@ -736,6 +795,7 @@ impl City {
             pe_cross_layout_saved_traffic_count: None,
             pe_cross_layout_saved_monster_xthg_index: None,
             mac_cross_layout_active: false,
+            mac_cross_layout_annual_flag: None,
             mac_road_neighbor_link_count_runtime: None,
             mac_residential_total_runtime: None,
             mac_cross_layout_saved_civic_latch: None,
@@ -762,6 +822,8 @@ impl City {
             pe_dw_subway_passengers: 0,
             mac_monthly_arrest_total: 0,
             mac_mayor_approval: 0,
+            mac_opinion_counts: [0; 7],
+            mac_opinion_order: [0; 7],
             mac_newspaper_suppressed: false,
             mac_police_gate_runtime: 0,
             mac_arcology_total_runtime: None,
@@ -784,6 +846,8 @@ impl City {
             pe_w_monster_xthg_index: 0xffff,
             pe_w_current_disaster_type: 0,
             pe_disaster_damage_class: -1,
+            mac_disaster_damage_class: -1,
+            mac_story_runtime: None,
             pe_dw_disaster_active: 0,
             pe_dw_city_has_ocean: 0,
             pe_dw_city_has_river: 0,
@@ -802,6 +866,8 @@ impl City {
             pe_eq_averages_ready: false,
             pe_life_expectancy: 70,
             pe_mayor_approval: 0,
+            pe_opinion_counts: [0; 7],
+            pe_opinion_order: [0; 7],
             pe_unemployment_percent: 0,
             pe_city_crime: 0,
             pe_city_pollution: 0,

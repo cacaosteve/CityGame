@@ -508,6 +508,8 @@ fn case_sensitive_glyph(ch: char) -> [u8; 7] {
         'c' => [0, 0, 0b011, 0b100, 0b011, 0, 0],
         'd' => [0b001, 0b001, 0b011, 0b101, 0b011, 0, 0],
         'e' => [0, 0, 0b011, 0b110, 0b011, 0, 0],
+        'é' => [0b001, 0, 0b011, 0b110, 0b011, 0, 0],
+        'É' => [0b001, 0b111, 0b100, 0b110, 0b100, 0b111, 0],
         'f' => [0b011, 0b010, 0b111, 0b010, 0b010, 0, 0],
         'g' => [0, 0, 0b011, 0b101, 0b011, 0b001, 0b110],
         'h' => [0b100, 0b100, 0b110, 0b101, 0b101, 0, 0],
@@ -858,16 +860,33 @@ pub fn edit_map_slider_hit_test(
     if mode != AppMode::EditNewMap || open_menu.is_some() {
         return None;
     }
-    let scale = UiMetrics::for_logical_height(logical_size.1).palette_scale * pixel_scale;
     for slider in EDIT_MAP_SLIDERS {
         let rect = backing_rect(logical_size, pixel_scale, Vec2::ZERO, slider.src);
         if point_in_rect(screen, rect) {
-            let mac_y = ((screen.y - rect.y) / scale).floor();
-            let value = EDIT_MAP_SLIDER_MAX.saturating_sub(mac_y.clamp(0.0, 47.0) as u8);
+            let value =
+                edit_map_slider_drag_value(screen, logical_size, pixel_scale, slider.slider);
             return Some((slider.slider, value));
         }
     }
     None
+}
+
+/// Value while tracking a slider already pressed. The original keeps tracking
+/// outside the slider horizontally and clamps vertical motion to the track.
+pub fn edit_map_slider_drag_value(
+    screen: Vec2,
+    logical_size: (u32, u32),
+    pixel_scale: f32,
+    slider: EditMapSlider,
+) -> u8 {
+    let track = EDIT_MAP_SLIDERS
+        .iter()
+        .find(|item| item.slider == slider)
+        .expect("slider track");
+    let rect = backing_rect(logical_size, pixel_scale, Vec2::ZERO, track.src);
+    let scale = UiMetrics::for_logical_height(logical_size.1).palette_scale * pixel_scale;
+    let y = ((screen.y - rect.y) / scale).floor().clamp(0.0, 47.0) as u8;
+    EDIT_MAP_SLIDER_MAX.saturating_sub(y)
 }
 
 pub fn palette_hover_label(

@@ -5,6 +5,20 @@ impl<'window> Renderer<'window> {
         &self,
         sprites: &[&RenderSprite],
     ) -> (Vec<Vertex>, Vec<(usize, u32, u32)>) {
+        Self::build_vertices_for_atlases(
+            &self.atlases,
+            self.config.width,
+            self.config.height,
+            sprites,
+        )
+    }
+
+    pub(super) fn build_vertices_for_atlases(
+        atlases: &[GpuAtlas],
+        width: u32,
+        height: u32,
+        sprites: &[&RenderSprite],
+    ) -> (Vec<Vertex>, Vec<(usize, u32, u32)>) {
         let mut vertices = Vec::new();
         let mut ranges = Vec::new();
         if sprites.is_empty() {
@@ -30,7 +44,7 @@ impl<'window> Renderer<'window> {
                 current_atlas = sprite.atlas;
                 range_start = vertices.len() as u32;
             }
-            if let Some(atlas) = self.atlases.get(sprite.atlas)
+            if let Some(atlas) = atlases.get(sprite.atlas)
                 && let Some(frame) = atlas.frames.get(&sprite.sprite_id)
             {
                 push_sprite_vertices(
@@ -43,8 +57,8 @@ impl<'window> Renderer<'window> {
                     sprite.flip_x,
                     sprite.bottom_left_anchor,
                     sprite.tint,
-                    self.config.width as f32,
-                    self.config.height as f32,
+                    width as f32,
+                    height as f32,
                 );
             }
         }

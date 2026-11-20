@@ -1,6 +1,310 @@
 use super::*;
 use crate::app::tests::{blank_city_layout_fixture, test_state};
 
+#[test]
+fn mac_successful_disaster_resets_earlier_effects_before_alert() {
+    for enabled in [false, true] {
+        let city = City::new_blank("/tmp/mac-action-sound-reset.sc2", "Sound reset").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.sound_effects_enabled = enabled;
+        state
+            .pending_disaster_extra_sounds
+            .push(PlacementSound::Fire);
+        state
+            .city
+            .set_mac_pending_action(scenario_action::ACTOR_IGNITION_ACTION.into());
+        assert!(state.consume_mac_pending_action(&mut 0, &mut |_| {}));
+        assert_eq!(state.take_mac_disaster_effect_reset(), Some((1, enabled)));
+        assert_eq!(state.take_mac_disaster_effect_reset(), None);
+        let sounds = state.take_pending_disaster_extra_sounds();
+        assert_eq!(sounds.first(), Some(&PlacementSound::Fire));
+        state.city.set_mac_pending_action(0);
+        assert!(!state.consume_mac_pending_action(&mut 0, &mut |_| {}));
+        assert_eq!(state.take_mac_disaster_effect_reset(), None);
+    }
+}
+
+#[test]
+#[ignore = "requires private live Mac manual Fire sound trace"]
+fn mac_manual_fire_effect_plan_matches_live_driver_order() {
+    let path = std::env::var_os("CITYGAME_MAC_MANUAL_FIRE_SOUND").unwrap();
+    let native: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let expected: Vec<_> = native["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    let city = blank_city_layout_fixture("manual-fire-sound.city", "Fire sound");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.sound_effects_enabled = true;
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.no_disasters_enabled = true;
+    state.mac_process_rng = MacToolboxRng::new(1);
+    state.city.set_mac_kind2_hotspot(64, 64);
+    state.city.set_building(51, 52, 0x70);
+    state.city.set_building(53, 77, 0x70);
+    let effect = state
+        .apply_state_app_command(&AppCommand::StartDisaster(DisasterKind::Fire))
+        .unwrap();
+    assert_eq!(effect.disaster_log, Some((DisasterKind::Fire, true)));
+    state.advance_frame_simulation(Duration::ZERO);
+    let reset = state.take_mac_disaster_effect_reset();
+    let sounds = state.take_pending_disaster_extra_sounds();
+    let actual: Vec<_> = disaster_effect_playback(reset, sounds)
+        .into_iter()
+        .map(|event| match event {
+            DisasterEffectPlayback::StopEffects => "stop".to_owned(),
+            DisasterEffectPlayback::Play(sound) => format!("play:{}", sound.sound_id()),
+        })
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn mac_captured_clock_keeps_absolute_tick_origin_and_wraps() {
+    let mut scheduler = MacLoopScheduler::default();
+    scheduler.start_captured_clock(0xffff_ffff);
+    assert_eq!(scheduler.current_tick(), 0xffff_ffff);
+    assert_eq!(scheduler.deadline, 0xffff_ffff);
+    assert_eq!(scheduler.actor_deadline, 0xffff_ffff);
+    assert_eq!(scheduler.advance_elapsed(Duration::from_millis(17)), 0);
+    assert_eq!(scheduler.admit_at(1, 4, 0, 0), None);
+    assert!(!scheduler.due_actor_sweep(1, 4, 0));
+}
+
+#[test]
+fn mac_palette_install_accounts_for_captured_clock_origin() {
+    let mut scheduler = MacLoopScheduler::default();
+    scheduler.start_captured_clock(2711);
+    let palette = palette::MacPaletteSchedule::initialize(|| 100);
+    scheduler.install_palette(palette, 2800);
+    scheduler.advance_palette(2, scheduler.current_tick());
+    let palette = scheduler.palette.unwrap();
+    assert_eq!((palette.fast.deadline, palette.slow.deadline), (2812, 2890));
+}
+
+#[test]
+fn mac_live_loop_initializes_both_deadlines_from_one_tick() {
+    let mut scheduler = MacLoopScheduler::default();
+    scheduler.start_live_clock(0xffff_fff0);
+    assert!(scheduler.live_clock);
+    assert_eq!(scheduler.deadline, 0xffff_fff0);
+    assert_eq!(scheduler.actor_deadline, 0xffff_fff0);
+    assert!(!scheduler.due_actor_sweep(1, 3, 0xffff_fff0));
+    assert_eq!(scheduler.admit_at(1, 3, 0xffff_fff0, 0xffff_fff0), None);
+    assert!(scheduler.due_actor_sweep(1, 3, 0xffff_fff1));
+    assert_eq!(
+        scheduler.admit_at(1, 3, 0xffff_fff1, 0xffff_fff1),
+        Some(MacLoopDispatch::Calendar)
+    );
+    assert_eq!(scheduler.actor_deadline, 0x1e);
+    assert_eq!(scheduler.deadline, 0xffff_fffd);
+}
+
+#[test]
+fn mac_palette_state_survives_install_and_uses_city_tick_origin() {
+    let mut ticks = [3770, 3769].into_iter();
+    let palette = palette::MacPaletteSchedule::initialize(|| ticks.next().unwrap());
+    let mut scheduler = MacLoopScheduler::default();
+    scheduler.install_palette(palette, 5522);
+    scheduler.advance_palette(1, 0);
+    assert_eq!(scheduler.palette.unwrap(), palette);
+    scheduler.advance_palette(2, 1416);
+    let palette = scheduler.palette.unwrap();
+    assert_eq!((palette.fast.deadline, palette.slow.deadline), (6950, 7028));
+    assert!(palette.fast.alternate && palette.slow.alternate);
+}
+
+#[test]
+fn mac_title_palette_is_transferred_to_the_city_scheduler() {
+    let mut seeds = [10, 11, 12].into_iter();
+    let mut startup = super::super::title_flow::MacTitleStartup::new(|| seeds.next().unwrap());
+    let mut ticks = [123, 124].into_iter();
+    startup.initialize_palette(|| ticks.next().unwrap());
+    let city = City::new_blank("/tmp/mac-title-palette.sc2", "Palette").unwrap();
+    let mut state = test_state(city);
+    startup.install(&mut state);
+    assert!(state.mac_loop_scheduler.palette_uses_host_clock);
+    let palette = state.mac_loop_scheduler.palette.unwrap();
+    assert_eq!((palette.fast.deadline, palette.slow.deadline), (124, 123));
+}
+
+#[test]
+fn mac_live_palette_samples_clock_at_each_native_read() {
+    let mut initial = [200, 100].into_iter();
+    let palette = palette::MacPaletteSchedule::initialize(|| initial.next().unwrap());
+    let mut scheduler = MacLoopScheduler::default();
+    scheduler.install_live_palette(palette);
+    let mut ticks = [100, 103, 200, 205].into_iter();
+    scheduler.advance_palette_with_clock(2, 0, || ticks.next().unwrap());
+    assert_eq!(ticks.next(), None);
+    let palette = scheduler.palette.unwrap();
+    assert_eq!((palette.fast.deadline, palette.slow.deadline), (115, 295));
+}
+
+#[test]
+fn mac_underground_calendar_redraw_updates_palette_without_marker_rng() {
+    let city = City::new_blank("/tmp/mac-underground-calendar.sc2", "Pipes").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.show_underground = true;
+    state.traffic.set_speed(GameSpeed::Turtle);
+    state.mac_loop_scheduler.set_viewport_size((640, 480));
+    state
+        .mac_loop_scheduler
+        .install_palette(palette::MacPaletteSchedule::initialize(|| 0), 100);
+    let seed = state.mac_process_rng.seed();
+    state.redraw_mac_map();
+    let palette = state.mac_loop_scheduler.palette.unwrap();
+    assert_eq!((palette.fast.deadline, palette.slow.deadline), (112, 190));
+    assert_eq!(state.mac_process_rng.seed(), seed);
+}
+
+#[test]
+fn mac_surface_redraw_updates_kind6_lfsr_and_clears_stale_proxy() {
+    for (zoom, stale, expected_seed, expected_marker) in [
+        (0.25, false, 0xace1, 0xcb),
+        (0.25, true, 0xace1, 0xcb),
+        (0.5, false, 0x4237, 0xcb),
+        (0.5, true, 0xace1, 0),
+    ] {
+        let mut city = City::new_blank("/tmp/mac-kind6-redraw.sc2", "Redraw").unwrap();
+        city.set_text_overlay(1, 1, 0xcb);
+        city.set_mac_object_slot_record(
+            2,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: 6,
+                tile_x: 1 + u8::from(stale),
+                tile_y: 1,
+                ..Default::default()
+            },
+        );
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.zoom = zoom;
+        state.mac_loop_scheduler.set_viewport_size((640, 480));
+        state.mac_app_lfsr = MacAppLfsrRng::new(0xace1);
+        state.redraw_mac_map();
+        assert_eq!(
+            state.mac_app_lfsr.state(),
+            expected_seed,
+            "zoom {zoom}, stale {stale}"
+        );
+        assert_eq!(state.city.text_overlay_at(1, 1), Some(expected_marker));
+    }
+}
+
+#[test]
+fn mac_surface_redraw_clears_stale_actor_only_after_zoom_gate() {
+    for (kind, zoom, expected) in [(2, 0.5, 0xcb), (2, 1.0, 0), (10, 1.0, 0xcb), (12, 1.0, 0)] {
+        let mut city = City::new_blank("/tmp/mac-stale-actor-redraw.sc2", "Redraw").unwrap();
+        city.set_text_overlay(1, 1, 0xcb);
+        city.set_mac_object_slot_record(
+            2,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind,
+                tile_x: 2,
+                tile_y: 1,
+                ..Default::default()
+            },
+        );
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.zoom = zoom;
+        state.mac_loop_scheduler.set_viewport_size((640, 480));
+        state.redraw_mac_map();
+        assert_eq!(
+            state.city.text_overlay_at(1, 1),
+            Some(expected),
+            "kind {kind}, zoom {zoom}"
+        );
+    }
+}
+
+#[test]
+fn mac_actor_record_changes_invalidate_old_and_new_render_tiles() {
+    let mut city = City::new_blank("/tmp/mac-actor-dirty.sc2", "Actor").unwrap();
+    let mut actor = crate::win95_overlay::Win95OverlayRecord {
+        kind: 1,
+        tile_x: 10,
+        tile_y: 10,
+        ..Default::default()
+    };
+    city.set_mac_object_slot_record(2, actor);
+    city.clear_dirty();
+    actor.sub_x = 9;
+    city.set_mac_object_slot_record(2, actor);
+    assert!(city.dirty_tile_coords().any(|point| point == (10, 10)));
+    city.clear_dirty();
+    actor.tile_x = 20;
+    city.set_mac_object_slot_record(2, actor);
+    let dirty = city.take_dirty_tiles();
+    assert!(dirty.contains(&(10, 10)) && dirty.contains(&(20, 10)));
+    city.set_mac_object_slot_record(2, actor);
+    assert!(!city.has_dirty_tiles());
+}
+
+#[test]
+#[ignore = "requires original Mac city save"]
+fn mac_stale_actor_redraw_cleanup_survives_save_and_reopen() {
+    let source = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_STALE_SAVE").unwrap());
+    let mut city = City::load(&source).unwrap();
+    city.set_text_overlay(1, 1, 0xcb);
+    city.set_mac_object_slot_record(
+        2,
+        crate::win95_overlay::Win95OverlayRecord {
+            kind: 2,
+            tile_x: 2,
+            tile_y: 1,
+            ..Default::default()
+        },
+    );
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.zoom = 1.0;
+    state.mac_loop_scheduler.set_viewport_size((640, 480));
+    state.redraw_mac_map();
+    assert_eq!(state.city.text_overlay_at(1, 1), Some(0));
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "citygame-mac-stale-{}-{unique}.city",
+        std::process::id()
+    ));
+    state.city.save(&path).unwrap();
+    let reopened = City::load(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(reopened.text_overlay_at(1, 1), Some(0));
+    assert_eq!(reopened.traffic_overlays().unwrap()[2].kind, 2);
+}
+
+#[test]
+fn mac_switch_to_underground_services_palette_once_per_redraw() {
+    let city = City::new_blank("/tmp/mac-underground-switch.sc2", "Pipes").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Turtle);
+    state.mac_loop_scheduler.set_viewport_size((640, 480));
+    state
+        .mac_loop_scheduler
+        .install_palette(palette::MacPaletteSchedule::initialize(|| 0), 100);
+    let seed = state.mac_process_rng.seed();
+    state.set_underground_view(true);
+    let palette = state.mac_loop_scheduler.palette.unwrap();
+    assert_eq!((palette.fast.deadline, palette.slow.deadline), (112, 190));
+    assert_eq!(state.mac_process_rng.seed(), seed);
+    state.set_underground_view(true);
+    assert_eq!(state.mac_loop_scheduler.palette.unwrap(), palette);
+}
+
 fn reopen_with_actor_fixture_seed(state: &mut crate::app::ViewerState, path: &std::path::Path) {
     // These native actor slices restart at the worker with a supplied seed.
     // Apply the saved map and actor state, then inject that post-open seed.
@@ -9,6 +313,17 @@ fn reopen_with_actor_fixture_seed(state: &mut crate::app::ViewerState, path: &st
     std::fs::remove_file(path).unwrap();
     reopened.unwrap();
     state.mac_process_rng = fixture_rng;
+    // These fixtures compare isolated native worker calls and do not include
+    // a map-window redraw. Keep that boundary distinct from live gameplay.
+    state.mac_loop_scheduler.viewport_size = None;
+}
+
+fn dismiss_mac_disaster_paper(state: &mut crate::app::ViewerState) {
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster))
+    );
+    state.close_city_info_dialog();
 }
 
 #[test]
@@ -40,16 +355,111 @@ fn mac_action_completion_polls_before_the_next_calendar_dispatch() {
             city.set_mac_newspaper_suppressed(suppressed);
             scenario_action::begin_action(&mut city, 3);
             let mut rng = crate::mac_random::MacToolboxRng::new(123);
-            let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+            let pass = scenario_action::advance_action(
+                &mut city,
+                &mut rng,
+                &mut 0,
+                &mut MacAppLfsrRng::new(0),
+            );
             assert!(pass.complete);
             assert_eq!(city.mac_state_misc_u32_at(4), Some(1));
             assert_eq!(rng.seed(), seed);
-            assert!(!scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0).complete);
+            assert!(
+                !scenario_action::advance_action(
+                    &mut city,
+                    &mut rng,
+                    &mut 0,
+                    &mut MacAppLfsrRng::new(0)
+                )
+                .complete
+            );
             city.refresh_mac_monthly_random_xmic_rows(100, 100, 100, 100, 100, false, &mut rng);
             assert_eq!(rng.seed(), seed);
             assert_eq!(city.microsim_at(10).unwrap().stat2, approval);
         }
     }
+}
+
+#[test]
+fn mac_action_completion_runs_status_chooser_when_returning_to_gameplay() {
+    let city = blank_city_layout_fixture("mac-action-completion.city", "Completion");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.no_disasters_enabled = false;
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 2_500);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
+    // Keep the opinion poll inactive, isolating the mode-1 chooser draw.
+    state.city.set_mac_state_misc_u32_at(0x102c, 0);
+    state.mac_process_rng = MacToolboxRng::new(123);
+    state.mac_game_rng = MacGameLcgRng::new(0x25e111e5);
+    state.music_enabled = true;
+    scenario_action::begin_action(&mut state.city, 3);
+
+    let mut callbacks = 0;
+    state.advance_mac_scenario_action_with_music(&mut 0, &mut |state| {
+        callbacks += 1;
+        let mut expected = MacToolboxRng::new(123);
+        expected.random_u16();
+        assert_eq!(
+            state.mac_process_rng.seed(),
+            expected.seed(),
+            "chooser precedes music"
+        );
+        assert!(
+            state.city_info_dialog.is_none(),
+            "music precedes opening the paper"
+        );
+        state.mac_music_callback(9547, true);
+    });
+    assert_eq!(callbacks, 1);
+    assert_eq!(state.mac_game_rng.state(), 0xb06694ba);
+
+    let mut expected = MacToolboxRng::new(123);
+    expected.random_u16();
+    assert_eq!(state.mac_process_rng.seed(), expected.seed());
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+        Some(CITY_MODE_GAMEPLAY)
+    );
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster))
+    );
+    state.traffic.set_speed(GameSpeed::Cheetah);
+    let clock = state.game_clock;
+    assert_eq!(
+        state.advance_frame_simulation(Duration::from_secs(1)).days,
+        0
+    );
+    assert_eq!(state.game_clock, clock);
+    state.close_city_info_dialog();
+    assert!(
+        state
+            .advance_frame_simulation(Duration::from_millis(17))
+            .days
+            > 0
+    );
+}
+
+#[test]
+fn mac_action_completion_skips_paper_when_application_is_inactive() {
+    let city = blank_city_layout_fixture("mac-inactive-completion.city", "Completion");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.city.set_mac_newspaper_suppressed(true);
+    scenario_action::begin_action(&mut state.city, 3);
+
+    state.advance_mac_scenario_action(&mut 0);
+
+    assert_eq!(state.city_info_dialog, None);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+        Some(CITY_MODE_GAMEPLAY)
+    );
 }
 
 #[test]
@@ -121,6 +531,7 @@ fn saved_flint_mac_rail_sweep_matches_original_on_both_city_layouts() {
                 &mut city,
                 &mut quickdraw,
                 &mut game_rng,
+                &mut crate::mac_random::MacAppLfsrRng::new(0),
                 &mut sound_deadline,
                 0,
                 &mut tick_count,
@@ -235,6 +646,7 @@ fn mac_actor_sweep_matches_native_on_imported_win95_flint_scenario() {
         &mut city,
         &mut quickdraw,
         &mut game_rng,
+        &mut crate::mac_random::MacAppLfsrRng::new(0),
         &mut sound_deadline,
         0,
         &mut tick_count,
@@ -358,12 +770,16 @@ fn mac_run_state_two_counts_due_action_without_advancing_calendar() {
 #[test]
 fn mac_run_state_one_clears_unknown_selector_then_advances_only_an_active_action() {
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
-        for (active, expected_seed) in [(false, 1), (true, 16_807)] {
+        // The unseeded Maxis Land capture retained Earthquake selector 6
+        // after its separate action flag had cleared.
+        for (stored_selector, active, expected_seed) in
+            [(12, false, 1), (6, false, 1), (12, true, 16_807)]
+        {
             let mut city =
                 City::new_blank("/tmp/mac-mode-one-unknown.sc2", "Unknown").expect("blank city");
             city.kind = kind;
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, 1);
-            city.set_mac_state_misc_u32_at(0x1044, 12);
+            city.set_mac_state_misc_u32_at(0x1044, stored_selector);
             city.set_mac_state_misc_u32_at(0x1048, u32::from(active));
             city.set_mac_pending_action(19);
             city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 327_630_000);
@@ -386,7 +802,10 @@ fn mac_run_state_one_clears_unknown_selector_then_advances_only_an_active_action
                 0
             );
             assert_eq!(state.city.mac_pending_action(), 0, "layout={kind:?}");
-            assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(12));
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x1044),
+                Some(stored_selector)
+            );
             assert_eq!(
                 state.city.mac_state_misc_u32_at(0x1048),
                 Some(u32::from(active))
@@ -800,6 +1219,53 @@ fn mac_actor_sweep_kind3_handoff_matches_across_city_layouts() {
 }
 
 #[test]
+fn mac_tornado_sweep_redraw_uses_the_shared_quickdraw_stream() {
+    let mut city = City::new_blank("/tmp/mac-tornado-sweep-redraw.sc2", "Tornado").unwrap();
+    let slot = XTHG_FIRST_USABLE_SLOT;
+    city.set_mac_object_slot_record(
+        slot,
+        crate::win95_overlay::Win95OverlayRecord {
+            kind: XTHG_TORNADO,
+            tile_x: 50,
+            tile_y: 50,
+            sub_x: 8,
+            sub_y: 8,
+            ..Default::default()
+        },
+    );
+    city.set_text_overlay(50, 50, 0xc9 + slot as u8);
+    // Same screen X as the actor but well outside export 175's tile range.
+    city.set_text_overlay(80, 80, 0xff);
+    let mut view =
+        map_redraw::MacMapRedrawView::from_host((640, 480), 1.0, 0.25, glam::Vec2::ZERO, 0);
+    view.center_on(&city, 50, 50);
+    let mut without_view = city.clone();
+    let mut native_draws = MacToolboxRng::new(1);
+    let mut worker_draws = native_draws;
+    let run = |city: &mut City, rng: &mut MacToolboxRng, view| {
+        tick_mac_actors_with_tick_source_and_redraw(
+            city,
+            rng,
+            &mut MacGameLcgRng::new(1),
+            &mut MacAppLfsrRng::new(1),
+            &mut 0,
+            0,
+            &mut 100,
+            &mut None,
+            &mut |tick| tick,
+            view,
+            &mut |_| {},
+        );
+    };
+    run(&mut city, &mut native_draws, Some(view));
+    run(&mut without_view, &mut worker_draws, None);
+    assert_eq!(city.traffic_overlays(), without_view.traffic_overlays());
+    worker_draws.random_u16();
+    worker_draws.random_u16();
+    assert_eq!(native_draws.seed(), worker_draws.seed());
+}
+
+#[test]
 fn mac_tornado_kind15_uses_native_turn_cleanup_and_runs_on_both_city_layouts() {
     for kind in [CityFileKind::MacCity, CityFileKind::WinSc2] {
         let mut city = City::new_blank(
@@ -839,6 +1305,7 @@ fn mac_tornado_kind15_uses_native_turn_cleanup_and_runs_on_both_city_layouts() {
             &mut city,
             &mut quickdraw,
             &mut game_rng,
+            &mut crate::mac_random::MacAppLfsrRng::new(0),
             &mut sound_deadline,
             0,
             &mut now,
@@ -918,6 +1385,7 @@ fn mac_tornado_cleanup_tests_low_byte_of_random_word_on_both_city_layouts() {
             &mut city,
             &mut quickdraw,
             &mut game_rng,
+            &mut crate::mac_random::MacAppLfsrRng::new(0),
             &mut sound_deadline,
             0,
             &mut now,
@@ -1065,6 +1533,93 @@ fn mac_kind2_state_two_mover_and_xtrf_sound_match_across_city_layouts() {
     assert_eq!(outcomes[0].5, Some(60));
     assert_eq!(outcomes[1].4, Some(12));
     assert_eq!(outcomes[1].5, Some(34));
+}
+
+#[test]
+fn mac_kind2_traffic_sound_uses_distinct_tick_samples() {
+    for (deadline, samples, expected, sound_count) in [
+        (100, vec![100], 100, 0),
+        (100, vec![99], 100, 0),
+        (100, vec![101, 105], 5105, 1),
+        (0xffff_fffe, vec![0xffff_ffff, 0xffff_ffff], 4999, 1),
+        (0xffff_ffff, vec![0], 0xffff_ffff, 0),
+    ] {
+        let mut city = City::new_blank("/tmp/mac-kind2-sound-clock.city", "Clock").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_mac_kind2_hotspot(60, 60);
+        city.set_traffic_density(60, 59, 0xaa);
+        city.set_mac_object_slot_record(
+            XTHG_FIRST_USABLE_SLOT,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: 2,
+                state: 2,
+                tile_x: 60,
+                tile_y: 60,
+                target_x: 60,
+                target_y: 60,
+                ..Default::default()
+            },
+        );
+        let mut next = samples.iter().copied();
+        let mut deadline = deadline;
+        let sounds = tick_mac_actors_with_tick_source(
+            &mut city,
+            &mut MacToolboxRng::new(0x1234_5678),
+            &mut MacGameLcgRng::new(MacGameLcgRng::INITIAL_STATE),
+            &mut MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE),
+            &mut deadline,
+            0,
+            &mut 0,
+            &mut None,
+            &mut |_| next.next().expect("unexpected TickCount read"),
+        );
+        assert_eq!(deadline, expected);
+        assert_eq!(
+            sounds
+                .iter()
+                .filter(|s| **s == PlacementSound::MacKind2Traffic)
+                .count(),
+            sound_count
+        );
+        assert_eq!(next.next(), None, "missing TickCount read");
+    }
+}
+
+#[test]
+fn mac_kind2_retarget_draws_landing_gate_on_occupied_tile() {
+    let mut city = City::new_blank("/tmp/mac-kind2-landing.city", "Landing").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_kind2_hotspot(60, 60);
+    city.set_building(60, 59, 0x2c);
+    let slot = XTHG_FIRST_USABLE_SLOT;
+    city.set_mac_object_slot_record(
+        slot,
+        crate::win95_overlay::Win95OverlayRecord {
+            kind: 2,
+            state: 2,
+            tile_x: 60,
+            tile_y: 60,
+            target_x: 60,
+            target_y: 60,
+            ..Default::default()
+        },
+    );
+
+    let mut quickdraw = MacToolboxRng::new(0x1234_5678);
+    let mut expected = quickdraw;
+    for _ in 0..3 {
+        expected.random_u16();
+    }
+    tick_mac_actors_with_rng_at(
+        &mut city,
+        &mut quickdraw,
+        &mut MacGameLcgRng::new(1),
+        &mut 0,
+        0,
+        20,
+    );
+    assert_eq!(quickdraw.seed(), expected.seed());
+    assert_eq!(city.traffic_overlays().unwrap()[slot].state, 2);
 }
 
 #[test]
@@ -1739,6 +2294,7 @@ fn mac_kind5_state_one_native_tile_families_match_selector_and_xbld_on_both_layo
                 &mut city,
                 &mut quickdraw,
                 &mut game_rng,
+                &mut crate::mac_random::MacAppLfsrRng::new(0),
                 &mut sound_deadline,
                 0,
                 &mut tick_count,
@@ -1870,6 +2426,7 @@ fn mac_kind5_rendered_export80_wait_advances_later_actor_tickcount() {
             &mut city,
             &mut MacToolboxRng::new(0x1357_9bdf),
             &mut MacGameLcgRng::new(MacGameLcgRng::INITIAL_STATE),
+            &mut crate::mac_random::MacAppLfsrRng::new(0),
             &mut kind2_sound_deadline,
             0,
             &mut now,
@@ -3053,8 +3610,8 @@ fn mac_saved_actor_sweep_matches_native_snapshot_on_both_layouts() {
     let game_final = parse_hex(&game_final);
     let xtxt_start = 20 + 5 * CITY_TILES;
     let actor_start = 20 + 9 * CITY_TILES + 2 * CITY_TILES + CITY_TILES + 1_200 * 4;
-    let source_city = crate::city::city_from_cgms_v4_for_test(&input)
-        .expect("decode actor-sweep input CGMS v4");
+    let source_city =
+        crate::city::city_from_cgms_v4_for_test(&input).expect("decode actor-sweep input CGMS v4");
 
     for kind in [
         crate::city::CityFileKind::MacCity,
@@ -3066,8 +3623,8 @@ fn mac_saved_actor_sweep_matches_native_snapshot_on_both_layouts() {
         let mut game_rng = crate::mac_random::MacGameLcgRng::new(game_seed);
         tick_mac_actors_with_rng(&mut city, &mut quickdraw, &mut game_rng, 0);
 
-        let output = crate::city::cgms_v4_from_city_for_test(&city)
-            .expect("encode post-sweep CGMS v4");
+        let output =
+            crate::city::cgms_v4_from_city_for_test(&city).expect("encode post-sweep CGMS v4");
         assert_eq!(
             &output[actor_start..],
             &expected[actor_start..],
@@ -5361,6 +5918,7 @@ fn mac_oakland_resumes_saved_action_then_releases_calendar() {
         assert_eq!(state.city.text_overlay_at(0, 0), Some(0));
         assert_eq!(state.city.traffic_overlays().unwrap()[1].kind, 0);
         assert_eq!(state.game_clock, clock);
+        dismiss_mac_disaster_paper(&mut state);
         assert_eq!(state.advance_mac_frame_simulation(frame).days, 1);
     }
 }
@@ -5380,7 +5938,10 @@ fn mac_oakland_selector_five_matches_seeded_native_damage_and_actor() {
     city.set_mac_state_misc_u32_at(0x1044, 12);
     city.set_mac_state_misc_u32_at(0x1048, 0xff);
     let mut rng = MacToolboxRng::new(12);
-    assert!(!scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0).complete);
+    assert!(
+        !scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut MacAppLfsrRng::new(0))
+            .complete
+    );
     assert_eq!(rng.seed(), 314_341_360);
     assert_eq!(city.misc_u32_at(0x1048), Some(0xff));
     for ((x, y, _), rubble) in footprint.into_iter().zip([2, 2, 3, 1]) {
@@ -5427,8 +5988,13 @@ fn mac_oakland_spiral_matches_native_start_planes() {
     let mut tick_count = 0;
     let (x, y) = start.point;
     let mut point = (i16::from(x), i16::from(y));
-    let accepted =
-        scenario_action::seed_oakland(&mut city, &mut point, &mut quickdraw, &mut tick_count);
+    let accepted = scenario_action::seed_oakland(
+        &mut city,
+        &mut point,
+        &mut quickdraw,
+        &mut tick_count,
+        &mut MacAppLfsrRng::new(0),
+    );
     assert_eq!(accepted, 65);
     assert_eq!(point, (39, 52));
     assert_eq!(quickdraw.seed(), 1);
@@ -6302,13 +6868,14 @@ fn mac_charleston_matches_native_opening_and_first_pass() {
         city.saved_rotation = rotation;
         let mut rng = MacToolboxRng::new(1);
         let mut now = 0;
-        let mut lfsr = hurricane::start(&mut city, &mut rng, &mut now);
-        assert_eq!((lfsr, rng.seed()), opening, "rotation {rotation}");
+        let mut lfsr = MacAppLfsrRng::new(1);
+        hurricane::start(&mut city, &mut rng, &mut now, &mut lfsr);
+        assert_eq!((lfsr.state(), rng.seed()), opening, "rotation {rotation}");
         compare(&city, rotation, "opening");
 
         let pass = scenario_action::advance_action(&mut city, &mut rng, &mut now, &mut lfsr);
         assert!(!pass.complete);
-        assert_eq!((lfsr, rng.seed()), first, "rotation {rotation}");
+        assert_eq!((lfsr.state(), rng.seed()), first, "rotation {rotation}");
         assert_eq!(city.misc_u32_at(hurricane::FLOOD_DURATION), Some(59));
         assert_eq!(city.misc_u32_at(hurricane::WIND_DURATION), Some(49));
         compare(&city, rotation, "first");
@@ -6325,7 +6892,7 @@ fn mac_hurricane_releases_calendar_on_the_pass_after_expiry() {
     // Match the controlled native expiry fixture. Both RNG streams stay zero.
     let mut rng = MacToolboxRng::new(0);
     let mut now = 0;
-    let mut lfsr = 0;
+    let mut lfsr = MacAppLfsrRng::new(0);
     let first = scenario_action::advance_action(&mut city, &mut rng, &mut now, &mut lfsr);
     assert!(!first.complete);
     assert_eq!(city.text_overlay_at(0, 0), Some(0));
@@ -6341,16 +6908,135 @@ fn mac_hurricane_releases_calendar_on_the_pass_after_expiry() {
 }
 
 #[test]
+fn mac_manual_disaster_selection_replaces_pending_during_active_action() {
+    for (path, auto_goto) in [
+        ("manual-replacement.city", true),
+        ("manual-replacement.sc2", false),
+    ] {
+        let city = blank_city_layout_fixture(path, "Replacement fixture");
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.auto_goto_enabled = auto_goto;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.mac_process_rng = MacToolboxRng::new(1);
+        state.city.set_mac_kind2_hotspot(64, 64);
+        state.city.set_building(53, 77, 0x70);
+
+        let select = |state: &mut ViewerState, kind| {
+            let effect = state
+                .apply_state_app_command(&AppCommand::StartDisaster(kind))
+                .unwrap();
+            assert_eq!(effect.disaster_log, Some((kind, true)));
+        };
+        select(&mut state, DisasterKind::Fire);
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_DISASTER)
+        );
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(1));
+        assert_eq!(state.city.mac_pending_action(), 0);
+        state.take_pending_disaster_auto_goto();
+
+        select(&mut state, DisasterKind::Flood);
+        assert_eq!(state.city.mac_pending_action(), 2);
+        select(&mut state, DisasterKind::Tornado);
+        assert_eq!(state.city.mac_pending_action(), 7);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(1));
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(
+            state.city.mac_pending_action(),
+            7,
+            "paused mode 2 retains the last request"
+        );
+
+        state.traffic.set_speed(GameSpeed::Turtle);
+        state.mac_loop_scheduler.deadline = 0;
+        state.advance_frame_simulation(Duration::from_millis(100));
+        assert_eq!(state.city.mac_pending_action(), 0);
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(7));
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+            Some(CITY_MODE_DISASTER)
+        );
+        let (x, y) = state.mac_loop_scheduler.disaster_point;
+        assert_eq!(
+            state.take_pending_disaster_auto_goto(),
+            auto_goto.then_some((x as usize, y as usize))
+        );
+    }
+}
+
+#[test]
+fn mac_manual_fire_fallback_uses_live_app_lfsr_like_native() {
+    for path in ["manual-fire-nonzero.city", "manual-fire-nonzero.sc2"] {
+        for debris in [false, true] {
+            let city = blank_city_layout_fixture(path, "Fire fallback");
+            let mut state = test_state(city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.auto_goto_enabled = false;
+            state
+                .city
+                .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+            state.city.set_mac_kind2_hotspot(0, 0);
+            let point = if debris { (53, 106) } else { (32, 53) };
+            state.city.set_building(point.0, point.1, 6);
+            state.city.set_traffic_density(point.0, point.1, 91);
+            if debris {
+                state.city.set_building(104, 80, 6);
+                state.city.set_text_overlay(104, 80, 0xf1);
+            }
+            state.traffic.set_speed(GameSpeed::Paused);
+            state.no_disasters_enabled = true;
+            state.mac_process_rng = MacToolboxRng::new(1);
+            state.mac_app_lfsr = MacAppLfsrRng::new(0x1234);
+            assert!(state.start_disaster_at(DisasterKind::Fire, (0, 0)));
+            state.advance_frame_simulation(Duration::ZERO);
+            assert_eq!(
+                state.mac_loop_scheduler.disaster_point,
+                (point.0 as i16, point.1 as i16)
+            );
+            assert_eq!(state.city.text_overlay_at(point.0, point.1), Some(0xff));
+            assert_eq!(state.city.traffic_density_at(point.0, point.1), Some(0));
+            assert_eq!(state.mac_process_rng.seed(), 1_144_108_930);
+            assert_eq!(
+                state.mac_app_lfsr.state(),
+                if debris { 0x716a } else { 0x38b5 }
+            );
+            if debris {
+                assert_eq!(state.city.text_overlay_at(104, 80), Some(0xf1));
+                assert_eq!(state.city.building_at(104, 80), 1);
+            }
+        }
+    }
+}
+
+#[test]
 fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts() {
-    for path in ["manual-fire.city", "manual-fire.sc2"] {
+    for (path, auto_goto) in [("manual-fire.city", true), ("manual-fire.sc2", false)] {
         let city = blank_city_layout_fixture(path, "Fire fixture");
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
+        state.auto_goto_enabled = auto_goto;
         state
             .city
             .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
         state.traffic.set_speed(GameSpeed::Paused);
         state.no_disasters_enabled = true;
+        state.sync_edit_map_menu();
+        assert!(
+            state
+                .menu_checks
+                .item_checked(crate::menu_model::CMD_TOGGLE_NO_DISASTERS)
+        );
+        assert!(
+            state
+                .menu_checks
+                .item_enabled(crate::menu_model::CMD_START_FIRE)
+        );
         state.mac_process_rng = MacToolboxRng::new(1);
         state.city.set_mac_kind2_hotspot(64, 64);
         state.city.set_building(51, 52, 0x70); // First cell north of the menu point.
@@ -6371,6 +7057,10 @@ fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts(
         assert_eq!(state.city.text_overlay_at(51, 52), Some(0));
         assert_eq!(state.city.text_overlay_at(53, 77), Some(0xff));
         assert_eq!(state.mac_loop_scheduler.disaster_point, (53, 77));
+        assert_eq!(
+            state.take_pending_disaster_auto_goto(),
+            auto_goto.then_some((53, 77))
+        );
         assert_eq!(state.city.traffic_density_at(53, 77), Some(0));
         assert_eq!(state.city.mac_pending_action(), 0);
         assert_eq!(state.city.pe_w_trigger_disaster, 0);
@@ -6403,6 +7093,7 @@ fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts(
             state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
+        dismiss_mac_disaster_paper(&mut state);
         assert_eq!(
             state
                 .advance_frame_simulation(Duration::from_millis(100))
@@ -6415,6 +7106,7 @@ fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts(
         let city = blank_city_layout_fixture("manual-fire-fallback.city", "Fire fallback");
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
+        state.auto_goto_enabled = true;
         state
             .city
             .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
@@ -6426,6 +7118,10 @@ fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts(
         state.advance_frame_simulation(Duration::ZERO);
         let expected_point = if building == 6 { (0, 0) } else { menu_point };
         assert_eq!(state.mac_loop_scheduler.disaster_point, expected_point);
+        assert_eq!(
+            state.take_pending_disaster_auto_goto(),
+            (building == 6).then_some((0, 0))
+        );
         assert_eq!(state.city.mac_pending_action(), 0);
         assert_eq!(
             scenario_action::mac_scenario_action_active(&state.city),
@@ -6443,7 +7139,7 @@ fn mac_manual_fire_uses_worker_jitter_and_native_candidate_gate_on_both_layouts(
 }
 
 #[test]
-fn mac_manual_monster_clamps_the_signed_menu_point_and_prevents_overlapping_actions() {
+fn mac_manual_monster_clamps_the_signed_menu_point_and_accepts_a_pending_action() {
     for path in ["manual-monster.city", "manual-monster.sc2"] {
         let city = blank_city_layout_fixture(path, "Monster fixture");
         let mut state = test_state(city);
@@ -6476,8 +7172,16 @@ fn mac_manual_monster_clamps_the_signed_menu_point_and_prevents_overlapping_acti
         assert_eq!(state.mac_process_rng.seed(), 470211272);
         assert!(scenario_action::mac_scenario_action_active(&state.city));
 
-        assert!(!state.start_disaster(DisasterKind::Fire));
-        assert_eq!(state.mac_process_rng.seed(), 470211272);
+        let mut expected_rng = state.mac_process_rng;
+        let expected_point = scenario_action::fire_origin(&state.city, &mut expected_rng);
+        assert!(state.start_disaster(DisasterKind::Fire));
+        assert_eq!(state.city.mac_pending_action(), 1);
+        assert_eq!(
+            state.mac_loop_scheduler.pending_action_point,
+            Some(expected_point)
+        );
+        assert_eq!(state.mac_process_rng.seed(), expected_rng.seed());
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
     }
 }
 
@@ -6490,6 +7194,7 @@ fn mac_manual_hurricane_dispatches_without_a_scenario_point() {
         .city
         .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
     state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_app_lfsr = MacAppLfsrRng::new(1);
     state.mac_process_rng = MacToolboxRng::new(1);
     for y in 0..128 {
         state.city.set_building(64, y, 6);
@@ -6513,6 +7218,46 @@ fn mac_manual_hurricane_dispatches_without_a_scenario_point() {
 }
 
 #[test]
+fn mac_flood_fallback_retries_with_shared_nonzero_lfsr_like_native() {
+    for path in ["manual-flood-nonzero.city", "manual-flood-nonzero.sc2"] {
+        let mut city = blank_city_layout_fixture(path, "Flood fallback");
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                city.set_terrain(x, y, 0x10);
+            }
+        }
+        city.set_terrain(32, 53, 0);
+        let mut point = (64, 64);
+        let mut lfsr = MacAppLfsrRng::new(0x1234);
+        assert!(hurricane::start_flood(&mut city, &mut point, &mut lfsr));
+        assert_eq!(point, (32, 53));
+        assert_eq!(lfsr.state(), 0x38b5);
+        assert_eq!(city.text_overlay_at(32, 53), Some(0xfc));
+        assert_eq!(city.text_overlay_at(104, 80), Some(0));
+        assert_eq!(
+            city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
+            Some(60)
+        );
+
+        city.set_terrain(32, 53, 0x10);
+        let mut point = (64, 64);
+        let mut lfsr = MacAppLfsrRng::new(0x1234);
+        assert!(!hurricane::start_flood(&mut city, &mut point, &mut lfsr));
+        assert_eq!(point, (64, 64));
+        assert_eq!(lfsr.state(), 0x2395);
+
+        city.set_terrain(104, 80, 0);
+        city.set_text_overlay(104, 80, 0x22);
+        let mut point = (64, 64);
+        let mut lfsr = MacAppLfsrRng::new(0x1234);
+        assert!(hurricane::start_flood(&mut city, &mut point, &mut lfsr));
+        assert_eq!(point, (104, 80));
+        assert_eq!(lfsr.state(), 0x48d0);
+        assert_eq!(city.text_overlay_at(104, 80), Some(0xfc));
+    }
+}
+
+#[test]
 fn mac_manual_flood_opener_matches_shoreline_order_and_bounds_map_edges() {
     let surrounding = [(40, 41), (41, 40), (42, 41), (41, 42)];
     for wet in [&surrounding[2..], &surrounding[..2]] {
@@ -6526,7 +7271,11 @@ fn mac_manual_flood_opener_matches_shoreline_order_and_bounds_map_edges() {
             city.set_tile_bits(x, y, TileBits::new(4));
         }
         let mut point = (40, 40);
-        assert!(hurricane::start_flood(&mut city, &mut point));
+        assert!(hurricane::start_flood(
+            &mut city,
+            &mut point,
+            &mut MacAppLfsrRng::new(0)
+        ));
         assert_eq!(point, (41, 41));
         assert_eq!(city.text_overlay_at(41, 41), Some(0));
         for (x, y) in surrounding {
@@ -6544,7 +7293,11 @@ fn mac_manual_flood_opener_matches_shoreline_order_and_bounds_map_edges() {
     city.set_terrain(127, 41, 0x20);
     city.set_tile_bits(127, 40, TileBits::new(4));
     let mut point = (127, 41);
-    assert!(hurricane::start_flood(&mut city, &mut point));
+    assert!(hurricane::start_flood(
+        &mut city,
+        &mut point,
+        &mut MacAppLfsrRng::new(0)
+    ));
     assert_eq!(point, (127, 41));
     assert!(
         (0..CITY_WIDTH).all(|x| (0..CITY_HEIGHT).all(|y| city.text_overlay_at(x, y) == Some(0)))
@@ -6557,7 +7310,11 @@ fn mac_manual_flood_opener_matches_shoreline_order_and_bounds_map_edges() {
     city.set_terrain(35, 43, 0x20);
     city.set_terrain(36, 35, 0x20);
     let mut point = (40, 40);
-    assert!(hurricane::start_flood(&mut city, &mut point));
+    assert!(hurricane::start_flood(
+        &mut city,
+        &mut point,
+        &mut MacAppLfsrRng::new(0)
+    ));
     assert_eq!(point, (35, 37));
     assert_eq!(city.text_overlay_at(36, 37), Some(0xfc));
     assert_eq!(city.text_overlay_at(36, 43), Some(0));
@@ -6566,7 +7323,11 @@ fn mac_manual_flood_opener_matches_shoreline_order_and_bounds_map_edges() {
     city.set_terrain(0, 0, 0x10);
     for origin in [(164, 40), (i16::MIN, i16::MIN)] {
         let mut point = origin;
-        assert!(!hurricane::start_flood(&mut city, &mut point));
+        assert!(!hurricane::start_flood(
+            &mut city,
+            &mut point,
+            &mut MacAppLfsrRng::new(0)
+        ));
         assert_eq!(point, origin);
     }
 }
@@ -6658,6 +7419,7 @@ fn mac_manual_flood_runs_fallback_action_and_reopens_in_both_layouts() {
             state.city.mac_state_misc_u32_at(hurricane::FLOOD_DURATION),
             Some(4)
         );
+        dismiss_mac_disaster_paper(&mut state);
         assert_eq!(state.advance_frame_simulation(frame).days, 1);
     }
 }
@@ -6746,6 +7508,7 @@ fn mac_manual_tornado_preserves_actor_until_ordinary_sweep_on_both_layouts() {
         );
         assert_eq!(state.mac_process_rng.seed(), 2_014_885_176);
         assert_eq!(state.city.text_overlay_at(127, 16), Some(0xca));
+        dismiss_mac_disaster_paper(&mut state);
         assert_eq!(state.advance_frame_simulation(frame).days, 1);
     }
 }
@@ -6973,7 +7736,51 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             manual.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
+        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
+        assert_eq!(manual.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
+        assert_eq!(
+            manual
+                .advance_frame_simulation(Duration::from_millis(34))
+                .days,
+            0
+        );
+        assert_eq!(
+            manual.mac_loop_scheduler.mac_earthquake_shake_phase(),
+            Some(0)
+        );
+        let mut quake_sound_requests = usize::from(manual.take_pending_mac_earthquake_sound());
+        assert_eq!(quake_sound_requests, 1);
+        assert_eq!(manual.view_camera().x - manual.camera.x, 16.0);
+        for phase in 1..24 {
+            assert_eq!(
+                manual
+                    .advance_frame_simulation(Duration::from_millis(84))
+                    .days,
+                0
+            );
+            assert_eq!(
+                manual.mac_loop_scheduler.mac_earthquake_shake_phase(),
+                Some(phase)
+            );
+            quake_sound_requests +=
+                usize::from(manual.take_pending_mac_earthquake_sound());
+            assert_eq!(
+                manual.view_camera().x - manual.camera.x,
+                if phase & 1 == 0 { 16.0 } else { 0.0 }
+            );
+        }
+        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
+        assert_eq!(
+            manual
+                .advance_frame_simulation(Duration::from_millis(84))
+                .days,
+            0
+        );
         assert_eq!(manual.mac_process_rng.seed(), 1_017_324_090);
+        assert_eq!(manual.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
+        assert!(!manual.take_pending_mac_earthquake_sound());
+        assert_eq!(quake_sound_requests, 24);
+        assert_eq!(manual.view_camera(), manual.camera);
         assert_eq!(manual.pe_process_crt_seed(), crt);
 
         let mut monthly = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1864);
@@ -6990,8 +7797,436 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             monthly.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
-        assert_eq!(monthly.mac_process_rng.seed(), 2_022_709_593);
+        // Phase 24 queues the earthquake at this QuickDraw entry seed; the
+        // dispatcher does not consume the worker RNG until the shake finishes.
+        assert_eq!(monthly.mac_process_rng.seed(), 1_983_943_974);
+        for _ in 0..25 {
+            assert_eq!(
+                monthly
+                    .advance_frame_simulation(Duration::from_millis(84))
+                    .days,
+                0
+            );
+        }
+        assert_eq!(monthly.mac_process_rng.seed(), 1_013_997_541);
     }
+}
+
+#[test]
+fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
+    // TickCount offsets of the 24 CODE 10 shake sound requests in
+    // earthquake-live-armed-r4-20261117/trace.csv. The first CODE 10 scan
+    // Random call occurs at offset 136.
+    const SOUND_TICKS: [u32; 24] = [
+        2, 8, 13, 18, 23, 28, 34, 39, 45, 51, 57, 63, 68, 74, 79, 85, 91, 96, 101, 107,
+        113, 120, 125, 131,
+    ];
+    const FIRST_SCAN_TICK: u32 = 136;
+
+    fn duration_at_tick(tick: u32) -> Duration {
+        let nanos = (u64::from(tick) * 1_000_000_000 + 59) / 60;
+        Duration::from_nanos(nanos)
+    }
+
+    let city = blank_city_layout_fixture("mac-earthquake-live-ticks.city", "Earthquake ticks");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_loop_scheduler.start_captured_clock(0);
+    state.hover_tile = Some((12, 34));
+
+    assert!(state.start_disaster(DisasterKind::Earthquake));
+    assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+    let prelude_seed = state.mac_process_rng.seed();
+    assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
+
+    let mut previous_tick = 0;
+    for (phase, tick) in SOUND_TICKS.into_iter().enumerate() {
+        let elapsed = duration_at_tick(tick) - duration_at_tick(previous_tick);
+        assert_eq!(state.advance_frame_simulation(elapsed).days, 0);
+        assert_eq!(state.mac_loop_scheduler.current_tick(), tick);
+        assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), Some(phase as u8));
+        assert!(state.take_pending_mac_earthquake_sound());
+        assert_eq!(state.mac_process_rng.seed(), prelude_seed);
+        previous_tick = tick;
+    }
+
+    let elapsed = duration_at_tick(FIRST_SCAN_TICK) - duration_at_tick(previous_tick);
+    assert_eq!(state.advance_frame_simulation(elapsed).days, 0);
+    assert_eq!(state.mac_loop_scheduler.current_tick(), FIRST_SCAN_TICK);
+    assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
+    assert!(!state.take_pending_mac_earthquake_sound());
+    assert_ne!(state.mac_process_rng.seed(), prelude_seed);
+    assert_eq!(state.city.mac_pending_action(), 0);
+}
+
+#[test]
+fn mac_captured_natural_earthquake_scan_matches_live_entry_and_return_seeds() {
+    for path in [
+        "mac-natural-earthquake-scan.city",
+        "mac-natural-earthquake-scan.sc2",
+    ] {
+        let mut city = blank_city_layout_fixture(path, "Natural Earthquake Scan");
+        city.prepare_mac_fidelity_from_saved_city();
+        city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        city.set_mac_pending_action(6);
+
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.mac_process_rng = MacToolboxRng::new(0x614d_456b);
+        state.mac_app_lfsr = MacAppLfsrRng::new(0xc208);
+        state.mac_loop_scheduler.pending_action_point = Some((79, 6));
+        state.mac_loop_scheduler.disaster_point = (79, 6);
+        state.city.set_mac_pending_action(0);
+
+        // The native start worker at Point (79, 6) made 4,225 gate draws and
+        // no conditional damage draw from this captured QuickDraw entry seed.
+        let mut now = 0;
+        scenario_action::seed_earthquake(
+            &mut state.city,
+            (79, 6),
+            &mut state.mac_process_rng,
+            &mut now,
+            &mut state.mac_app_lfsr,
+        );
+        assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(6));
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (79, 6));
+        assert_eq!(state.mac_process_rng.seed(), 0x0dbb_94f5);
+        assert_eq!(state.mac_app_lfsr.state(), 0xc208);
+        assert_eq!(state.city.building_at(79, 6), 0);
+        assert_eq!(state.city.text_overlay_at(79, 6), Some(0));
+        assert!(scenario_action::mac_scenario_action_active(&state.city));
+    }
+}
+
+#[test]
+#[ignore = "requires private CGMS reconstructed from the live Maxis Land Earthquake entry RAM"]
+fn mac_earthquake_worker_scan_matches_live_maxis_land_rng_boundary() {
+    let snapshot = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_CGMS to the private entry-state CGMS snapshot");
+    let bytes = std::fs::read(snapshot).expect("read the private Earthquake entry snapshot");
+    let mut city = crate::city::city_from_cgms_v4_for_test(&bytes).unwrap();
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_mac_pending_action(6);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    // Reverse the two MENU 1004 coordinate draws to start at the manual
+    // action's pre-event stream state; the normal menu route must recover the
+    // captured Point and worker-entry QuickDraw seed without injection.
+    state.mac_process_rng = MacToolboxRng::new(0x00cb_c6e2);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x761e);
+    assert!(state.start_disaster(DisasterKind::Earthquake));
+    assert_eq!(state.mac_process_rng.seed(), 0x4bec_3cac);
+    assert_eq!(
+        state.mac_loop_scheduler.pending_action_point,
+        Some((87, 35))
+    );
+    let point = state
+        .mac_loop_scheduler
+        .pending_action_point
+        .take()
+        .unwrap();
+    state.city.set_mac_pending_action(0);
+    let mut now = 0xf5ed;
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        point,
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+
+    assert_eq!(state.mac_process_rng.seed(), 0x79c8_c34b);
+    assert_eq!(state.mac_app_lfsr.state(), 0x761e);
+    assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(6));
+    assert!(scenario_action::mac_scenario_action_active(&state.city));
+}
+
+#[test]
+#[ignore = "requires private CGMS snapshots reconstructed from a live Maxis Land Earthquake"]
+fn mac_earthquake_2002_worker_map_matches_live_native_return() {
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_CGMS to the live entry-state CGMS");
+    let native_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NATIVE_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_NATIVE_RETURN_CGMS to the native worker-return CGMS");
+    let output_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_CITYGAME_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_CITYGAME_RETURN_CGMS for the CityGame output");
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read live Earthquake entry CGMS"),
+    )
+    .unwrap();
+    let native = std::fs::read(native_path).expect("read native Earthquake return CGMS");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_mac_pending_action(6);
+
+    let mut rng = MacToolboxRng::new(0x1018_1e27);
+    let mut lfsr = MacAppLfsrRng::new(0x5ab7);
+    let mut now = 0x21b83;
+    scenario_action::seed_earthquake(&mut city, (84, 42), &mut rng, &mut now, &mut lfsr);
+    let actual = crate::city::cgms_v4_from_city_for_test(&city).unwrap();
+    std::fs::write(output_path, &actual).expect("write CityGame worker-return CGMS");
+
+    assert_eq!(
+        rng.seed(),
+        0x6534_72a4,
+        "native worker-return QuickDraw seed"
+    );
+    assert_eq!(lfsr.state(), 0x5ab7, "native worker-return app LFSR");
+    let map_end = 20 + 196_608;
+    let differing: Vec<usize> = actual[..map_end]
+        .iter()
+        .zip(&native[..map_end])
+        .enumerate()
+        .filter_map(|(offset, (actual, expected))| (actual != expected).then_some(offset))
+        .take(40)
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "CityGame differs from the native worker-return map at CGMS offsets {differing:?}"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native[census_start..census_end],
+        "Mac XBLD census after the Earthquake worker"
+    );
+}
+
+#[test]
+#[ignore = "requires private CGMS snapshots reconstructed from a live Maxis Land Earthquake"]
+fn mac_earthquake_2002_action_pass_matches_live_native_return() {
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_CGMS to the live entry-state CGMS");
+    let native_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NATIVE_ACTION_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_NATIVE_ACTION_RETURN_CGMS to the native action-pass return CGMS");
+    let output_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_CITYGAME_ACTION_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_CITYGAME_ACTION_RETURN_CGMS for the CityGame output");
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read live Earthquake entry CGMS"),
+    )
+    .unwrap();
+    let native = std::fs::read(native_path).expect("read native action-pass return CGMS");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_mac_pending_action(6);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_process_rng = MacToolboxRng::new(0x1018_1e27);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x5ab7);
+    let mut now = 0x21b83;
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        (84, 42),
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+    now = 0x232f9;
+    state.advance_mac_scenario_action(&mut now);
+    let actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    std::fs::write(output_path, &actual).expect("write CityGame action-pass return CGMS");
+
+    assert_eq!(state.mac_process_rng.seed(), 0x5b00_6f92);
+    assert_eq!(state.mac_app_lfsr.state(), 0x5ab7);
+    let map_end = 20 + 196_608;
+    let differing: Vec<usize> = actual[..map_end]
+        .iter()
+        .zip(&native[..map_end])
+        .enumerate()
+        .filter_map(|(offset, (actual, expected))| (actual != expected).then_some(offset))
+        .take(40)
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "CityGame differs from the native action-pass return map at CGMS offsets {differing:?}"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native[census_start..census_end],
+        "Mac XBLD census after the Earthquake action pass"
+    );
+}
+
+#[test]
+#[ignore = "requires private CGMS snapshots from the late Maxis Land Earthquake capture"]
+fn mac_earthquake_late_maxis_land_worker_and_action_match_live_snapshots() {
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_LATE_ENTRY_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_LATE_ENTRY_CGMS to the live entry snapshot");
+    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_LATE_WORKER_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_LATE_WORKER_RETURN_CGMS to the native worker return");
+    let action_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_LATE_ACTION_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_LATE_ACTION_RETURN_CGMS to the native action return");
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read late Earthquake entry snapshot"),
+    )
+    .unwrap();
+    let native_worker = std::fs::read(worker_path).expect("read native worker return");
+    let native_action = std::fs::read(action_path).expect("read native action return");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_mac_pending_action(6);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_process_rng = MacToolboxRng::new(0x30e3_c9f4);
+    state.mac_game_rng = MacGameLcgRng::new(0x81d4_16af);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x5ee7);
+    let mut now = 0x3d960;
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        (108, 52),
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+
+    assert_eq!(state.mac_process_rng.seed(), 0x228c_7f0a);
+    assert_eq!(state.mac_game_rng.state(), 0x81d4_16af);
+    assert_eq!(state.mac_app_lfsr.state(), 0x5ee7);
+    let mut actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let map_end = 20 + 196_608;
+    assert_eq!(
+        &actual[..map_end],
+        &native_worker[..map_end],
+        "CityGame differs from the late native Earthquake worker-return map"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_worker[census_start..census_end],
+        "Mac XBLD census after the late Earthquake worker"
+    );
+
+    now = 0x3ee72;
+    // Compare the native CODE 10 return boundary directly. The ViewerState
+    // wrapper continues into CODE 2's disaster chooser after a completed pass.
+    let pass = scenario_action::advance_action_with_redraw(
+        &mut state.city,
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+        None,
+        None,
+        &mut |_| {},
+    );
+    assert!(pass.complete);
+    assert_eq!(state.mac_process_rng.seed(), 0x228c_7f0a);
+    assert_eq!(state.mac_game_rng.state(), 0x81d4_16af);
+    assert_eq!(state.mac_app_lfsr.state(), 0x5ee7);
+    actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    assert_eq!(
+        &actual[..map_end],
+        &native_action[..map_end],
+        "CityGame differs from the late native Earthquake action-pass map"
+    );
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_action[census_start..census_end],
+        "Mac XBLD census after the late Earthquake action pass"
+    );
+}
+
+#[test]
+#[ignore = "requires CGMS snapshots reconstructed from the 2026-11-18 live Maxis Land Earthquake"]
+fn mac_earthquake_november_2026_worker_and_action_match_live_snapshots() {
+    let source_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_SOURCE_CITY")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_SOURCE_CITY to the original Maxis Land city");
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_ENTRY_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_ENTRY_CGMS to the live entry snapshot");
+    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_WORKER_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_WORKER_CGMS to the native worker-return snapshot");
+    let action_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_ACTION_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_ACTION_CGMS to the native action-pass return snapshot");
+    let source = crate::city::City::load(source_path).expect("load original Maxis Land city");
+    assert_eq!(source.misc_u32_at(0x10b0), Some(0));
+    assert_eq!(source.misc_u32_at(0x10b4), Some(0));
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read November Earthquake entry snapshot"),
+    )
+    .unwrap();
+    let native_worker = std::fs::read(worker_path).expect("read native worker-return snapshot");
+    let native_action = std::fs::read(action_path).expect("read native action-pass return snapshot");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_mac_pending_action(6);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_process_rng = MacToolboxRng::new(0x330b_c5a0);
+    state.mac_game_rng = MacGameLcgRng::new(0x9c06_a54d);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0xd1fd);
+    let mut now = 0x2c18_53;
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        (102, 75),
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+
+    assert_eq!(state.mac_process_rng.seed(), 0x0df8_9987);
+    assert_eq!(state.mac_game_rng.state(), 0x9c06_a54d);
+    assert_eq!(state.mac_app_lfsr.state(), 0xd1fd);
+    let mut actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let map_end = 20 + 196_608;
+    assert_eq!(
+        &actual[..map_end],
+        &native_worker[..map_end],
+        "CityGame differs from the November native Earthquake worker-return map"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_worker[census_start..census_end],
+        "Mac XBLD census after the November Earthquake worker"
+    );
+
+    // The decoded native Maxis Land MISC vector retains zero in both
+    // hurricane/flood countdown slots through the Earthquake worker.
+    assert_eq!(state.city.mac_state_misc_u32_at(0x10b0), Some(0));
+    assert_eq!(state.city.mac_state_misc_u32_at(0x10b4), Some(0));
+    now = 0x2c31_d5;
+    let pass = scenario_action::advance_action_with_redraw(
+        &mut state.city,
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+        None,
+        None,
+        &mut |_| {},
+    );
+    assert!(pass.complete);
+    assert_eq!(state.mac_process_rng.seed(), 0x0df8_9987);
+    assert_eq!(state.mac_game_rng.state(), 0x9c06_a54d);
+    assert_eq!(state.mac_app_lfsr.state(), 0xd1fd);
+    actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    assert_eq!(
+        &actual[..map_end],
+        &native_action[..map_end],
+        "CityGame differs from the November native Earthquake action-pass map"
+    );
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_action[census_start..census_end],
+        "Mac XBLD census after the November Earthquake action pass"
+    );
 }
 
 #[test]
@@ -7015,6 +8250,14 @@ fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts
         }
         assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
         assert_eq!(state.city.mac_pending_action(), 0);
+        for _ in 0..25 {
+            assert_eq!(
+                state
+                    .advance_frame_simulation(Duration::from_millis(84))
+                    .days,
+                0
+            );
+        }
         assert!(scenario_action::mac_scenario_action_active(&state.city));
         assert_eq!(state.mac_process_rng.seed(), 1_338_654_090);
         assert_eq!(state.city.building_at(0, 14), 2);
@@ -7059,7 +8302,7 @@ fn mac_monthly_toxic_spill_releases_calendar_after_the_clearing_pass() {
             (1, 240_746_755, 0xfb, true),
             (0, 371_520_337, 0xfb, true),
             (0, 1_407_342_130, 0, true),
-            (0, 1_407_342_130, 0, false),
+            (0, 814_290_852, 0, false),
         ] {
             let advance = state.advance_frame_simulation(Duration::from_millis(17));
             assert_eq!(advance.days, days);
@@ -7072,6 +8315,7 @@ fn mac_monthly_toxic_spill_releases_calendar_after_the_clearing_pass() {
                 active
             );
         }
+        dismiss_mac_disaster_paper(&mut state);
         assert_eq!(
             state
                 .advance_frame_simulation(Duration::from_millis(17))
@@ -7239,6 +8483,7 @@ fn mac_kind6_terminal_sweep_queues_only_successful_ignition_outside_action_mode(
                 &mut city,
                 &mut quickdraw,
                 &mut MacGameLcgRng::new(1),
+                &mut crate::mac_random::MacAppLfsrRng::new(0),
                 &mut 0,
                 2,
                 &mut 0,
@@ -7321,13 +8566,113 @@ fn mac_kind6_terminal_actor_enters_shared_disaster_pass_in_the_same_frame() {
 }
 
 #[test]
+#[ignore = "requires private Quadra Air Crash capture"]
+fn mac_air_crash_matches_live_first_action_planes_from_checkpoint() {
+    let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_AIR_CAPTURE").unwrap());
+    let before_text = std::fs::read(root.join("before-xtxt.bin")).unwrap();
+    let after_text = std::fs::read(root.join("after-xtxt.bin")).unwrap();
+    let before_actors = std::fs::read(root.join("before-xthg.bin")).unwrap();
+    let after_actors = std::fs::read(root.join("after-xthg.bin")).unwrap();
+    assert_eq!(
+        (
+            before_text.len(),
+            after_text.len(),
+            before_actors.len(),
+            after_actors.len()
+        ),
+        (CITY_TILES, CITY_TILES, 480, 480)
+    );
+    for path in ["live-air-crash.city", "live-air-crash.sc2"] {
+        let mut city = blank_city_layout_fixture(path, "Air Crash");
+        for (i, &value) in before_text.iter().enumerate() {
+            city.set_text_overlay(i / CITY_HEIGHT, i % CITY_HEIGHT, value);
+        }
+        for (slot, bytes) in before_actors.chunks_exact(12).enumerate() {
+            city.mac_object_slot_records_mut()[slot] = Win95OverlayRecord::from_bytes(bytes);
+        }
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.mac_app_lfsr = MacAppLfsrRng::new(0xf3cf);
+        state.mac_process_rng = MacToolboxRng::new(0x540d_c6a1);
+        assert!(state.start_disaster_at(DisasterKind::AirCrash, (0, 0)));
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, (75, 67));
+        assert_eq!(state.mac_app_lfsr.state(), 0xe323);
+        assert_eq!(state.mac_process_rng.seed(), 0x540d_c6a1);
+        for (i, &value) in after_text.iter().enumerate() {
+            assert_eq!(
+                state.city.text_overlay_at(i / CITY_HEIGHT, i % CITY_HEIGHT),
+                Some(value)
+            );
+        }
+        let actors: Vec<u8> = state
+            .city
+            .mac_object_slot_records_mut()
+            .iter()
+            .flat_map(|r| r.to_bytes())
+            .collect();
+        assert_eq!(actors, after_actors);
+    }
+}
+
+#[test]
+fn mac_air_crash_uses_shared_lfsr_for_spawn_retry_and_full_table() {
+    for (occupied, full, expected_point, expected_lfsr) in [
+        (false, false, (72, 48), 0x48d0),
+        (true, false, (64, 85), 0x38b5),
+        (false, true, (13, 14), 0x48d0),
+    ] {
+        let mut state = mac_phase24_fixture("mac-air-random.city", WEATHER_TREND_BLIZZARD, 1);
+        state.traffic.set_speed(GameSpeed::Paused);
+        state.city.set_mac_pending_action(0);
+        state.mac_loop_scheduler.disaster_point = (13, 14);
+        state.mac_app_lfsr = MacAppLfsrRng::new(0x1234);
+        if occupied {
+            state.city.set_text_overlay(72, 48, 0x22);
+        }
+        if full {
+            for actor in state.city.mac_object_slot_records_mut().iter_mut().skip(1) {
+                actor.kind = 2;
+            }
+        }
+        assert!(state.start_disaster_at(DisasterKind::AirCrash, (13, 14)));
+        state.advance_frame_simulation(Duration::ZERO);
+        assert_eq!(state.mac_loop_scheduler.disaster_point, expected_point);
+        assert_eq!(state.mac_app_lfsr.state(), expected_lfsr);
+        if !full {
+            let actor = state.city.mac_object_slot_records_mut()[1];
+            assert_eq!(
+                (
+                    actor.kind,
+                    actor.state,
+                    actor.tile_x,
+                    actor.tile_y,
+                    actor.height
+                ),
+                (1, 7, expected_point.0 as u8, expected_point.1 as u8, 16)
+            );
+            assert_eq!(
+                state
+                    .city
+                    .text_overlay_at(expected_point.0 as usize, expected_point.1 as usize),
+                Some(0xca)
+            );
+        }
+    }
+}
+
+#[test]
 fn mac_air_crash_matches_native_actor_lifecycle_on_both_layouts() {
     let frame = Duration::from_millis(534);
     let opening = [1, 3, 7, 32, 32, 16, 8, 8, 0x51, 0x52, 0, 0x5a];
     for path in ["mac-air-crash.city", "mac-air-crash.sc2"] {
         for (monthly, disabled, seed, ignition_seed, terminal_visit, terminal_seed) in [
             (false, false, 1, 16_807, 26, 470_211_272),
-            (true, false, 712_393_418, 974_844_301, 22, 1_055_423_944),
+            (true, false, 712_393_418, 974_844_301, 22, 295_302_588),
             (false, true, 1, 1, 20, 1),
         ] {
             let mut state =
@@ -7451,6 +8796,7 @@ fn mac_air_crash_matches_native_actor_lifecycle_on_both_layouts() {
                 state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
                 Some(CITY_MODE_GAMEPLAY)
             );
+            dismiss_mac_disaster_paper(&mut state);
             assert_eq!(state.advance_frame_simulation(frame).days, 1);
         }
     }
@@ -7766,8 +9112,8 @@ fn mac_facility_walk_checks_saved_census_source_plane_and_edges() {
         for (source, stale, pending, seed, active_selector) in [
             (None, false, 11, 1_754_908_307, 0),
             (Some((1, 0)), true, 0, 1_754_908_307, 0),
-            (Some((1, 0)), false, 0, 1_203_507_851, 10),
-            (Some((127, 127)), false, 0, 207_980_664, 10),
+            (Some((1, 0)), false, 0, 207_980_664, 10),
+            (Some((127, 127)), false, 0, 1_575_126_179, 10),
         ] {
             let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1884);
             state.city.prepare_mac_fidelity_from_saved_city();
@@ -8028,6 +9374,95 @@ fn mac_rioters_failed_start_and_wet_marker_release_match_native() {
 }
 
 #[test]
+#[ignore = "requires private live Mac CODE 10 Rioters pass capture"]
+fn mac_live_quadra_riot_action_pass_matches_citygame_worker() {
+    let capture_path = std::env::var_os("CITYGAME_MAC_RIOT_PASS_CAPTURE")
+        .expect("set CITYGAME_MAC_RIOT_PASS_CAPTURE to the private boundary JSON");
+    let capture_path = std::path::PathBuf::from(capture_path);
+    let capture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&capture_path).unwrap()).unwrap();
+    let capture_dir = capture_path.parent().unwrap();
+    let entry = &capture["entry"];
+    let returned = &capture["return"];
+    let number =
+        |value: &serde_json::Value| u32::from_str_radix(value.as_str().unwrap(), 16).unwrap();
+    let read_plane = |phase: &serde_json::Value, name: &str| {
+        let file = phase["planes"][name]["file"].as_str().unwrap();
+        std::fs::read(capture_dir.join(file)).unwrap()
+    };
+    let entry_xtxt = read_plane(entry, "XTXT");
+    let entry_xbld = read_plane(entry, "XBLD");
+    let entry_xbit = read_plane(entry, "XBIT");
+    let entry_xtrf = read_plane(entry, "XTRF");
+    let expected_xtxt = read_plane(returned, "XTXT");
+    let expected_xbld = read_plane(returned, "XBLD");
+    let expected_xbit = read_plane(returned, "XBIT");
+    let expected_xtrf = read_plane(returned, "XTRF");
+
+    let mut state = mac_phase24_fixture("mac-live-riot-pass.city", WEATHER_TREND_BLIZZARD, 1);
+    state.city.set_mac_pending_action(0);
+    state.mac_loop_scheduler.pending_action_point = None;
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            let index = x * CITY_WIDTH + y;
+            state.city.set_text_overlay(x, y, entry_xtxt[index]);
+            state.city.set_building(x, y, entry_xbld[index]);
+            state
+                .city
+                .set_tile_bits(x, y, TileBits::new(entry_xbit[index]));
+        }
+    }
+    for x in 0..(CITY_WIDTH / 2) {
+        for y in 0..(CITY_HEIGHT / 2) {
+            state
+                .city
+                .set_traffic_density(x * 2, y * 2, entry_xtrf[x * 64 + y]);
+        }
+    }
+    state.city.set_mac_state_misc_u32_at(0x1040, u32::MAX);
+    state.city.set_mac_state_misc_u32_at(0x1044, 3);
+    state.city.set_mac_state_misc_u32_at(0x1048, 0xff);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_DISASTER);
+
+    let mut rng = MacToolboxRng::new(number(&entry["quickdraw"]));
+    let expected_rng = number(&returned["quickdraw"]);
+    let mut lfsr =
+        MacAppLfsrRng::new(u16::from_str_radix(entry["app_lfsr"].as_str().unwrap(), 16).unwrap());
+    let expected_lfsr = u16::from_str_radix(returned["app_lfsr"].as_str().unwrap(), 16).unwrap();
+    let mut now = number(&entry["tickcount"]);
+    let pass = scenario_action::advance_action(&mut state.city, &mut rng, &mut now, &mut lfsr);
+
+    assert!(!pass.complete);
+    assert_eq!(rng.seed(), expected_rng);
+    assert_eq!(lfsr.state(), expected_lfsr);
+    assert_eq!(now, number(&returned["tickcount"]));
+    assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(3));
+    assert_eq!(state.city.mac_state_misc_u32_at(0x1048), Some(1));
+    let mut actual_xtxt = Vec::with_capacity(CITY_TILES);
+    let mut actual_xbld = Vec::with_capacity(CITY_TILES);
+    let mut actual_xbit = Vec::with_capacity(CITY_TILES);
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            actual_xtxt.push(state.city.text_overlay_at(x, y).unwrap_or(0));
+            actual_xbld.push(state.city.building_at(x, y));
+            actual_xbit.push(state.city.tile_bits_at(x, y).unwrap_or_default().raw_bits());
+        }
+    }
+    let mut actual_xtrf = Vec::with_capacity(64 * 64);
+    for x in 0..(CITY_WIDTH / 2) {
+        for y in 0..(CITY_HEIGHT / 2) {
+            actual_xtrf.push(state.city.traffic_density_at(x * 2, y * 2).unwrap_or(0));
+        }
+    }
+    assert_eq!(actual_xtxt, expected_xtxt);
+    assert_eq!(actual_xbld, expected_xbld);
+    assert_eq!(actual_xbit, expected_xbit);
+    assert_eq!(actual_xtrf, expected_xtrf);
+}
+
+#[test]
 fn mac_cloud_scatter_matches_native_lifecycle_after_reopen_in_both_layouts() {
     let check_planes = |city: &City, remaining: u8| {
         for x in 0..CITY_WIDTH {
@@ -8068,7 +9503,7 @@ fn mac_cloud_scatter_matches_native_lifecycle_after_reopen_in_both_layouts() {
 
         for (mode, flag, seed) in [
             (CITY_MODE_DISASTER, 1, 110_218_442),
-            (CITY_MODE_GAMEPLAY, 0, 738_537_539),
+            (CITY_MODE_GAMEPLAY, 0, 144_938_313),
         ] {
             assert_eq!(
                 state
@@ -8085,6 +9520,7 @@ fn mac_cloud_scatter_matches_native_lifecycle_after_reopen_in_both_layouts() {
             assert_eq!(state.mac_process_rng.seed(), seed);
             check_planes(&state.city, 0);
         }
+        dismiss_mac_disaster_paper(&mut state);
         assert_eq!(
             state
                 .advance_frame_simulation(Duration::from_millis(17))
@@ -8322,6 +9758,115 @@ fn mac_speed_changes_between_actor_and_calendar_admission() {
 }
 
 #[test]
+fn mac_january_budget_uses_saved_annual_latch_and_preserves_upper_bytes() {
+    for (latch, expected_age) in [(0_u8, 7_u8), (0xff, 8)] {
+        let mut state = mac_phase24_fixture("mac-annual-latch.city", WEATHER_TREND_BLIZZARD, 1);
+        state.city.set_saved_date_and_day(
+            CityDate {
+                year: 1910,
+                month: 12,
+            },
+            24,
+        );
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_YEAR_END_OFFSET, 0xa1b2_c300 | u32::from(latch));
+        state.city.set_microsim_tile_id(18, 0xf3);
+        state.city.set_microsim_stat0(18, 7);
+        state.city.set_microsim_stat3(18, 1);
+        state.sim_calendar_day0_budget_and_date_at(1911, 1, 0);
+        assert_eq!(state.city.microsim_at(18).unwrap().stat0, expected_age);
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(MISC_YEAR_END_OFFSET),
+            Some(0xa1b2_c300)
+        );
+    }
+    let mut state = mac_phase24_fixture("mac-annual-arm.city", WEATHER_TREND_BLIZZARD, 1);
+    state.city.set_saved_date_and_day(
+        CityDate {
+            year: 1910,
+            month: 11,
+        },
+        24,
+    );
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_YEAR_END_OFFSET, 0xa1b2_c300);
+    state.sim_calendar_day0_budget_and_date_at(1910, 12, 0);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(MISC_YEAR_END_OFFSET),
+        Some(0xa1b2_c3ff)
+    );
+    let path = std::env::temp_dir().join(format!(
+        "citygame-mac-annual-latch-{}.city",
+        std::process::id()
+    ));
+    state.city.save(&path).unwrap();
+    let restored = City::load(&path).unwrap();
+    assert_eq!(
+        restored.mac_state_misc_u32_at(MISC_YEAR_END_OFFSET),
+        Some(0xa1b2_c3ff)
+    );
+    std::fs::remove_file(path).unwrap();
+    state.sim_calendar_day0_budget_and_date_at(1911, 1, 0);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(MISC_YEAR_END_OFFSET),
+        Some(0xa1b2_c300)
+    );
+}
+
+#[test]
+fn mac_january_on_win_layout_uses_saved_flag_instead_of_date() {
+    let mut state = mac_phase24_fixture("mac-annual-cross.sc2", WEATHER_TREND_BLIZZARD, 1);
+    state
+        .city
+        .set_misc_u32_at(MISC_YEAR_END_OFFSET, 0x1234_5600);
+    state.city.prepare_mac_fidelity_from_saved_city();
+    state.city.set_saved_date_and_day(
+        crate::city::CityDate {
+            year: 1910,
+            month: 12,
+        },
+        24,
+    );
+    assert!(!state.mac_annual_budget_due(1911, 1));
+    state
+        .city
+        .set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
+    assert!(state.mac_annual_budget_due(1911, 1));
+    assert!(!state.mac_annual_budget_due(1911, 2));
+    assert_eq!(
+        state.city.misc_u32_at(MISC_YEAR_END_OFFSET),
+        Some(0x1234_5600)
+    );
+}
+
+#[test]
+fn mac_january_budget_review_auto_dismisses_after_native_tickcount_timeout() {
+    let mut state = mac_phase24_fixture("mac-annual-review-timeout.sc2", WEATHER_TREND_BLIZZARD, 1);
+    let start = 0xffff_ff00;
+    state.mac_loop_scheduler.start_captured_clock(start);
+    state.mac_loop_scheduler.january_budget_review_pending = true;
+    state.mac_loop_scheduler.january_budget_review_started_at = Some(start);
+    state.open_january_budget_review();
+
+    assert_eq!(
+        state.advance_frame_simulation(Duration::from_secs(79)),
+        GameClockAdvance::default()
+    );
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+    assert!(state.mac_loop_scheduler.january_budget_review_pending);
+
+    state.advance_frame_simulation(Duration::from_secs(1));
+    assert!(!state.mac_loop_scheduler.january_budget_review_pending);
+    assert_eq!(
+        state.mac_loop_scheduler.january_budget_review_started_at,
+        None
+    );
+    assert_ne!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+}
+
+#[test]
 fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
     for path in ["mac-annual-currents.city", "mac-annual-currents.sc2"] {
         let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);
@@ -8332,6 +9877,9 @@ fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
             },
             24,
         );
+        state
+            .city
+            .set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
         state.city.set_mac_state_misc_u32_at(0x18, 2);
         let tax = budget_row_misc_offset_for_city(&state.city, 0, 0).unwrap();
         let bonds = budget_row_misc_offset_for_city(&state.city, 4, 0).unwrap();
@@ -8730,8 +10278,7 @@ fn mac_seven_spires_live_frame_differential() {
     let initial_duration = tick_duration(first_frame["tick_start"].as_u64().unwrap());
     let last_frame = *phase_frames.last_key_value().unwrap().0;
     let mut saw_independent_frames = false;
-    let cgms_budget_start =
-        20 + 9 * CITY_TILES + 2 * CITY_TILES + CITY_TILES + 1_200 * 4 + 0x077c;
+    let cgms_budget_start = 20 + 9 * CITY_TILES + 2 * CITY_TILES + CITY_TILES + 1_200 * 4 + 0x077c;
     let has_saved_budget_book = input
         .get(cgms_budget_start..cgms_budget_start + 16 * 27 * 4)
         .is_some_and(|rows| rows.iter().any(|&value| value != 0));
@@ -9762,7 +11309,12 @@ fn mac_dispatch_response_matches_native_action_lifetime_on_both_layouts() {
                 scenario_action::begin_action(&mut city, scenario_action::OAKLAND_ACTION);
 
                 let mut check_pass = |city: &mut City, active, seed| {
-                    let pass = scenario_action::advance_action(city, &mut rng, &mut 0, &mut 0);
+                    let pass = scenario_action::advance_action(
+                        city,
+                        &mut rng,
+                        &mut 0,
+                        &mut MacAppLfsrRng::new(0),
+                    );
                     assert_eq!(rng.seed(), seed, "{path} {kind:?} case {case}");
                     assert_eq!(pass.complete, active == 0);
                     assert!(!pass.riot_sound);
@@ -9845,7 +11397,12 @@ fn mac_dispatchers_compete_for_a_live_fire_marker_in_x_major_order() {
         let mut expected_rng = MacToolboxRng::new(10);
         expected_rng.random_u16();
         expected_rng.random_u16();
-        let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+        let pass = scenario_action::advance_action(
+            &mut city,
+            &mut rng,
+            &mut 0,
+            &mut MacAppLfsrRng::new(0),
+        );
 
         assert!(pass.complete, "{path}");
         assert!(!pass.riot_sound, "{path}");
@@ -9884,12 +11441,9 @@ fn mac_police_and_fire_dispatchers_compete_for_one_live_fire_marker() {
         let fidelity = EngineFidelity::Mac68k;
         city.reset_emergency_dispatch_for_engine(fidelity);
         assert!(city.place_dispatch_actor_for_engine(45, 40, DispatchKind::Police, fidelity));
-        assert!(city.place_dispatch_actor_for_engine(
-            47,
-            40,
-            DispatchKind::Firefighters,
-            fidelity,
-        ));
+        assert!(
+            city.place_dispatch_actor_for_engine(47, 40, DispatchKind::Firefighters, fidelity,)
+        );
         city.set_text_overlay(46, 40, 0xff);
         scenario_action::begin_action(&mut city, scenario_action::OAKLAND_ACTION);
 
@@ -9900,7 +11454,12 @@ fn mac_police_and_fire_dispatchers_compete_for_one_live_fire_marker() {
         let mut expected_rng = MacToolboxRng::new(10);
         let expected_draws: Vec<_> = (0..3).map(|_| expected_rng.random_u16()).collect();
         assert_eq!(expected_draws, [36_998, 19_819, 49_281]);
-        let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+        let pass = scenario_action::advance_action(
+            &mut city,
+            &mut rng,
+            &mut 0,
+            &mut MacAppLfsrRng::new(0),
+        );
 
         assert!(pass.complete, "{path}");
         assert!(!pass.riot_sound, "{path}");
@@ -9938,12 +11497,8 @@ fn mac_police_and_military_dispatchers_compete_for_one_live_riot_marker() {
 
         let fidelity = EngineFidelity::Mac68k;
         city.reset_emergency_dispatch_for_engine(fidelity);
-        assert!(
-            city.place_dispatch_actor_for_engine(45, 40, DispatchKind::Police, fidelity,)
-        );
-        assert!(
-            city.place_dispatch_actor_for_engine(47, 40, DispatchKind::Military, fidelity,)
-        );
+        assert!(city.place_dispatch_actor_for_engine(45, 40, DispatchKind::Police, fidelity,));
+        assert!(city.place_dispatch_actor_for_engine(47, 40, DispatchKind::Military, fidelity,));
         // The shared XTXT 0xfe is east of police and west of military.
         city.set_text_overlay(46, 40, 0xfe);
         scenario_action::begin_action(&mut city, scenario_action::OAKLAND_ACTION);
@@ -9955,7 +11510,12 @@ fn mac_police_and_military_dispatchers_compete_for_one_live_riot_marker() {
         let mut expected_rng = MacToolboxRng::new(2);
         let expected_draws: Vec<_> = (0..4).map(|_| expected_rng.random_u16()).collect();
         assert_eq!(expected_draws, [33_614, 30_178, 22_963, 6_228]);
-        let pass = scenario_action::advance_action(&mut city, &mut rng, &mut 0, &mut 0);
+        let pass = scenario_action::advance_action(
+            &mut city,
+            &mut rng,
+            &mut 0,
+            &mut MacAppLfsrRng::new(0),
+        );
 
         assert!(pass.complete, "{path}");
         assert!(!pass.riot_sound, "{path}");
@@ -9971,5 +11531,186 @@ fn mac_police_and_military_dispatchers_compete_for_one_live_riot_marker() {
             city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY),
         );
+    }
+}
+
+#[test]
+fn mac_kind_nine_actors_share_the_app_lfsr_across_slots_and_sweeps() {
+    let mut city = City::new_blank("/tmp/mac-kind-nine-lfsr.sc2", "Marina").unwrap();
+    let first = XTHG_FIRST_USABLE_SLOT;
+    for slot in first..first + 2 {
+        let x = 30 + slot;
+        city.set_tile_bits(x, 31, TileBits::new(0x04));
+        city.set_tile_bits(x, 30, TileBits::new(0x04));
+        city.set_mac_object_slot_record(
+            slot,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: XTHG_SAILBOAT,
+                tile_x: x as u8,
+                tile_y: 31,
+                sub_y: 4,
+                ..Default::default()
+            },
+        );
+    }
+    let mut lfsr = MacAppLfsrRng::new(1);
+    let mut game = MacGameLcgRng::new(1);
+    let mut quickdraw = MacToolboxRng::new(1);
+    let mut expected = quickdraw;
+    // Slot 1's bound-4 returns 2; slot 2's returns 0, then bound-4000 returns 8.
+    expected.random_u16();
+    tick_mac_actors_with_rng_and_clock(
+        &mut city,
+        &mut quickdraw,
+        &mut game,
+        &mut lfsr,
+        &mut 0,
+        0,
+        &mut 0,
+        &mut None,
+    );
+    assert_eq!(lfsr.state(), 8);
+    assert_eq!(city.traffic_overlays().unwrap()[first].tile_y, 30);
+    assert_eq!(
+        city.text_overlay_at(30 + first, 30),
+        Some((0xc9 + first) as u8)
+    );
+    assert_eq!(quickdraw.seed(), expected.seed());
+    assert_eq!(city.traffic_overlays().unwrap()[first + 1].state, 0);
+
+    // Both slots now pass the gate, each advancing the LFSR twice.
+    for _ in 0..2 {
+        expected.random_u16();
+    }
+    tick_mac_actors_with_rng_and_clock(
+        &mut city,
+        &mut quickdraw,
+        &mut game,
+        &mut lfsr,
+        &mut 0,
+        0,
+        &mut 0,
+        &mut None,
+    );
+    assert_eq!(lfsr.state(), 128);
+    assert_eq!(quickdraw.seed(), expected.seed());
+}
+
+#[test]
+fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
+    for early_key in [false, true] {
+        let city = City::new_blank("/tmp/mac-fiscal-hold.sc2", "Fiscal").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.traffic.set_speed(GameSpeed::Llama);
+        state.game_clock = GameClock::new(1901, 1);
+        state.open_mac_fiscal_crisis_notice();
+        let counter = state.mac_loop_scheduler.dispatch_counter;
+        let elapsed = if early_key {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(29_999)
+        };
+        let waits = state.begin_mac_frame_actor_phase(elapsed);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+                .days,
+            0
+        );
+        assert_eq!(state.mac_loop_scheduler.dispatch_counter, counter);
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::FiscalCrisis));
+        if early_key {
+            state
+                .mac_loop_scheduler
+                .fiscal_notice
+                .as_mut()
+                .unwrap()
+                .dismissed = true;
+        }
+        let waits = state.begin_mac_frame_actor_phase(if early_key {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(1)
+        });
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase_with_tick_refresh(
+                    Duration::ZERO,
+                    waits,
+                    || Duration::from_millis(17),
+                )
+                .days,
+            1
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.dispatch_counter,
+            counter.wrapping_add(1)
+        );
+        assert_eq!(state.city_info_dialog, None);
+        assert_eq!(
+            state.mac_loop_scheduler.deadline,
+            if early_key { 73 } else { 1813 },
+            "resuming the native fiscal-notice dispatch must refresh the calendar deadline"
+        );
+    }
+}
+
+#[test]
+fn mac_fiscal_notice_uses_original_unsigned_absolute_deadline() {
+    let notice = |start_tick, dismissed, button_down| MacFiscalNotice {
+        start_tick,
+        dismissed,
+        button_down,
+    };
+    assert!(notice(1000, false, false).holds_dispatch(2799));
+    assert!(!notice(1000, false, false).holds_dispatch(2800));
+    assert!(!notice(0xffff_f8f8, false, false).holds_dispatch(0xffff_f8f8));
+    assert!(!notice(0xffff_fff0, false, false).holds_dispatch(0xffff_fff0));
+    assert!(notice(0xffff_fff0, false, false).holds_dispatch(0x20));
+    assert!(!notice(0xffff_fff0, false, false).holds_dispatch(0x6f8));
+    assert!(notice(0xffff_fff0, false, true).holds_dispatch(0xffff_fff0));
+    assert!(notice(1000, true, true).holds_dispatch(1001));
+    assert!(!notice(1000, true, false).holds_dispatch(1001));
+}
+
+#[test]
+#[ignore = "requires private original 68k fiscal-wait replay"]
+fn mac_fiscal_notice_matches_original_68k_wait_boundaries() {
+    let data = std::fs::read(std::env::var_os("CITYGAME_MAC_FISCAL_WAIT_CORPUS").unwrap()).unwrap();
+    let cases: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    for case in cases.as_array().unwrap() {
+        let start_tick = case["start"].as_u64().unwrap() as u32;
+        let now = case["now"].as_u64().unwrap() as u32;
+        let event = case["event"].as_u64().unwrap();
+        let dismissed = matches!(event, 1 | 3);
+        let mut notice = MacFiscalNotice {
+            start_tick,
+            dismissed,
+            button_down: false,
+        };
+        let native_exited = case["exit"].as_bool().unwrap();
+        let button_reads = case["button_reads"].as_u64().unwrap() as usize;
+        assert_eq!(case["polls"].as_u64(), Some(1), "{case}");
+        if native_exited {
+            assert_eq!(case["flush"].as_u64(), Some(0xffff), "{case}");
+        }
+        if button_reads == 0 {
+            assert!(notice.holds_dispatch(now), "{case}");
+        } else {
+            for value in case["buttons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .take(button_reads)
+            {
+                notice.button_down = value.as_u64().unwrap() != 0;
+                if notice.button_down {
+                    assert!(notice.holds_dispatch(now), "{case}");
+                }
+            }
+            assert!(!notice.holds_dispatch(now), "{case}");
+        }
+        assert_eq!(native_exited, !notice.holds_dispatch(now), "{case}");
     }
 }

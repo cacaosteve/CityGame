@@ -46,6 +46,12 @@ pub fn import(source: &Path, output: &Path) -> Result<()> {
     convert_picts(source, output);
     convert_icons(source, output, &palette, &system16)?;
     convert_cursors(source, output)?;
+    import_newspaper_data(source, output)?;
+    import_newspaper_strings(source, output)?;
+    import_newspaper_picture_index(source, output)?;
+    import_newspaper_font(source, output)?;
+    import_system_chicago_font(source, output)?;
+    import_terrain_shape_map(source, output)?;
     let sprite_count = convert_sprites(source, output, &palette)?;
     ensure!(
         sprite_count > 0,
@@ -53,6 +59,153 @@ pub fn import(source: &Path, output: &Path) -> Result<()> {
     );
     let (effects, music) = audio_import::import_mac(source, output)?;
     log::info!("normalized Macintosh media: {effects} effects, {music} music cues");
+    Ok(())
+}
+
+// CODE 0 describes the below-A5 data image; DATA and ZERO encode that image
+// as words interspersed with zero runs. This offset is established for the
+// matching Mac 1.2 build, so do not silently apply it to other layouts.
+pub(crate) fn decode_terrain_shape_map(code: &[u8], data: &[u8], zero: &[u8]) -> Result<Vec<u16>> {
+    ensure!(code.len() >= 8, "short CODE 0 resource");
+    let size = u32::from_be_bytes(code[4..8].try_into()?) as usize;
+    ensure!(size == 0x7394, "unsupported Mac below-A5 layout");
+    ensure!(data.len() % 2 == 0, "odd DATA resource length");
+    let mut image = Vec::with_capacity(size);
+    let mut runs = zero.chunks_exact(2);
+    for word in data.chunks_exact(2) {
+        ensure!(image.len() + 2 <= size, "DATA exceeds below-A5 image");
+        image.extend_from_slice(word);
+        if word == [0, 0] {
+            let count = runs.next().context("ZERO stream ended early")?;
+            let count = u16::from_be_bytes([count[0], count[1]]) as usize;
+            ensure!(image.len() + count <= size, "ZERO exceeds below-A5 image");
+            image.resize(image.len() + count, 0);
+        }
+    }
+    ensure!(runs.next().is_none() && runs.remainder().is_empty() && image.len() == size, "DATA/ZERO image length mismatch");
+    let start = size - 0x5082;
+    Ok(image[start..start + 256].chunks_exact(2)
+        .map(|word| u16::from_be_bytes([word[0], word[1]])).collect())
+}
+
+pub(crate) fn terrain_shape_map_from_resources(source: &Path) -> Result<Option<Vec<u16>>> {
+    let mut resources = Vec::new();
+    for group in ["CODE", "DATA", "ZERO"] {
+        let Some(dir) = find_dir(source, group) else { return Ok(None); };
+        let expected = format!("{group}_00000.bin");
+        let Some(path) = files_with_extension(&dir, "bin").into_iter().find(|path| {
+            path.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(&expected))
+        }) else { return Ok(None); };
+        resources.push(fs::read(path)?);
+    }
+    Ok(Some(decode_terrain_shape_map(&resources[0], &resources[1], &resources[2])?))
+}
+
+fn import_terrain_shape_map(source: &Path, output: &Path) -> Result<()> {
+    match terrain_shape_map_from_resources(source) {
+        Ok(Some(map)) => {
+            let path = output.join("catalog/mac-terrain-shapes.json");
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(path, serde_json::to_vec(&map)?)?;
+        }
+        Ok(None) => {}
+        Err(error) => log::warn!("skipping unsupported Macintosh terrain shape map: {error:#}"),
+    }
+    Ok(())
+}
+
+fn import_newspaper_picture_index(source: &Path, output: &Path) -> Result<()> {
+    let Some(dir) = find_dir(source, "PICT") else { return Ok(()); };
+    let files = files_with_extension(&dir, "bin");
+    let mut present = [0u8; 12];
+    for (index, value) in present.iter_mut().enumerate() {
+        let prefix = format!("PICT_{:05}", 400 + index);
+        *value = u8::from(files.iter().any(|path| path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name.get(..prefix.len()).is_some_and(|part| part.eq_ignore_ascii_case(&prefix))
+                && name.as_bytes().get(prefix.len()).is_some_and(|b| *b == b'_' || *b == b'.')
+        })));
+    }
+    let dest = output.join("catalog/mac-newspaper");
+    fs::create_dir_all(&dest)?;
+    fs::write(dest.join("pictures.bin"), present)?;
+    Ok(())
+}
+
+fn import_newspaper_strings(source: &Path, output: &Path) -> Result<()> {
+    let Some(dir) = find_dir(source, "STRS") else { return Ok(()); };
+    let Some(path) = files_with_extension(&dir, "bin").into_iter().find(|path| {
+        path.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("STRS_00000.bin"))
+    }) else { return Ok(()); };
+    let bytes = fs::read(&path)?;
+    if let Err(error) = crate::mac_newspaper::MacPaperDisplayStrings::from_strs(&bytes) {
+        log::warn!("skipping unsupported Macintosh newspaper strings {}: {error:#}", path.display());
+        return Ok(());
+    }
+    let dest = output.join("catalog/mac-newspaper");
+    fs::create_dir_all(&dest)?;
+    fs::write(dest.join("strs-0.bin"), bytes)?;
+    Ok(())
+}
+
+/// A System font suitcase is optional and remains in the user's local pack.
+fn import_newspaper_font(source: &Path, output: &Path) -> Result<()> {
+    let Some(dir) = find_dir(source, "mac-system") else { return Ok(()); };
+    let path = fs::read_dir(dir)?.flatten().map(|entry| entry.path()).find(|path| {
+        path.is_file() && path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name.eq_ignore_ascii_case("New York") || name.eq_ignore_ascii_case("New York.bin")
+        })
+    });
+    let Some(path) = path else { return Ok(()); };
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    crate::mac_font_metrics::MacFontFamily::from_suitcase(&bytes, 2)
+        .with_context(|| format!("reading New York font suitcase {}", path.display()))?;
+    let dest = output.join("catalog/mac-newspaper");
+    fs::create_dir_all(&dest)?;
+    fs::write(dest.join("new-york.bin"), bytes)?;
+    Ok(())
+}
+
+/// The System font stays in the user's local asset pack.
+fn import_system_chicago_font(source: &Path, output: &Path) -> Result<()> {
+    let Some(dir) = find_dir(source, "mac-system") else { return Ok(()); };
+    let path = fs::read_dir(dir)?.flatten().map(|entry| entry.path()).find(|path| {
+        path.is_file() && path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name.eq_ignore_ascii_case("Chicago") || name.eq_ignore_ascii_case("Chicago.bin") || name.eq_ignore_ascii_case("Chicago.macbin")
+        })
+    });
+    let Some(path) = path else { return Ok(()); };
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let family = crate::mac_font_metrics::MacFontFamily::from_suitcase(&bytes, 0)
+        .with_context(|| format!("reading Chicago font suitcase {}", path.display()))?;
+    ensure!(family.bitmap.contains_key(&12), "Chicago font has no 12-point bitmap");
+    let dest = output.join("catalog/mac-system");
+    fs::create_dir_all(&dest)?;
+    fs::write(dest.join("chicago.bin"), bytes)?;
+    Ok(())
+}
+
+/// Preserve the optional newspaper resources in the user's local imported pack.
+fn import_newspaper_data(source: &Path, output: &Path) -> Result<()> {
+    let Some(dir) = find_dir(source, "DATA") else { return Ok(()); };
+    let paths = files_with_extension(&dir, "bin");
+    let selected: Vec<_> = (1000..=1005).filter_map(|id| {
+        let prefix = format!("DATA_{id:05}");
+        paths.iter().find(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            name.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(&prefix))
+                && name.as_bytes().get(prefix.len()).is_some_and(|b| *b == b'_' || *b == b'.')
+        }).map(|path| (id, path))
+    }).collect();
+    if selected.is_empty() { return Ok(()); }
+    let dest = output.join("catalog/mac-newspaper");
+    fs::create_dir_all(&dest)?;
+    for (id, path) in selected {
+        fs::copy(path, dest.join(format!("{id}.bin")))
+            .with_context(|| format!("importing Macintosh DATA {id} from {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -640,6 +793,133 @@ fn read_be_u16(data: &[u8], offset: usize) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_shape_map_expands_data_and_rejects_bad_streams() {
+        let mut code = [0u8; 8];
+        code[4..].copy_from_slice(&0x7394u32.to_be_bytes());
+        let mut data = vec![1u8; 0x7394];
+        let start = 0x7394 - 0x5082;
+        data[start..start + 2].copy_from_slice(&0x1234u16.to_be_bytes());
+        let map = decode_terrain_shape_map(&code, &data, &[]).unwrap();
+        assert_eq!(map.len(), 128);
+        assert_eq!(map[0], 0x1234);
+        assert_eq!(map[1], 0x0101);
+        let zero_run = (0x7394u16 - 2).to_be_bytes();
+        assert_eq!(decode_terrain_shape_map(&code, &[0, 0], &zero_run).unwrap(), vec![0; 128]);
+        assert!(decode_terrain_shape_map(&code, &[0, 0], &[]).is_err());
+        assert!(decode_terrain_shape_map(&code, &[0, 0], &[0xff, 0xff]).is_err());
+        assert!(decode_terrain_shape_map(&code, &data[..data.len() - 1], &[]).is_err());
+    }
+
+    #[test]
+    fn imported_terrain_map_and_atlases_form_shape_lookup() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-mac-shapes-{}-{unique}", std::process::id()));
+        let source = root.join("source");
+        let output = root.join("output");
+        for group in ["CODE", "DATA", "ZERO"] { fs::create_dir_all(source.join(group)).unwrap(); }
+        let mut code = [0u8; 8];
+        code[4..].copy_from_slice(&0x7394u32.to_be_bytes());
+        fs::write(source.join("CODE/CODE_00000.bin"), code).unwrap();
+        let mut data = vec![1u8; 0x7394];
+        let start = 0x7394 - 0x5082;
+        data[start..start + 2].copy_from_slice(&12u16.to_be_bytes());
+        fs::write(source.join("DATA/DATA_00000.bin"), data).unwrap();
+        fs::write(source.join("ZERO/ZERO_00000.bin"), []).unwrap();
+        import_terrain_shape_map(&source, &output).unwrap();
+        for (group, width) in [(128, 3), (129, 4), (130, 5)] {
+            let path = output.join(format!("sprites/SPRT_{group:05}_ShapeData"));
+            fs::create_dir_all(&path).unwrap();
+            let atlas = serde_json::json!({"image":"atlas.png", "frames":[
+                {"file":"x", "id":12, "source_offset":0, "x":0, "y":0, "w":width, "h":7},
+                {"file":"x", "id":512, "source_offset":0, "x":0, "y":0, "w":8, "h":9}
+            ]});
+            fs::write(path.join("atlas.json"), serde_json::to_vec(&atlas).unwrap()).unwrap();
+        }
+        let shapes = crate::mac_shape_table::MacShapeDimensions::from_pack(&output).unwrap();
+        assert_eq!(shapes.terrain_dimensions(0, 0), Some((5, 7)));
+        assert_eq!(shapes.terrain_dimensions(0, 1), Some((8, 9)));
+        assert_eq!(shapes.building_dimensions(12, 0), Some((5, 7)));
+        assert_eq!(shapes.terrain_dimensions(128, 0), None);
+        assert_eq!(shapes.terrain_dimensions(0, 3), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_optional_newspaper_resources() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-mac-paper-{}-{unique}", std::process::id()));
+        let source = root.join("source"); let output = root.join("output");
+        fs::create_dir_all(source.join("DATA")).unwrap();
+        fs::write(source.join("DATA/DATA_01000_Group Start.bin"), b"start").unwrap();
+        fs::write(source.join("DATA/DATA_01003_Token Data.bin"), b"tokens").unwrap();
+        fs::write(source.join("DATA/DATA_010030_Other.bin"), b"wrong").unwrap();
+        import_newspaper_data(&source, &output).unwrap();
+        assert_eq!(fs::read(output.join("catalog/mac-newspaper/1000.bin")).unwrap(), b"start");
+        assert_eq!(fs::read(output.join("catalog/mac-newspaper/1003.bin")).unwrap(), b"tokens");
+        assert!(!output.join("catalog/mac-newspaper/1001.bin").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn indexes_only_matching_newspaper_picture_ids() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-mac-pictures-{}-{unique}", std::process::id()));
+        let source = root.join("source"); let output = root.join("output");
+        fs::create_dir_all(source.join("PICT")).unwrap();
+        fs::write(source.join("PICT/PICT_00403.bin"), b"present").unwrap();
+        fs::write(source.join("PICT/PICT_00411_label.bin"), b"present").unwrap();
+        fs::write(source.join("PICT/PICT_004000.bin"), b"wrong id").unwrap();
+        import_newspaper_picture_index(&source, &output).unwrap();
+        let mask = fs::read(output.join("catalog/mac-newspaper/pictures.bin")).unwrap();
+        assert_eq!(mask, [0,0,0,1,0,0,0,0,0,0,0,1]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the locally extracted Macintosh STRS resource"]
+    fn imports_optional_mac_newspaper_display_strings() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-mac-strs-{}-{unique}", std::process::id()));
+        let source = root.join("source"); let output = root.join("output");
+        fs::create_dir_all(source.join("STRS")).unwrap();
+        let bytes = fs::read(std::env::var_os("CITYGAME_MAC_STRS").unwrap()).unwrap();
+        fs::write(source.join("STRS/STRS_00000.bin"), &bytes).unwrap();
+        import_newspaper_strings(&source, &output).unwrap();
+        assert_eq!(fs::read(output.join("catalog/mac-newspaper/strs-0.bin")).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the locally extracted Macintosh System font suitcase"]
+    fn imports_optional_chicago_suitcase() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-mac-chicago-{}-{unique}", std::process::id()));
+        let source = root.join("source"); let output = root.join("output");
+        fs::create_dir_all(source.join("mac-system")).unwrap();
+        let original = fs::read(std::env::var_os("CITYGAME_MAC_CHICAGO_FONT").unwrap()).unwrap();
+        fs::write(source.join("mac-system/Chicago.macbin"), &original).unwrap();
+        import_system_chicago_font(&source, &output).unwrap();
+        assert_eq!(fs::read(output.join("catalog/mac-system/chicago.bin")).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the locally extracted Macintosh System font suitcase"]
+    fn imports_optional_new_york_suitcase() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-mac-font-{}-{unique}", std::process::id()));
+        let source = root.join("source");
+        let output = root.join("output");
+        fs::create_dir_all(source.join("mac-system")).unwrap();
+        let capture = PathBuf::from(std::env::var("CITYGAME_MAC_PAPER_WIDTHS").unwrap());
+        let original = fs::read(capture.join("newyork.bin")).unwrap();
+        fs::write(source.join("mac-system/New York.bin"), &original).unwrap();
+        import_newspaper_font(&source, &output).unwrap();
+        assert_eq!(fs::read(output.join("catalog/mac-newspaper/new-york.bin")).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn decodes_palette_resource_components_and_clut() {

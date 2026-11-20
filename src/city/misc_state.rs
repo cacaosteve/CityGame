@@ -4,6 +4,8 @@ use super::file_format::MacCrossLayoutSavedState;
 use super::scenario_state::{MAC_ACTION_OFFSETS, MacScenarioContinuation};
 use super::*;
 
+const MAC_ANNUAL_FLAG_MISC_OFFSET: usize = 0xe3c;
+
 impl City {
     pub(super) fn mac_cross_layout_saved_state(&self) -> MacCrossLayoutSavedState {
         MacCrossLayoutSavedState {
@@ -22,6 +24,7 @@ impl City {
             scenario: self.mac_scenario_runtime,
             road_neighbor_links: self.mac_road_neighbor_link_count_runtime,
             police_arrest_subtotal: Some(self.mac_monthly_arrest_total),
+            annual_flag: self.mac_cross_layout_annual_flag,
         }
     }
 
@@ -118,6 +121,10 @@ impl City {
     pub(crate) fn prepare_mac_fidelity_from_saved_city(&mut self) {
         if self.kind.is_win95() {
             self.mac_cross_layout_active = true;
+            if self.mac_cross_layout_annual_flag.is_none() {
+                self.mac_cross_layout_annual_flag =
+                    Some(self.misc_u32_at(MAC_ANNUAL_FLAG_MISC_OFFSET).unwrap_or(0) as u8);
+            }
             if !self.mac_cross_layout_state_restored {
                 // The Mac CODE 4 loader restores these slots directly from
                 // MISC before their first monthly consumers. On a first open
@@ -429,6 +436,12 @@ impl City {
     /// `misc_u32_at` instead. Mac's command latch and scenario actions use
     /// separate runtime fields on PE-layout files.
     pub fn mac_state_misc_u32_at(&self, offset: usize) -> Option<u32> {
+        if offset == MAC_ANNUAL_FLAG_MISC_OFFSET
+            && self.kind.is_win95()
+            && self.mac_cross_layout_active
+        {
+            return self.mac_cross_layout_annual_flag.map(u32::from);
+        }
         if offset == MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET
             && self.kind.is_win95()
             && let Some(count) = self.mac_road_neighbor_link_count_runtime
@@ -545,6 +558,14 @@ impl City {
     /// bytes as Win95 runtime-cache updates. On non-Mac files, shared state
     /// uses the ordinary MISC writer and Mac-only fields use the extension.
     pub fn set_mac_state_misc_u32_at(&mut self, offset: usize, value: u32) {
+        if offset == MAC_ANNUAL_FLAG_MISC_OFFSET
+            && self.kind.is_win95()
+            && self.mac_cross_layout_active
+        {
+            self.mac_cross_layout_annual_flag = Some(value as u8);
+            self.modified = true;
+            return;
+        }
         if offset == MAC_XTXT_FA_NETWORK_COUNT_MISC_OFFSET && self.kind.is_win95() {
             self.mac_road_neighbor_link_count_runtime = Some(value as u16);
             self.modified = true;
@@ -892,18 +913,18 @@ impl City {
             self.pe_w_old_arrests = value.min(u32::from(u16::MAX)) as u16;
         }
         if let Some(value) = misc_value_written_at(offset, values, MISC_PRISON_BONUS_OFFSET) {
-            self.pe_w_prison_bonus = value.min(u32::from(u16::MAX)) as u16;
+            self.pe_w_prison_bonus = value as u16;
         }
         if let Some(value) = misc_value_written_at(offset, values, MISC_SEWER_BONUS_OFFSET) {
-            self.pe_w_sewer_bonus = value.min(u32::from(u16::MAX)) as u16;
+            self.pe_w_sewer_bonus = value as u16;
         }
         if let Some(value) = misc_value_written_at(offset, values, MISC_MONSTER_XTHG_INDEX_OFFSET) {
-            self.pe_w_monster_xthg_index = value.min(u32::from(u16::MAX)) as u16;
+            self.pe_w_monster_xthg_index = value as u16;
         }
         if let Some(value) =
             misc_value_written_at(offset, values, MISC_CURRENT_DISASTER_TYPE_OFFSET)
         {
-            self.pe_w_current_disaster_type = value.min(u32::from(u16::MAX)) as u16;
+            self.pe_w_current_disaster_type = value as u16;
         }
         if let Some(value) = misc_value_written_at(offset, values, MISC_DISASTER_ACTIVE_OFFSET) {
             self.pe_dw_disaster_active = value;

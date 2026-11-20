@@ -15,6 +15,7 @@ pub(super) struct PeIdleScheduler {
     palette_314: u32,
     palette_318: u32,
     modal: PeModalPause,
+    external_modal: bool,
     continuation: Option<PeIdleContinuation>,
     day_zero: Option<PeDayZeroContinuation>,
     pub(super) pending_disaster_point: Option<(i16, i16)>,
@@ -215,7 +216,7 @@ impl ViewerState {
         if !self.engine_fidelity.uses_win95() {
             return;
         }
-        let admitted = matches!(
+        let admitted = self.pe_idle_scheduler.external_modal || matches!(
             self.city_info_dialog,
             Some(CityInfoDialog::Budget | CityInfoDialog::Newspaper(_))
         );
@@ -230,6 +231,21 @@ impl ViewerState {
                 self.set_pe_modal_runtime_speed(raw);
             }
             _ => {}
+        }
+    }
+
+    pub(super) fn set_pe_external_modal(&mut self, active: bool) {
+        self.pe_idle_scheduler.external_modal = active;
+        self.sync_pe_city_info_modal_state();
+    }
+
+    /// Common file dialogs run a nested message loop without entering the
+    /// game's speed-pausing 0x4815e0 wrapper. Timer pulses can continue, but
+    /// the interrupted outer idle invocation cannot consume their latch yet.
+    pub(super) fn advance_pe_common_dialog_timers(&mut self, elapsed: Duration) {
+        if self.engine_fidelity.uses_win95() {
+            let mode = self.pe_idle_city_mode();
+            self.pe_idle_scheduler.advance_timers(elapsed, self.traffic.speed(), mode);
         }
     }
 
@@ -260,9 +276,14 @@ impl ViewerState {
             year: at.year(),
             month: at.month(),
             day: at.day(),
-            year_rolled: self.city.saved_date().is_some_and(|old| {
-                old.month == 12 && at.month() == 1 && at.year() == old.year.saturating_add(1)
-            }),
+            year_rolled: if self.city.kind == CityFileKind::MacCity {
+                self.city.saved_date().is_some_and(|old| {
+                    old.month == 12 && at.month() == 1 && at.year() == old.year.saturating_add(1)
+                })
+            } else {
+                at.month() == 1
+                    && self.city.misc_u32_at(super::MISC_YEAR_END_OFFSET).unwrap_or(0) != 0
+            },
         };
         // Native 0x413520 publishes the new age/month/year before phase 0;
         // retain the previous-date rollover decision across the modal return.
@@ -472,6 +493,38 @@ impl ViewerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pe_external_modal_keeps_timer_pulses_and_restores_speed() {
+        let city = crate::city::City::new_blank("/tmp/pe-external-modal.sc2", "Modal").unwrap();
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Win95;
+        state.traffic.set_speed(GameSpeed::Llama);
+        state.set_pe_external_modal(true);
+        assert!(state.pe_modal_active());
+        assert_eq!(state.traffic.speed(), GameSpeed::Paused);
+        assert_eq!(state.advance_frame_simulation(Duration::from_millis(600)).days, 0);
+        assert_eq!(state.pe_idle_scheduler.cycle, 3);
+        state.set_pe_external_modal(false);
+        assert!(!state.pe_modal_active());
+        assert_eq!(state.traffic.speed(), GameSpeed::Llama);
+    }
+
+    #[test]
+    fn pe_common_file_dialog_delivers_timer_pulses_without_consuming_idle() {
+        let city = crate::city::City::new_blank("/tmp/pe-file-modal.sc2", "Modal").unwrap();
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Win95;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        let day = state.game_clock.day();
+        state.advance_pe_common_dialog_timers(Duration::from_millis(600));
+        assert_eq!(state.traffic.speed(), GameSpeed::Cheetah);
+        assert_eq!(state.game_clock.day(), day);
+        assert_eq!(state.pe_idle_scheduler.cycle, 3);
+        assert_eq!(state.pe_idle_scheduler.pending, 1);
+        assert_eq!(state.pe_idle_scheduler.palette_318, 1);
+        assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 1);
+    }
 
     #[test]
     fn pe_fiscal_notice_native_gate_and_timer_states() {

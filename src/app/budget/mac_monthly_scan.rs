@@ -28,12 +28,14 @@ pub(in crate::app) fn mac_budget_accumulate_monthly_rci_scan_partition(
         y_residue,
         rng,
         None,
+        &mut MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE),
         &mut kind2_sound_deadline,
+        &mut |_| {},
     );
 }
 
-/// Live Mac scan entry. The rail producer's route chooser consumes the same
-/// process-owned CODE 13 game LCG as rail-head updates and the monthly zoo row.
+/// Controlled scan fixtures with the reconstructed zero LFSR state.
+#[cfg(test)]
 pub(in crate::app) fn mac_budget_accumulate_monthly_rci_scan_partition_with_game_rng(
     city: &mut City,
     x_residue: usize,
@@ -42,13 +44,58 @@ pub(in crate::app) fn mac_budget_accumulate_monthly_rci_scan_partition_with_game
     game_rng: &mut MacGameLcgRng,
     kind2_sound_deadline: &mut u32,
 ) {
+    mac_budget_accumulate_monthly_rci_scan_partition_with_rngs(
+        city,
+        x_residue,
+        y_residue,
+        rng,
+        game_rng,
+        &mut MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE),
+        kind2_sound_deadline,
+    );
+}
+
+/// Live scan with the process-owned upkeep/producer LFSR and rail game LCG.
+pub(in crate::app) fn mac_budget_accumulate_monthly_rci_scan_partition_with_rngs(
+    city: &mut City,
+    x_residue: usize,
+    y_residue: usize,
+    rng: &mut MacToolboxRng,
+    game_rng: &mut MacGameLcgRng,
+    app_lfsr: &mut MacAppLfsrRng,
+    kind2_sound_deadline: &mut u32,
+) {
+    mac_budget_accumulate_monthly_rci_scan_partition_with_rngs_and_palette(
+        city,
+        x_residue,
+        y_residue,
+        rng,
+        game_rng,
+        app_lfsr,
+        kind2_sound_deadline,
+        &mut |_| {},
+    );
+}
+
+pub(in crate::app) fn mac_budget_accumulate_monthly_rci_scan_partition_with_rngs_and_palette(
+    city: &mut City,
+    x_residue: usize,
+    y_residue: usize,
+    rng: &mut MacToolboxRng,
+    game_rng: &mut MacGameLcgRng,
+    app_lfsr: &mut MacAppLfsrRng,
+    kind2_sound_deadline: &mut u32,
+    palette: &mut impl FnMut(usize),
+) {
     mac_budget_accumulate_monthly_rci_scan_partition_inner(
         city,
         x_residue,
         y_residue,
         rng,
         Some(game_rng),
+        app_lfsr,
         kind2_sound_deadline,
+        palette,
     );
 }
 
@@ -58,7 +105,9 @@ fn mac_budget_accumulate_monthly_rci_scan_partition_inner(
     y_residue: usize,
     rng: &mut MacToolboxRng,
     mut game_rng: Option<&mut MacGameLcgRng>,
+    app_lfsr: &mut MacAppLfsrRng,
     kind2_sound_deadline: &mut u32,
+    palette: &mut impl FnMut(usize),
 ) {
     if x_residue >= 4 || y_residue >= 4 {
         return;
@@ -70,19 +119,27 @@ fn mac_budget_accumulate_monthly_rci_scan_partition_inner(
     let church_gate = u32::from(city.mac_xbld_tile_count(0xf7)) * 2500
         < city.mac_state_misc_u32_at(0x102c).unwrap_or(0);
     for x in (x_residue..CITY_WIDTH).step_by(4) {
+        // CODE 8 export 241 calls CODE 6 export 130 at these outer-column
+        // boundaries, before examining the column's first tile.
+        if x & 31 > 27 {
+            palette(x);
+        }
         for y in (y_residue..CITY_HEIGHT).step_by(4) {
-            // CODE 8 `export_241` `0x35f90..0x360bc`: unzoned XBLD
-            // `0x5d..=0x60` road and the following rail selector families
-            // reach direct QuickDraw calls and PlaceTile before the ordinary
-            // zone/counter path. Export 208's app-LFSR gate is always zero.
-            mac_budget_decay_road_or_rail_at(city, x, y, rng);
-            mac_budget_decay_bridge_at(city, x, y, rng);
-            mac_budget_decay_cardinal_portal_at(city, x, y, rng);
-            mac_budget_decay_highway_block_at(city, x, y, rng);
+            // CODE 8 runs export 208 before classifying unzoned developed tiles.
+            let building = city.building_at(x, y);
+            if building >= 0x1d
+                && city.zone_at(x, y).is_some_and(|zone| zone.zone_id() == 0)
+                && app_lfsr.low_seven_bits() == 0
+            {
+                mac_budget_decay_road_or_rail_at(city, x, y, rng);
+                mac_budget_decay_bridge_at(city, x, y, rng);
+                mac_budget_decay_cardinal_portal_at(city, x, y, rng);
+                mac_budget_decay_highway_block_at(city, x, y, rng);
+            }
             mac_budget_update_arcology_xmic_offset(city, x, y);
-            mac_budget_try_spawn_mac_marina_actor(city, x, y);
+            mac_budget_try_spawn_mac_marina_actor(city, x, y, app_lfsr);
             if let Some(game_rng) = game_rng.as_deref_mut() {
-                mac_budget_try_spawn_mac_rail_actor(city, x, y, game_rng);
+                mac_budget_try_spawn_mac_rail_actor(city, x, y, game_rng, app_lfsr);
             }
 
             let Some(zone) = city.zone_at(x, y) else {
@@ -187,15 +244,15 @@ fn mac_budget_accumulate_monthly_rci_scan_partition_inner(
     }
 }
 
-/// Mac CODE 8 `export_241` XBLD `0xed` producer. The export-205 A5-2 LFSR is
-/// a zero fixed point in the recovered Mac data image. Export 203 supplies the
-/// candidate offset, while export 201 uses the app-owned persistent game LCG
-/// for route direction. The caller preserves map-scan order and shared slots.
+/// Mac CODE 8 `export_241` XBLD `0xed` producer. Export 205 gates entry,
+/// export 203 supplies the candidate offset, and export 201 chooses the route
+/// direction on the separate game LCG.
 fn mac_budget_try_spawn_mac_rail_actor(
     city: &mut City,
     x: usize,
     y: usize,
     game_rng: &mut MacGameLcgRng,
+    lfsr: &mut MacAppLfsrRng,
 ) -> bool {
     if city.building_at(x, y) != 0xed
         || !city.zone_at(x, y).is_some_and(|zone| zone.zone_id() == 0)
@@ -206,7 +263,6 @@ fn mac_budget_try_spawn_mac_rail_actor(
         return false;
     }
 
-    let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
     if lfsr.low_two_bits() != 0 || city.mac_xbld_tile_count(0xed) / 4 <= city.mac_rail_actor_counter
     {
         return false;
@@ -221,11 +277,14 @@ fn mac_budget_try_spawn_mac_rail_actor(
     )
 }
 
-/// Mac CODE 8 `export_241` marina branch → CODE 6 export 118. The reconstructed
-/// CODE 13 app LFSR is fixed at zero, so both selector gates admit and each
-/// eligible cardinal water neighbor is used. This is Mac XTHG/XTXT
-/// behavior, independent of Win95/XTRF road traffic and PE sailboat spawning.
-fn mac_budget_try_spawn_mac_marina_actor(city: &mut City, x: usize, y: usize) -> bool {
+/// Mac CODE 8 `export_241` marina branch → CODE 6 export 118.
+/// The admission and direction selectors share the CODE 13 app LFSR.
+fn mac_budget_try_spawn_mac_marina_actor(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    lfsr: &mut MacAppLfsrRng,
+) -> bool {
     if city.building_at(x, y) != 0xf8
         || !city.zone_at(x, y).is_some_and(|zone| zone.zone_id() == 0)
         || !city
@@ -235,7 +294,6 @@ fn mac_budget_try_spawn_mac_marina_actor(city: &mut City, x: usize, y: usize) ->
         return false;
     }
 
-    let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
     if lfsr.low_two_bits() != 0
         || city.mac_xbld_tile_count(0xf8) / 9 <= city.mac_marina_actor_counter
         || city.mac_marina_actor_counter >= 4
@@ -382,6 +440,31 @@ fn mac_budget_process_late_xund_subway_gate(
 #[cfg(test)]
 mod mac_arcology_geometry_tests {
     use super::*;
+
+    #[test]
+    fn mac_scan_calls_palette_at_native_outer_column_boundaries() {
+        for residue in 0..4 {
+            let mut city = City::new_blank("/tmp/mac-palette-scan.sc2", "Palette").unwrap();
+            let mut rng = MacToolboxRng::new(1);
+            let mut game = MacGameLcgRng::new(1);
+            let mut lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
+            let mut columns = Vec::new();
+            mac_budget_accumulate_monthly_rci_scan_partition_with_rngs_and_palette(
+                &mut city,
+                residue,
+                0,
+                &mut rng,
+                &mut game,
+                &mut lfsr,
+                &mut 0,
+                &mut |x| columns.push(x),
+            );
+            assert_eq!(
+                columns,
+                vec![28 + residue, 60 + residue, 92 + residue, 124 + residue]
+            );
+        }
+    }
 
     #[test]
     fn mac_growth_scan_arcology_effect_is_independent_of_city_storage_layout() {

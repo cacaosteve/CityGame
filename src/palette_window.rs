@@ -197,6 +197,23 @@ pub fn palette_mouse_slider(
     )
 }
 
+pub fn palette_mouse_slider_drag_value(
+    palette: &Window,
+    renderer: &Renderer<'_>,
+    logical_size: (u32, u32),
+    slider: ui::EditMapSlider,
+    x: f32,
+    y: f32,
+) -> u8 {
+    let screen = Vec2::new(x, y) * input_pixel_scale(palette, renderer.size());
+    ui::edit_map_slider_drag_value(
+        screen,
+        logical_size,
+        pixel_scale(palette, renderer.size()),
+        slider,
+    )
+}
+
 pub fn palette_hover_label(
     palette: &Window,
     renderer: &Renderer<'_>,

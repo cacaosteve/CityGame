@@ -17,10 +17,18 @@ fn fixture(tool: EditTool, mode: AppMode, fidelity: EngineFidelity) -> ViewerSta
 
 fn tile_screen(state: &ViewerState, tile: (usize, usize)) -> Vec2 {
     let (anchor, _, _, _) = state.structure_anchor(WINDOW, SCALE, tile.0, tile.1);
-    // Picking uses the projected tile anchor rather than the image footprint.
-    let screen = anchor;
-    assert_eq!(state.tile_at_screen(screen, WINDOW, SCALE), Some(tile));
-    screen
+    // Native Mac picking has a different threshold from the drawn anchor.
+    // Find a point inside this cell so these tests exercise interaction gates.
+    for radius in 0_i32..=48 {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx.abs().max(dy.abs()) != radius { continue; }
+                let screen = anchor + Vec2::new(dx as f32, dy as f32);
+                if state.tile_at_screen(screen, WINDOW, SCALE) == Some(tile) { return screen; }
+            }
+        }
+    }
+    panic!("no screen point for tile {tile:?}");
 }
 
 #[test]

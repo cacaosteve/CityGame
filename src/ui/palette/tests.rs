@@ -1,6 +1,13 @@
 use super::*;
 
 #[test]
+fn acute_e_sign_glyph_is_not_the_unknown_character() {
+    assert_ne!(case_sensitive_glyph('é'), case_sensitive_glyph('?'));
+    assert_ne!(case_sensitive_glyph('É'), case_sensitive_glyph('?'));
+    assert_ne!(case_sensitive_glyph('é'), case_sensitive_glyph('e'));
+}
+
+#[test]
 fn city_name_font_displays_lowercase_distinctly_and_keeps_descenders_in_the_field() {
     let pixels = |value: &str, preserve_case: bool| {
         let mut solids = Vec::new();
@@ -283,6 +290,28 @@ fn edit_map_slider_hit_test_matches_original_track_range() {
             edit_map_slider_hit_test(Vec2::new(x * scale, y * scale), logical, 1.0, mode, None),
             expected,
             "case {index}"
+        );
+    }
+}
+
+#[test]
+fn edit_map_slider_drag_tracks_outside_the_original_track() {
+    let logical = palette_logical_size(AppMode::EditNewMap);
+    let scale = UiMetrics::for_logical_height(logical.1).palette_scale;
+    for (x, y, expected) in [
+        (8.0, 35.0, 42),
+        (8.0, 66.0, 11),
+        (90.0, 5.0, 47),
+        (90.0, 99.0, 0),
+    ] {
+        assert_eq!(
+            edit_map_slider_drag_value(
+                Vec2::new(x * scale, y * scale),
+                logical,
+                1.0,
+                EditMapSlider::Hills,
+            ),
+            expected,
         );
     }
 }

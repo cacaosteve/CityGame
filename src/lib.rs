@@ -27,12 +27,22 @@ mod mac_traffic_geometry;
 // supported road-traffic renderer.
 #[cfg(target_os = "macos")]
 mod mac_folder_picker;
+mod mac_font_metrics;
 #[cfg(test)]
 mod mac_live_traffic;
 mod mac_menu;
+mod mac_mdrv;
+mod mac_midi;
+mod mac_midi_bank;
+mod mac_midi_engine;
+mod mac_midi_mix;
+mod mac_midi_voice;
+mod mac_music_worker;
+mod mac_newspaper;
 mod mac_random;
 mod mac_render;
 mod mac_shape_table;
+mod mac_sound_state;
 mod menu_model;
 mod menubar;
 mod mobile_graphics;
@@ -50,9 +60,13 @@ mod traffic;
 mod trip_generator;
 mod ui;
 mod win95_import;
+mod win95_file_error;
+mod win95_newspaper;
+mod win95_oem;
 mod win95_overlay;
 mod win95_overlay_sim;
 mod win95_random;
+mod win95_resources;
 mod win95_tile_draw;
 mod win95_traffic_placement;
 

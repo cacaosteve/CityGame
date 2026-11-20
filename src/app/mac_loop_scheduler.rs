@@ -7,7 +7,9 @@ use crate::win95_overlay::{
 mod ambient_disaster;
 mod facility_disaster;
 mod hurricane;
+mod map_redraw;
 mod maxis_man;
+pub(super) mod palette;
 pub(super) mod rail_consist;
 mod rail_routes;
 mod riot;
@@ -25,13 +27,26 @@ const MAC_KIND3_FORWARD_DIRECTION_WINDOW: [i16; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 0]
 const MAC_KIND1_MOVE_ROW_UNIT: [i16; 8] = [0, 1, 1, 1, 0, -1, -1, -1];
 const MAC_KIND1_MOVE_COL_UNIT: [i16; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
 const MAC_EXPORT80_RENDER_WAIT_TICKS_PER_LOOP: u32 = 12;
+const MAC_EARTHQUAKE_SHAKE_FRAMES: u8 = 24;
+const MAC_EARTHQUAKE_FRAME_WAIT_TICKS: u32 = 5;
+const MAC_EARTHQUAKE_FIRST_FRAME_TICKS: u32 = 2;
+// One live pixel census kept the native January review visible across 4,760
+// TickCount ticks; a second annual boundary had a 5,180-tick CODE 7 gap. The
+// current nominal timeout is 4,800 ticks, with adjacent annual work accounting
+// for the remainder of the observed dispatch gaps.
+const MAC_JANUARY_BUDGET_REVIEW_TIMEOUT_TICKS: u32 = 4_800;
 
 /// CODE 2's post-event 0x26..0xb2 admission. The adaptive actor timer and
 /// native action state are separate workers, not the shared road renderer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct MacLoopScheduler {
     elapsed: Duration,
+    live_clock: bool,
+    clock_origin: u32,
     deadline: u32,
+    palette: Option<palette::MacPaletteSchedule>,
+    palette_tick_origin: u32,
+    palette_uses_host_clock: bool,
     /// Native TickCount deadline `ffff8cb2` for CODE 6 export 109.
     actor_deadline: u32,
     /// Native signed WORD `ffff8c82` used to select the next 30/45-tick interval.
@@ -40,14 +55,49 @@ pub(super) struct MacLoopScheduler {
     dispatch_counter: u16,
     /// CODE 14 phase 0 is suspended inside CODE 4 export 225.
     pub(super) january_budget_review_pending: bool,
+    /// TickCount at which the native January budget review was shown.
+    pub(super) january_budget_review_started_at: Option<u32>,
+    pub(super) fiscal_notice: Option<MacFiscalNotice>,
     /// A Mac SCEN resource or a point-bearing menu arm supplies the active point.
     pub(super) pending_action_point: Option<(i16, i16)>,
+    /// CODE 10's synchronous 24-frame Earthquake prelude, advanced by TickCount.
+    mac_earthquake_prelude: Option<MacEarthquakePrelude>,
+    /// CODE 10 calls the sound gateway after CopyBits presents a shake frame.
+    mac_earthquake_sound_pending: bool,
+    /// CODE 10's successful action tail clears the CODE 9 effect pool.
+    pending_effect_reset: Option<(usize, bool)>,
+    /// CODE 7's current status-window message, separate from the story queue.
+    pub(super) status_message: Option<MacStatusMessage>,
     /// Last represented CODE 10 Point, available to starts whose proposal
     /// does not write new coordinates.
     disaster_point: (i16, i16),
-    /// App-owned stream during a Hurricane. The original city file saves
-    /// its countdowns, while the application retains the live RNG state.
-    hurricane_lfsr: u16,
+    /// Host drawable size used to derive the native map window geometry.
+    viewport_size: Option<(u32, u32)>,
+    /// A Fire Auto-Goto redraw occurs before the action's first marker scan.
+    redraw_view_override: Option<map_redraw::MacMapRedrawView>,
+    /// Known screen-space invalidation to flush during the next action pass.
+    redraw_dirty_override: Option<map_redraw::MacMapClip>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MacStatusMessage {
+    Story(u16),
+    Weather(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MacFiscalNotice {
+    start_tick: u32,
+    pub(super) dismissed: bool,
+    pub(super) button_down: bool,
+}
+
+impl MacFiscalNotice {
+    fn holds_dispatch(self, now: u32) -> bool {
+        // CODE 2 export 66 compares the absolute wrapping deadline with
+        // the current unsigned TickCount (BLS), before waiting for _Button.
+        self.button_down || (!self.dismissed && now < self.start_tick.wrapping_add(1800))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,18 +106,126 @@ enum MacLoopDispatch {
     Action,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MacEarthquakePrelude {
+    point: (i16, i16),
+    frames_done: u8,
+    deadline: u32,
+}
+
 impl MacLoopScheduler {
+    /// CODE 2 initializes both loop deadlines from one TickCount sample.
+    pub(super) fn start_live_clock(&mut self, tick: u32) {
+        self.live_clock = true;
+        self.deadline = tick;
+        self.actor_deadline = tick;
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_captured_clock(&mut self, tick: u32) {
+        self.live_clock = false;
+        self.elapsed = Duration::ZERO;
+        self.clock_origin = tick;
+        self.deadline = tick;
+        self.actor_deadline = tick;
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_palette(&mut self, palette: palette::MacPaletteSchedule, tick: u32) {
+        self.palette = Some(palette);
+        self.palette_tick_origin = tick.wrapping_sub(self.current_tick());
+        self.palette_uses_host_clock = false;
+    }
+
+    pub(super) fn install_live_palette(&mut self, palette: palette::MacPaletteSchedule) {
+        self.palette = Some(palette);
+        self.palette_uses_host_clock = true;
+    }
+
+    pub(super) fn advance_palette(&mut self, speed: i16, now: u32) {
+        self.advance_palette_with_clock(speed, now, super::title_flow::mac_tick_count);
+    }
+
+    fn advance_palette_with_clock(&mut self, speed: i16, now: u32, tick: impl FnMut() -> u32) {
+        if let Some(palette) = &mut self.palette {
+            if self.palette_uses_host_clock {
+                // Each check and refresh samples the same host clock as the
+                // title, including calls during a long calendar scan.
+                palette.update(speed, tick, || true);
+            } else {
+                // Deterministic scheduler callers supply their virtual frame
+                // tick; they do not depend on the host clock.
+                let tick = self.palette_tick_origin.wrapping_add(now);
+                palette.update(speed, || tick, || true);
+            }
+        }
+    }
+
+    pub(super) fn current_tick(&self) -> u32 {
+        Self::sample_tick(self.live_clock, self.clock_origin, self.elapsed)
+    }
+    pub(super) fn set_viewport_size(&mut self, size: (u32, u32)) {
+        self.viewport_size = Some(size);
+    }
+    pub(super) fn viewport_size(&self) -> Option<(u32, u32)> {
+        self.viewport_size
+    }
     pub(super) fn load_scenario_point(&mut self, action: u16, (x, y): (u8, u8)) {
         // CODE 4 writes SCEN coordinates even when the opening selector is zero.
         self.disaster_point = (i16::from(x), i16::from(y));
         self.pending_action_point = (action != 0).then_some(self.disaster_point);
     }
 
+    fn begin_mac_earthquake_prelude(&mut self, point: (i16, i16), now: u32) {
+        self.mac_earthquake_sound_pending = false;
+        self.mac_earthquake_prelude = Some(MacEarthquakePrelude {
+            point,
+            frames_done: 0,
+            deadline: now.wrapping_add(MAC_EARTHQUAKE_FIRST_FRAME_TICKS),
+        });
+    }
+
+    fn mac_earthquake_prelude_active(&self) -> bool {
+        self.mac_earthquake_prelude.is_some()
+    }
+
+    pub(super) fn cancel_mac_earthquake_prelude(&mut self) {
+        self.mac_earthquake_prelude = None;
+        self.mac_earthquake_sound_pending = false;
+    }
+
+    pub(super) fn take_mac_earthquake_sound_request(&mut self) -> bool {
+        std::mem::take(&mut self.mac_earthquake_sound_pending)
+    }
+
+    fn set_mac_earthquake_sound_pending(&mut self) {
+        self.mac_earthquake_sound_pending = true;
+    }
+
+    pub(super) fn mac_earthquake_shake_phase(&self) -> Option<u8> {
+        self.mac_earthquake_prelude
+            .and_then(|prelude| prelude.frames_done.checked_sub(1))
+    }
+
+    fn mac_earthquake_prelude(&self) -> Option<MacEarthquakePrelude> {
+        self.mac_earthquake_prelude
+    }
+
+    fn set_mac_earthquake_prelude(&mut self, prelude: Option<MacEarthquakePrelude>) {
+        self.mac_earthquake_prelude = prelude;
+    }
+
     fn advance_elapsed(&mut self, elapsed: Duration) -> u32 {
         self.elapsed = self.elapsed.saturating_add(elapsed);
-        // A virtual 60 Hz TickCount, initialized with the deadline at epoch 0.
-        // Keep fractional ticks through pause/editor frames; no float backlog.
-        Self::tick_at(self.elapsed)
+        Self::sample_tick(self.live_clock, self.clock_origin, self.elapsed)
+    }
+
+    fn sample_tick(live_clock: bool, origin: u32, elapsed: Duration) -> u32 {
+        if live_clock {
+            super::title_flow::mac_tick_count()
+        } else {
+            origin.wrapping_add(Self::tick_at(elapsed))
+        }
     }
 
     fn tick_at(elapsed: Duration) -> u32 {
@@ -150,12 +308,68 @@ impl MacLoopScheduler {
     }
 }
 
+fn mac_tick_at_or_after(now: u32, deadline: u32) -> bool {
+    now.wrapping_sub(deadline) < 0x8000_0000
+}
+
 impl ViewerState {
+    pub(super) fn take_pending_mac_earthquake_sound(&mut self) -> bool {
+        self.mac_loop_scheduler.take_mac_earthquake_sound_request()
+    }
+
+    pub(super) fn open_mac_fiscal_crisis_notice(&mut self) {
+        self.mac_loop_scheduler.fiscal_notice = Some(MacFiscalNotice {
+            start_tick: self.mac_loop_scheduler.current_tick(),
+            dismissed: false,
+            button_down: false,
+        });
+        self.open_city_info_dialog(CityInfoDialog::FiscalCrisis);
+    }
+
+    pub(super) fn redraw_mac_map(&mut self) {
+        if self.show_underground {
+            if self.mac_loop_scheduler.viewport_size.is_some() {
+                let (_, speed) = self.mac_scheduler_inputs();
+                let scheduler = &mut self.mac_loop_scheduler;
+                let now = scheduler.current_tick();
+                map_redraw::redraw_underground_palette(&mut |_| {
+                    scheduler.advance_palette(speed, now)
+                });
+            }
+            return;
+        }
+        let Some(view) = self.mac_map_redraw_view() else {
+            return;
+        };
+        let (_, speed) = self.mac_scheduler_inputs();
+        let scheduler = &mut self.mac_loop_scheduler;
+        let now = scheduler.current_tick();
+        let effects =
+            view.redraw_markers_with_palette(&self.city, &mut self.mac_process_rng, &mut |_| {
+                scheduler.advance_palette(speed, now)
+            });
+        effects.apply(&mut self.city, &mut self.mac_app_lfsr);
+    }
+
+    pub(super) fn advance_mac_presentation_palettes(&mut self) {
+        let (_, speed) = self.mac_scheduler_inputs();
+        let scheduler = &mut self.mac_loop_scheduler;
+        let now = scheduler.current_tick();
+        // CODE 14 phases 23 and 24 each contain three direct export 130
+        // calls. Their intervening presentation workers are not all ported.
+        for _ in 0..3 {
+            scheduler.advance_palette(speed, now);
+        }
+    }
+
     /// CODE 2 MENU 1004 queues a selector before the post-event poll.
     pub(super) fn queue_mac_manual_disaster(&mut self, kind: DisasterKind) -> bool {
         if self.mode != AppMode::CityView
-            || self.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET) != Some(CITY_MODE_GAMEPLAY)
-            || self.city.mac_pending_action() != 0
+            || self.mac_loop_scheduler.mac_earthquake_prelude_active()
+            || !matches!(
+                self.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+                Some(CITY_MODE_GAMEPLAY | CITY_MODE_DISASTER)
+            )
         {
             return false;
         }
@@ -211,7 +425,7 @@ impl ViewerState {
         self.finish_mac_frame_calendar_phase(Duration::ZERO, actor_wait_ticks)
     }
 
-    fn mac_scheduler_inputs(&self) -> (i16, i16) {
+    pub(super) fn mac_scheduler_inputs(&self) -> (i16, i16) {
         let speed = match self.traffic.speed() {
             GameSpeed::Paused => 1,
             GameSpeed::Turtle => 2,
@@ -246,12 +460,19 @@ impl ViewerState {
                 .city_info_dialog
                 .is_some_and(CityInfoDialog::holds_mac_simulation)
             || self.mac_loop_scheduler.january_budget_review_pending
+            || self.mac_loop_scheduler.fiscal_notice.is_some()
         {
             return 0;
         }
         let (run_state, speed) = self.mac_scheduler_inputs();
+        self.mac_loop_scheduler.advance_palette(speed, now);
+        if self.mac_loop_scheduler.mac_earthquake_prelude_active() {
+            return 0;
+        }
         let actor_check_tick = now;
         let elapsed_at_frame_sample = self.mac_loop_scheduler.elapsed;
+        let live_clock = self.mac_loop_scheduler.live_clock;
+        let clock_origin = self.mac_loop_scheduler.clock_origin;
         // Native CODE 2 checks the independent actor timer before CODE 14's
         // calendar deadline. The Mac actor pass includes kind-1/2/3/5/6/9/16,
         // kind-10/12 trains, sailboat, and tornado handlers. It remains a
@@ -263,7 +484,9 @@ impl ViewerState {
         if self
             .mac_loop_scheduler
             .due_actor_sweep_with_refresh(run_state, speed, now, || {
-                MacLoopScheduler::tick_at(
+                MacLoopScheduler::sample_tick(
+                    live_clock,
+                    clock_origin,
                     elapsed_at_frame_sample.saturating_add(since_frame_sample()),
                 )
             })
@@ -271,14 +494,29 @@ impl ViewerState {
             // Zoom gates the native redraw helper, not the actor update.
             let native_zoom = (crate::traffic::traffic_shape_scale_band(self.zoom) / 500) as u16;
             let mut actor_action_point = None;
-            let sound_requests = tick_mac_actors_with_rng_and_clock(
+            let redraw_view = self.mac_map_redraw_view();
+            let scheduler = &mut self.mac_loop_scheduler;
+            let sound_requests = tick_mac_actors_with_tick_source_and_redraw(
                 &mut self.city,
                 &mut self.mac_process_rng,
                 &mut self.mac_game_rng,
+                &mut self.mac_app_lfsr,
                 &mut self.mac_kind2_sound_deadline,
                 native_zoom,
                 &mut now,
                 &mut actor_action_point,
+                &mut |virtual_tick| {
+                    if live_clock {
+                        // The worker's virtual wait delta represents native
+                        // presentation waits that are not yet blocked on the host.
+                        super::title_flow::mac_tick_count()
+                            .wrapping_add(virtual_tick.wrapping_sub(actor_check_tick))
+                    } else {
+                        virtual_tick
+                    }
+                },
+                redraw_view,
+                &mut |_| scheduler.advance_palette(speed, actor_check_tick),
             );
             if let Some(point) = actor_action_point {
                 self.mac_loop_scheduler.disaster_point = point;
@@ -309,7 +547,22 @@ impl ViewerState {
         &mut self,
         elapsed: Duration,
         actor_wait_ticks: u32,
+        since_frame_start: impl FnMut() -> Duration,
+    ) -> GameClockAdvance {
+        self.finish_mac_frame_calendar_phase_with_music(
+            elapsed,
+            actor_wait_ticks,
+            since_frame_start,
+            &mut |_| {},
+        )
+    }
+
+    pub(super) fn finish_mac_frame_calendar_phase_with_music(
+        &mut self,
+        elapsed: Duration,
+        actor_wait_ticks: u32,
         mut since_frame_start: impl FnMut() -> Duration,
+        music_callback: &mut impl FnMut(&mut ViewerState),
     ) -> GameClockAdvance {
         let mut now = self
             .mac_loop_scheduler
@@ -323,22 +576,82 @@ impl ViewerState {
         {
             return GameClockAdvance::default();
         }
+        if self.mac_loop_scheduler.mac_earthquake_prelude_active() {
+            self.advance_mac_earthquake_prelude(now, music_callback);
+            return GameClockAdvance::default();
+        }
+        if self.mac_loop_scheduler.january_budget_review_pending
+            && self
+                .mac_loop_scheduler
+                .january_budget_review_started_at
+                .is_some_and(|started_at| {
+                    now.wrapping_sub(started_at) >= MAC_JANUARY_BUDGET_REVIEW_TIMEOUT_TICKS
+                })
+            && self.city_info_dialog == Some(CityInfoDialog::Budget)
+        {
+            self.close_city_info_dialog();
+        }
+        let resumed_notice = if let Some(notice) = self.mac_loop_scheduler.fiscal_notice {
+            if notice.holds_dispatch(now) {
+                return GameClockAdvance::default();
+            }
+            self.mac_loop_scheduler.fiscal_notice = None;
+            self.close_city_info_dialog();
+            self.finish_mac_monthly_budget_publication(self.game_clock.month());
+            self.mac_loop_scheduler.finish_dispatch();
+            true
+        } else {
+            false
+        };
         let (run_state, speed) = self.mac_scheduler_inputs();
-        let advance = if self.mac_loop_scheduler.january_budget_review_pending {
+        let advance = if resumed_notice {
+            let interval = match speed {
+                2 => 36,
+                3 => 12,
+                4 => 0,
+                _ => 0,
+            };
+            let refreshed_tick = MacLoopScheduler::sample_tick(
+                self.mac_loop_scheduler.live_clock,
+                self.mac_loop_scheduler.clock_origin,
+                self.mac_loop_scheduler
+                    .elapsed
+                    .saturating_add(since_frame_start()),
+            )
+            .wrapping_add(actor_wait_ticks);
+            self.mac_loop_scheduler.deadline = refreshed_tick.wrapping_add(interval);
+            GameClockAdvance { days: 1, months: 1 }
+        } else if self.mac_loop_scheduler.january_budget_review_pending {
             if self.city_info_dialog.is_some() {
                 return GameClockAdvance::default();
             }
             self.mac_loop_scheduler.january_budget_review_pending = false;
+            self.mac_loop_scheduler.january_budget_review_started_at = None;
             self.finish_mac_january_budget_review();
+            if let Some(notice) = self.mac_loop_scheduler.fiscal_notice.as_mut() {
+                notice.start_tick = MacLoopScheduler::sample_tick(
+                    self.mac_loop_scheduler.live_clock,
+                    self.mac_loop_scheduler.clock_origin,
+                    self.mac_loop_scheduler
+                        .elapsed
+                        .saturating_add(since_frame_start()),
+                )
+                .wrapping_add(actor_wait_ticks);
+                return GameClockAdvance::default();
+            }
             self.mac_loop_scheduler.finish_dispatch();
             GameClockAdvance { days: 1, months: 1 }
         } else {
             let elapsed_at_frame_start = self.mac_loop_scheduler.elapsed;
+            let live_clock = self.mac_loop_scheduler.live_clock;
+            let clock_origin = self.mac_loop_scheduler.clock_origin;
             let mut refreshed_now = now;
             let dispatch =
                 self.mac_loop_scheduler
                     .admit_at_with_refresh(run_state, speed, now, || {
-                        refreshed_now = MacLoopScheduler::tick_at(
+                        refreshed_now = MacLoopScheduler::sample_tick(
+                            live_clock,
+                            clock_origin,
                             elapsed_at_frame_start.saturating_add(since_frame_start()),
                         )
                         .wrapping_add(actor_wait_ticks);
@@ -355,26 +668,36 @@ impl ViewerState {
                     };
                     if advance.months == 1
                         && self.game_clock.month() == 1
-                        && self.city.saved_date().is_some_and(|date| {
-                            date.month == 12
-                                && self.game_clock.year() == date.year.saturating_add(1)
-                        })
+                        && self
+                            .mac_annual_budget_due(self.game_clock.year(), self.game_clock.month())
                         && !mac_auto_budget_enabled_for_city(&self.city)
                     {
                         self.query_status_pinned = false;
                         self.mac_loop_scheduler.january_budget_review_pending = true;
+                        self.mac_loop_scheduler.january_budget_review_started_at = Some(now);
                         self.open_january_budget_review();
                         return GameClockAdvance::default();
                     }
                     self.apply_game_clock_advance(start, advance);
+                    if let Some(notice) = self.mac_loop_scheduler.fiscal_notice.as_mut() {
+                        notice.start_tick = MacLoopScheduler::sample_tick(
+                            self.mac_loop_scheduler.live_clock,
+                            self.mac_loop_scheduler.clock_origin,
+                            self.mac_loop_scheduler
+                                .elapsed
+                                .saturating_add(since_frame_start()),
+                        )
+                        .wrapping_add(actor_wait_ticks);
+                        return GameClockAdvance::default();
+                    }
                     self.mac_loop_scheduler.finish_dispatch();
                     advance
                 }
                 Some(MacLoopDispatch::Action) => {
                     // CODE 2 calls the same pending/active dispatcher in mode 2.
                     // A successful replacement has already run its first pass.
-                    if !self.consume_mac_pending_action(&mut now) {
-                        self.advance_mac_scenario_action(&mut now);
+                    if !self.consume_mac_pending_action(&mut now, music_callback) {
+                        self.advance_mac_scenario_action_with_music(&mut now, music_callback);
                     }
                     self.mac_loop_scheduler.finish_dispatch();
                     GameClockAdvance::default()
@@ -384,7 +707,7 @@ impl ViewerState {
         };
         // Mode 1 polls pending after the optional calendar step, even paused.
         if run_state == 1 && self.city.mac_pending_action() != 0 {
-            let started = self.consume_mac_pending_action(&mut now);
+            let started = self.consume_mac_pending_action(&mut now, music_callback);
             // CODE 10 clears an unmatched/rejected selector, then falls
             // through to the active action pass when one is still live.
             // Selector 11 is not consumed here because its worker is not
@@ -393,13 +716,53 @@ impl ViewerState {
                 && self.city.mac_pending_action() == 0
                 && scenario_action::mac_scenario_action_active(&self.city)
             {
-                self.advance_mac_scenario_action(&mut now);
+                self.advance_mac_scenario_action_with_music(&mut now, music_callback);
             }
         }
         advance
     }
 
-    fn consume_mac_pending_action(&mut self, now: &mut u32) -> bool {
+    fn advance_mac_earthquake_prelude(
+        &mut self,
+        now: u32,
+        music_callback: &mut impl FnMut(&mut ViewerState),
+    ) {
+        let Some(mut prelude) = self.mac_loop_scheduler.mac_earthquake_prelude() else {
+            return;
+        };
+        // CODE 10 records TickCount, copies the captured city frame to the
+        // shifted destination on even frames (identity on odd frames),
+        // requests SND 504, then polls until start_tick + 5. The live caller
+        // advances one frame at a time; poll count depends on host clock rate.
+        if !mac_tick_at_or_after(now, prelude.deadline) {
+            return;
+        }
+        if prelude.frames_done < MAC_EARTHQUAKE_SHAKE_FRAMES {
+            self.mac_loop_scheduler.set_mac_earthquake_sound_pending();
+            prelude.frames_done += 1;
+            prelude.deadline = now.wrapping_add(MAC_EARTHQUAKE_FRAME_WAIT_TICKS);
+            self.mac_loop_scheduler
+                .set_mac_earthquake_prelude(Some(prelude));
+            return;
+        }
+
+        self.mac_loop_scheduler.set_mac_earthquake_prelude(None);
+        let mut worker_now = now;
+        scenario_action::seed_earthquake(
+            &mut self.city,
+            prelude.point,
+            &mut self.mac_process_rng,
+            &mut worker_now,
+            &mut self.mac_app_lfsr,
+        );
+        self.advance_mac_scenario_action_with_music(&mut worker_now, music_callback);
+    }
+
+    fn consume_mac_pending_action(
+        &mut self,
+        now: &mut u32,
+        music_callback: &mut impl FnMut(&mut ViewerState),
+    ) -> bool {
         let selector = self.city.mac_pending_action() as u16;
         // Selector 11's terrain-height worker is still unmodeled.
         if matches!(selector, 0 | 11) {
@@ -425,16 +788,39 @@ impl ViewerState {
                 scenario_action::begin_action(&mut self.city, selector);
                 true
             }
-            scenario_action::FIRE_ACTION => scenario_action::seed_fire(
-                &mut self.city,
-                &mut self.mac_loop_scheduler.disaster_point,
-                &mut self.mac_process_rng,
-                now,
-            ),
+            scenario_action::FIRE_ACTION => {
+                let started = scenario_action::seed_fire(
+                    &mut self.city,
+                    &mut self.mac_loop_scheduler.disaster_point,
+                    &mut self.mac_process_rng,
+                    now,
+                    &mut self.mac_app_lfsr,
+                );
+                if started && self.auto_goto_enabled {
+                    let (x, y) = self.mac_loop_scheduler.disaster_point;
+                    // Both the spiral and fallback branches of CODE 10's
+                    // Fire start center on the accepted candidate.
+                    self.pending_disaster_auto_goto = Some((x as usize, y as usize));
+                    if let Some(mut view) = self.mac_map_redraw_view() {
+                        view.center_on(&self.city, x as usize, y as usize);
+                        let (_, speed) = self.mac_scheduler_inputs();
+                        let scheduler = &mut self.mac_loop_scheduler;
+                        let effects = view.redraw_markers_with_palette(
+                            &self.city,
+                            &mut self.mac_process_rng,
+                            &mut |_| scheduler.advance_palette(speed, *now),
+                        );
+                        effects.apply(&mut self.city, &mut self.mac_app_lfsr);
+                        self.mac_loop_scheduler.redraw_view_override = Some(view);
+                    }
+                }
+                started
+            }
             scenario_action::FLOOD_ACTION => {
                 let started = hurricane::start_flood(
                     &mut self.city,
                     &mut self.mac_loop_scheduler.disaster_point,
+                    &mut self.mac_app_lfsr,
                 );
                 if started {
                     self.queue_disaster_extra_sounds(PlacementSound::Flood, 1);
@@ -455,16 +841,45 @@ impl ViewerState {
                 count != 0
             }
             scenario_action::EARTHQUAKE_ACTION => {
-                scenario_action::seed_earthquake(
-                    &mut self.city,
-                    point,
-                    &mut self.mac_process_rng,
-                    now,
-                );
+                self.mac_loop_scheduler
+                    .begin_mac_earthquake_prelude(point, *now);
                 true
             }
             scenario_action::TORNADO_ACTION => {
-                scenario_action::seed_tornado(&mut self.city, point, &mut self.mac_process_rng)
+                let started =
+                    scenario_action::seed_tornado(&mut self.city, point, &mut self.mac_process_rng);
+                if started {
+                    let (x, y) = (
+                        point.0.clamp(0, 127) as usize,
+                        point.1.clamp(0, 127) as usize,
+                    );
+                    self.mac_loop_scheduler.redraw_dirty_override = self
+                        .mac_map_redraw_view()
+                        .and_then(|view| view.tornado_dirty_bounds(&self.city, x, y));
+                }
+                if started && self.auto_goto_enabled {
+                    let (x, y) = (point.0.clamp(0, 127), point.1.clamp(0, 127));
+                    self.pending_disaster_auto_goto = Some((x as usize, y as usize));
+                    if let Some(mut view) = self.mac_map_redraw_view() {
+                        view.center_on(&self.city, x as usize, y as usize);
+                        let (_, speed) = self.mac_scheduler_inputs();
+                        let scheduler = &mut self.mac_loop_scheduler;
+                        let mut dirty = scheduler.redraw_dirty_override.take();
+                        let effects = view.redraw_markers_recording_dirty(
+                            &self.city,
+                            &mut self.mac_process_rng,
+                            &mut |_| scheduler.advance_palette(speed, *now),
+                            &mut dirty,
+                        );
+                        effects.apply(&mut self.city, &mut self.mac_app_lfsr);
+                        // The recentered full-view walk already covers the
+                        // actor bounds; do not replay the pre-center dirty
+                        // rectangle as a second clipped redraw.
+                        scheduler.redraw_dirty_override = None;
+                        self.mac_loop_scheduler.redraw_view_override = Some(view);
+                    }
+                }
+                started
             }
             scenario_action::HOLLYWOOD_ACTION => {
                 // The active Point is transient in a native Mac save.
@@ -476,6 +891,7 @@ impl ViewerState {
                     &mut self.mac_loop_scheduler.disaster_point,
                     &mut self.mac_process_rng,
                     now,
+                    &mut self.mac_app_lfsr,
                 ) != 0
             }
             scenario_action::REPEATED_FLOOD_ACTION => {
@@ -483,6 +899,7 @@ impl ViewerState {
                     &mut self.city,
                     &mut self.mac_loop_scheduler.disaster_point,
                     &mut self.mac_process_rng,
+                    &mut self.mac_app_lfsr,
                 );
                 if count != 0 {
                     self.queue_disaster_extra_sounds(PlacementSound::Flood, count);
@@ -499,26 +916,37 @@ impl ViewerState {
                 true
             }),
             scenario_action::HURRICANE_ACTION => {
-                self.mac_loop_scheduler.hurricane_lfsr =
-                    hurricane::start(&mut self.city, &mut self.mac_process_rng, now);
+                hurricane::start(
+                    &mut self.city,
+                    &mut self.mac_process_rng,
+                    now,
+                    &mut self.mac_app_lfsr,
+                );
                 self.queue_disaster_extra_sounds(PlacementSound::Wind, 1);
                 true
             }
-            scenario_action::AIR_CRASH_ACTION => scenario_action::seed_air_crash(&mut self.city)
-                .is_some_and(|spawn| {
-                    self.mac_loop_scheduler.disaster_point = spawn;
-                    true
-                }),
+            scenario_action::AIR_CRASH_ACTION => {
+                scenario_action::seed_air_crash(&mut self.city, &mut self.mac_app_lfsr).is_some_and(
+                    |spawn| {
+                        self.mac_loop_scheduler.disaster_point = spawn;
+                        true
+                    },
+                )
+            }
             facility_disaster::SCATTER_ACTION => facility_disaster::start_scatter(
                 &mut self.city,
                 point,
                 &mut self.mac_process_rng,
                 now,
+                &mut self.mac_app_lfsr,
             ),
             facility_disaster::WALK_ACTION => {
-                if let Some(count) =
-                    facility_disaster::start_walk(&mut self.city, &mut self.mac_process_rng, now)
-                {
+                if let Some(count) = facility_disaster::start_walk(
+                    &mut self.city,
+                    &mut self.mac_process_rng,
+                    now,
+                    &mut self.mac_app_lfsr,
+                ) {
                     self.queue_disaster_extra_sounds(PlacementSound::PowerLine, count);
                     true
                 } else {
@@ -528,17 +956,69 @@ impl ViewerState {
             _ => false,
         };
         if started {
-            self.advance_mac_scenario_action(now);
+            // The shared CODE 10 success tail calls CODE 9's stop-all before
+            // submitting the optional disaster alert. Requests accumulated
+            // before this boundary must not play after that reset.
+            self.mac_loop_scheduler.pending_effect_reset = Some((
+                self.pending_disaster_extra_sounds.len(),
+                self.sound_effects_enabled,
+            ));
+            let tornado_was_redrawn_by_auto_goto = selector == scenario_action::TORNADO_ACTION
+                && self.auto_goto_enabled
+                && self.mac_loop_scheduler.redraw_view_override.is_some();
+            self.advance_mac_scenario_action_with_music_and_redraw(
+                now,
+                music_callback,
+                !tornado_was_redrawn_by_auto_goto,
+            );
         }
         started
     }
 
+    pub(in crate::app) fn take_mac_disaster_effect_reset(&mut self) -> Option<(usize, bool)> {
+        std::mem::take(&mut self.mac_loop_scheduler.pending_effect_reset)
+    }
+
+    #[cfg(test)]
     fn advance_mac_scenario_action(&mut self, now: &mut u32) {
-        let pass = scenario_action::advance_action(
+        self.advance_mac_scenario_action_with_music(now, &mut |_| {});
+    }
+
+    fn advance_mac_scenario_action_with_music(
+        &mut self,
+        now: &mut u32,
+        music_callback: &mut impl FnMut(&mut ViewerState),
+    ) {
+        self.advance_mac_scenario_action_with_music_and_redraw(now, music_callback, true);
+    }
+
+    fn advance_mac_scenario_action_with_music_and_redraw(
+        &mut self,
+        now: &mut u32,
+        music_callback: &mut impl FnMut(&mut ViewerState),
+        redraw_map: bool,
+    ) {
+        let override_view = self.mac_loop_scheduler.redraw_view_override.take();
+        let view = if redraw_map {
+            override_view.or_else(|| self.mac_map_redraw_view())
+        } else {
+            // CODE 10's Auto-Goto view walk has just rendered the new Tornado
+            // marker. Its immediate action pass does not draw that marker
+            // again; the native QuickDraw seed is unchanged at that return.
+            None
+        };
+        let (_, speed) = self.mac_scheduler_inputs();
+        let scheduler = &mut self.mac_loop_scheduler;
+        let palette_tick = scheduler.current_tick();
+        let dirty = scheduler.redraw_dirty_override.take();
+        let pass = scenario_action::advance_action_with_redraw(
             &mut self.city,
             &mut self.mac_process_rng,
             now,
-            &mut self.mac_loop_scheduler.hurricane_lfsr,
+            &mut self.mac_app_lfsr,
+            view,
+            dirty,
+            &mut |_| scheduler.advance_palette(speed, palette_tick),
         );
         // Action workers can clear native XTRF cells. Keep the save
         // buffer in step with those mutations.
@@ -553,19 +1033,47 @@ impl ViewerState {
             self.queue_disaster_extra_sounds(PlacementSound::Wind, 1);
         }
         if pass.complete {
+            // CODE 10 restores run state through CODE 2 export 75. Its
+            // mode-1 arm runs the status/disaster chooser before CODE 10
+            // opens the newspaper independently of Extra and Subscription.
+            self.run_mac_disaster_chooser();
+            music_callback(self);
+            let selector = self.city.mac_state_misc_u32_at(0x1044).unwrap_or(0) as usize;
+            let class = self.city.take_mac_disaster_damage_class();
+            const STORY_FOR_ACTION: [u16; 19] = [
+                0, 22, 23, 35, 32, 24, 27, 26, 28, 29, 30, 31, 22, 35, 23, 33, 34, 25, 24,
+            ];
+            if let Some(&story) = STORY_FOR_ACTION.get(selector)
+                && story != 0
+            {
+                self.city.queue_mac_newspaper_story(story, class);
+            }
+            self.city
+                .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+            if !self.city.mac_newspaper_suppressed() {
+                self.open_city_info_dialog(CityInfoDialog::Newspaper(
+                    NewspaperEdition::MacDisaster,
+                ));
+            }
             self.refresh_status_line();
         }
     }
+
+    fn mac_map_redraw_view(&self) -> Option<map_redraw::MacMapRedrawView> {
+        if self.show_underground {
+            return None;
+        }
+        Some(map_redraw::MacMapRedrawView::from_host(
+            self.mac_loop_scheduler.viewport_size?,
+            self.viewport_pixel_scale,
+            self.zoom,
+            self.camera,
+            self.camera_rotation,
+        ))
+    }
 }
 
-/// Rooted Mac CODE 6 export-109 kind-9 path under the reconstructed zero
-/// A5-2 LFSR. State-zero actors on water activate, consume one QuickDraw draw
-/// for their heading turn, and become state 1; the next due sweep removes them.
-/// Kind 3 contributes its rooted visit counter and unconditional QuickDraw
-/// draw; active phase-0/1 records route and move with the native Mac XTXT
-/// marker rules, and phases 2–4 run their native candidate search/return path.
-/// Other phases remain open. CODE 6 applies the zoom thresholds to redraws
-/// before and after handlers, not to the handlers themselves.
+/// Controlled actor sweep with a zero app LFSR for the existing fixtures.
 #[cfg(test)]
 fn tick_mac_marina_actors_and_count_kind3(
     city: &mut City,
@@ -606,6 +1114,7 @@ fn tick_mac_actors_with_rng_at(
         city,
         quickdraw,
         game_rng,
+        &mut MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE),
         kind2_sound_deadline,
         _native_zoom,
         &mut tick_count,
@@ -617,10 +1126,63 @@ fn tick_mac_actors_with_rng_and_clock(
     city: &mut City,
     quickdraw: &mut MacToolboxRng,
     game_rng: &mut MacGameLcgRng,
+    app_lfsr: &mut MacAppLfsrRng,
     kind2_sound_deadline: &mut u32,
     _native_zoom: u16,
     tick_count: &mut u32,
     action_point: &mut Option<(i16, i16)>,
+) -> Vec<PlacementSound> {
+    tick_mac_actors_with_tick_source(
+        city,
+        quickdraw,
+        game_rng,
+        app_lfsr,
+        kind2_sound_deadline,
+        _native_zoom,
+        tick_count,
+        action_point,
+        &mut |tick| tick,
+    )
+}
+
+fn tick_mac_actors_with_tick_source(
+    city: &mut City,
+    quickdraw: &mut MacToolboxRng,
+    game_rng: &mut MacGameLcgRng,
+    app_lfsr: &mut MacAppLfsrRng,
+    kind2_sound_deadline: &mut u32,
+    _native_zoom: u16,
+    tick_count: &mut u32,
+    action_point: &mut Option<(i16, i16)>,
+    sample_tick: &mut impl FnMut(u32) -> u32,
+) -> Vec<PlacementSound> {
+    tick_mac_actors_with_tick_source_and_redraw(
+        city,
+        quickdraw,
+        game_rng,
+        app_lfsr,
+        kind2_sound_deadline,
+        _native_zoom,
+        tick_count,
+        action_point,
+        sample_tick,
+        None,
+        &mut |_| {},
+    )
+}
+
+fn tick_mac_actors_with_tick_source_and_redraw(
+    city: &mut City,
+    quickdraw: &mut MacToolboxRng,
+    game_rng: &mut MacGameLcgRng,
+    app_lfsr: &mut MacAppLfsrRng,
+    kind2_sound_deadline: &mut u32,
+    _native_zoom: u16,
+    tick_count: &mut u32,
+    action_point: &mut Option<(i16, i16)>,
+    sample_tick: &mut impl FnMut(u32) -> u32,
+    redraw_view: Option<map_redraw::MacMapRedrawView>,
+    palette: &mut impl FnMut(usize),
 ) -> Vec<PlacementSound> {
     // This is called only by the Mac-fidelity scheduler. Keep the simulation
     // engine's actor semantics independent from the saved city-file layout.
@@ -671,12 +1233,49 @@ fn tick_mac_actors_with_rng_and_clock(
             city.mac_tornado_actor_counter = city.mac_tornado_actor_counter.wrapping_add(1);
             let x = usize::from(record.tile_x);
             let y = usize::from(record.tile_y);
+            let old_bounds = redraw_view.and_then(|view| view.tornado_dirty_bounds(city, x, y));
             let origin_building = city.building_at(x, y);
             if origin_building >= 6 {
-                let wait_loops =
-                    super::budget::mac_destroy_building_export80(city, x, y, quickdraw, true);
+                let animation_origin =
+                    super::budget::mac_export81_footprint(city, x, y, origin_building)
+                        .and_then(|(ax, ay, _)| {
+                            Some((usize::try_from(ax).ok()?, usize::try_from(ay).ok()?))
+                        })
+                        .filter(|&(ax, ay)| ax < CITY_WIDTH && ay < CITY_HEIGHT)
+                        .map(|(ax, ay)| {
+                            let wet = city
+                                .tile_bits_at(x, y)
+                                .is_some_and(|bits| bits.raw_bits() & 4 != 0);
+                            let height = if wet {
+                                city.water_height_at(ax, ay)
+                            } else {
+                                city.altitude_at(ax, ay)
+                            };
+                            (ax, ay, height)
+                        });
+                let mut dirty: Option<map_redraw::MacMapClip> = None;
+                let wait_loops = super::budget::mac_destroy_building_export80_with_animation(
+                    city,
+                    x,
+                    y,
+                    quickdraw,
+                    &mut |frame, column, row, variant| {
+                        if let (Some(view), Some((ax, ay, height))) =
+                            (redraw_view, animation_origin)
+                        {
+                            let bounds = view.destruction_frame_bounds(
+                                ax, ay, height, frame, column, row, variant,
+                            );
+                            dirty = Some(dirty.map_or(bounds, |old| old.union(bounds)));
+                        }
+                    },
+                );
                 now = now
                     .wrapping_add(wait_loops.wrapping_mul(MAC_EXPORT80_RENDER_WAIT_TICKS_PER_LOOP));
+                if let (Some(view), Some(bounds)) = (redraw_view, dirty) {
+                    view.redraw_dirty_with_palette(city, quickdraw, bounds, palette)
+                        .apply(city, app_lfsr);
+                }
             }
 
             let first_a = quickdraw.random_u16();
@@ -703,13 +1302,41 @@ fn tick_mac_actors_with_rng_and_clock(
                 }
             }
             city.set_mac_object_slot_record(slot, record);
+            if let Some(view) = redraw_view {
+                let new_bounds = (record.kind == XTHG_TORNADO)
+                    .then(|| {
+                        view.tornado_dirty_bounds(
+                            city,
+                            usize::from(record.tile_x),
+                            usize::from(record.tile_y),
+                        )
+                    })
+                    .flatten();
+                let bounds = match (old_bounds, new_bounds) {
+                    (Some(old), Some(new)) => Some(old.union(new)),
+                    (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
+                    (None, None) => None,
+                };
+                if let Some(bounds) = bounds {
+                    view.redraw_actor_with_palette(
+                        city,
+                        quickdraw,
+                        bounds,
+                        old_bounds.map(|_| (x, y)),
+                        new_bounds
+                            .map(|_| (usize::from(record.tile_x), usize::from(record.tile_y))),
+                        palette,
+                    )
+                    .apply(city, app_lfsr);
+                }
+            }
             continue;
         }
         if record.kind == 1 {
             // CODE 6 increments ffffa092 on handler entry. The early sprite-
             // height redirect precedes the phase switch.
             city.mac_kind1_actor_counter = city.mac_kind1_actor_counter.wrapping_add(1);
-            if mac_kind1_height_redirect(city, &mut record) {
+            if mac_kind1_height_redirect(city, &mut record, app_lfsr) {
                 city.set_mac_object_slot_record(slot, record);
                 continue;
             }
@@ -858,10 +1485,10 @@ fn tick_mac_actors_with_rng_and_clock(
                     if x < CITY_WIDTH
                         && y < CITY_HEIGHT
                         && city.traffic_density_at(x, y).unwrap_or(0) >= 0xaa
-                        && *kind2_sound_deadline < now
+                        && *kind2_sound_deadline < sample_tick(now)
                     {
                         sound_requests.push(PlacementSound::MacKind2Traffic);
-                        *kind2_sound_deadline = now.wrapping_add(5000);
+                        *kind2_sound_deadline = sample_tick(now).wrapping_add(5000);
                     }
 
                     if mac_kind1_target_distance(&record) < 2 {
@@ -873,18 +1500,18 @@ fn tick_mac_actors_with_rng_and_clock(
                             });
                         record.target_x = mac_kind2_random_target_axis(hotspot_x, quickdraw);
                         record.target_y = mac_kind2_random_target_axis(hotspot_y, quickdraw);
-                    }
 
-                    let x = usize::from(record.tile_x);
-                    let y = usize::from(record.tile_y);
-                    let unoccupied = x < CITY_WIDTH
-                        && y < CITY_HEIGHT
-                        && city.building_at(x, y) == 0
-                        && city
-                            .tile_bits_at(x, y)
-                            .map_or(true, |bits| bits.raw_bits() == 0);
-                    if unoccupied && quickdraw.random_u16() & 1 != 0 {
-                        record.state = 3;
+                        let landing_gate = quickdraw.random_u16() & 1 != 0;
+                        let x = usize::from(record.tile_x);
+                        let y = usize::from(record.tile_y);
+                        if landing_gate
+                            && x < CITY_WIDTH
+                            && y < CITY_HEIGHT
+                            && city.building_at(x, y) == 0
+                            && city.terrain_at(x, y) == 0
+                        {
+                            record.state = 3;
+                        }
                     }
                     city.set_mac_object_slot_record(slot, record);
                 }
@@ -1046,15 +1673,8 @@ fn tick_mac_actors_with_rng_and_clock(
                     let y = y as usize;
                     if record.saved_b == 0 {
                         if city.building_at(x, y) >= 6 {
-                            let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
                             if mac_export247_candidate(
-                                city,
-                                x,
-                                y,
-                                true,
-                                &mut app_lfsr,
-                                quickdraw,
-                                &mut now,
+                                city, x, y, true, app_lfsr, quickdraw, &mut now,
                             ) {
                                 record.target_x |= 0x80;
                             }
@@ -1117,16 +1737,13 @@ fn tick_mac_actors_with_rng_and_clock(
             } else if record.state == 3 {
                 // CODE 6 `FUN_0000deba @ 0xe236` clears +8/+9 each visit,
                 // sets both bytes to 0x24 when QuickDraw `_Random & 1` is
-                // nonzero, then calls CODE 13 export 203 with bound 100. Its
-                // process LFSR starts at zero and zero is a fixed point, so
-                // the result is always zero and export 121 retires the actor.
+                // nonzero. CODE 13 export 203 with bound 100 gates retirement.
                 record.target_x = 0;
                 record.target_y = 0;
                 if quickdraw.random_u16() & 1 != 0 {
                     record.target_x = 0x24;
                     record.target_y = 0x24;
                 }
-                let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
                 if app_lfsr.bounded(100) == 0 {
                     mac_export121_clear_actor(city, slot, &mut record);
                 } else {
@@ -1144,6 +1761,7 @@ fn tick_mac_actors_with_rng_and_clock(
             if let Some((_, Some(sound_requested))) = rail_consist::mac_rail_handler(
                 city,
                 slot,
+                app_lfsr,
                 || game_rng.bounded(2),
                 || quickdraw.random_u16(),
             ) {
@@ -1183,7 +1801,6 @@ fn tick_mac_actors_with_rng_and_clock(
             if record.state == 0 {
                 let original_x = i16::from(record.tile_x);
                 let original_y = i16::from(record.tile_y);
-                let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
                 if app_lfsr.bounded(10) == 0 {
                     let desired = crate::mac_traffic_geometry::mac_direction_to_tile(
                         usize::from(record.tile_x),
@@ -1240,7 +1857,6 @@ fn tick_mac_actors_with_rng_and_clock(
                 continue;
             }
             if record.state == 2 {
-                let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
                 let offsets = if app_lfsr.bounded(2) == 0 {
                     &MAC_KIND3_PHASE2_ZERO_WINDOW
                 } else {
@@ -1271,7 +1887,6 @@ fn tick_mac_actors_with_rng_and_clock(
                 continue;
             }
             if record.state == 3 {
-                let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
                 if app_lfsr.bounded(30) == 0 {
                     record.state = 4;
                     (record.target_x, record.target_y) = city.mac_kind3_boundary_target;
@@ -1283,7 +1898,6 @@ fn tick_mac_actors_with_rng_and_clock(
                 if mac_kind3_route_candidate(city, &record, record.lane) {
                     mac_kind3_move_one_step(city, slot, &mut record);
                 } else {
-                    let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
                     let start = usize::from(app_lfsr.bounded(2));
                     let mut direction = record.lane & 7;
                     for offset in MAC_KIND3_FORWARD_DIRECTION_WINDOW.iter().skip(start) {
@@ -1329,10 +1943,7 @@ fn tick_mac_actors_with_rng_and_clock(
                     || city.mac_scenario_active())
             {
                 // FUN_0000dd56 makes four pairs of CODE 13 export-203 calls
-                // with bound 5. The recovered A5-2 state is zero and fixed, so
-                // all candidates are the saved origin minus two on both axes.
-                // Keep all eight draws in this separate app-LFSR stream.
-                let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
+                // with bound 5 on the shared app LFSR.
                 let mut ignited = false;
                 for _ in 0..4 {
                     let x_offset = app_lfsr.bounded(5) as i16 - 2;
@@ -1341,13 +1952,7 @@ fn tick_mac_actors_with_rng_and_clock(
                     let y = i16::from(record.tile_y) + y_offset;
                     if (0..128).contains(&x) && (0..128).contains(&y) {
                         ignited |= mac_export247_candidate(
-                            city,
-                            x as usize,
-                            y as usize,
-                            false,
-                            &mut app_lfsr,
-                            quickdraw,
-                            &mut now,
+                            city, x as usize, y as usize, false, app_lfsr, quickdraw, &mut now,
                         );
                     }
                 }
@@ -1380,30 +1985,25 @@ fn tick_mac_actors_with_rng_and_clock(
         // rail adapter here.
         let old_x = usize::from(record.tile_x);
         let old_y = usize::from(record.tile_y);
-        let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
         let remove = if city.mac_marina_actor_counter > 4 {
             true
         } else if record.state == 0 {
-            // Export 203's zero-fixed-point stream admits this branch.
-            let _ = app_lfsr.bounded(4);
-            if !city
+            if app_lfsr.bounded(4) != 0 {
+                mac_kind9_move(city, slot, &mut record)
+            } else if !city
                 .tile_bits_at(old_x, old_y)
                 .is_some_and(|bits| bits.raw_bits() & 0x04 != 0)
             {
                 true
             } else {
-                let _ = app_lfsr.bounded(4000);
-                record.state = 1;
-                // The reconstructed Mac A5-2 stream is zero-fixed, so the
-                // native second bound check succeeds on this activation arm.
-                // CODE 6 requests SND 527 (Roar1) at the same transition.
-                sound_requests.push(PlacementSound::MacSailboatRoar);
+                if app_lfsr.bounded(4000) == 0 {
+                    record.state = 1;
+                    sound_requests.push(PlacementSound::MacSailboatRoar);
+                }
                 record.lane = mac_kind9_turn(record.lane, quickdraw.random_u16());
                 false
             }
         } else {
-            // Every nonzero state takes export 203(bound=5); zero selects
-            // export-121 cleanup in the reconstructed original state.
             app_lfsr.bounded(5) == 0
         };
 
@@ -1422,6 +2022,62 @@ fn tick_mac_actors_with_rng_and_clock(
     sound_requests
 }
 
+/// CODE 6 validates the next tile before advancing the 16-unit sub-tile position.
+fn mac_kind9_move(
+    city: &mut City,
+    slot: usize,
+    record: &mut crate::win95_overlay::Win95OverlayRecord,
+) -> bool {
+    const DIRECTIONS: [(i16, i16); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    let Some(&(dx, dy)) = DIRECTIONS.get(usize::from(record.lane)) else {
+        return false;
+    };
+    let (x, y) = (i16::from(record.tile_x), i16::from(record.tile_y));
+    let within_map = |x: i16, y: i16| (0..128).contains(&x) && (0..128).contains(&y);
+    let (nx, ny) = (x + dx, y + dy);
+    if within_map(nx, ny) {
+        let (nx, ny) = (nx as usize, ny as usize);
+        match city.building_at(nx, ny) {
+            0xf8 => return true,
+            0xdf => return false,
+            _ => {}
+        }
+        if city.text_overlay_at(nx, ny) != Some(0)
+            || !city
+                .tile_bits_at(nx, ny)
+                .is_some_and(|bits| bits.raw_bits() & 4 != 0)
+        {
+            return false;
+        }
+    }
+    let step = |sub: u8, delta: i16| {
+        let sub = i16::from(sub) + 16 * delta;
+        if sub > 16 {
+            ((sub - 16) as u8, 1)
+        } else if sub < 0 {
+            ((sub + 16) as u8, -1)
+        } else {
+            (sub as u8, 0)
+        }
+    };
+    let (sub_x, step_x) = step(record.sub_x, dx);
+    let (sub_y, step_y) = step(record.sub_y, dy);
+    (record.sub_x, record.sub_y) = (sub_x, sub_y);
+    if (step_x, step_y) == (0, 0) {
+        return false;
+    }
+    let (nx, ny) = (x + step_x, y + step_y);
+    if !(0..127).contains(&nx) || !(0..127).contains(&ny) {
+        return true;
+    }
+    if within_map(x, y) {
+        city.set_text_overlay(x as usize, y as usize, 0);
+    }
+    (record.tile_x, record.tile_y) = (nx as u8, ny as u8);
+    city.set_text_overlay(nx as usize, ny as usize, (0xc9 + slot) as u8);
+    false
+}
+
 /// CODE 6 FUN_0000d02a's pre-switch redirect for XBLD above 0x70. The original
 /// bypasses zone 8, uses the app-LFSR/status branch above 0xfa, and otherwise
 /// compares unsigned +5 with the base-zoom sprite height divided by three.
@@ -1429,6 +2085,7 @@ fn tick_mac_actors_with_rng_and_clock(
 fn mac_kind1_height_redirect(
     city: &City,
     record: &mut crate::win95_overlay::Win95OverlayRecord,
+    app_lfsr: &mut MacAppLfsrRng,
 ) -> bool {
     let x = usize::from(record.tile_x);
     let y = usize::from(record.tile_y);
@@ -1444,10 +2101,6 @@ fn mac_kind1_height_redirect(
         return false;
     }
     if building >= 0xfb {
-        // CODE 6's A5+0x67a call is CODE 13 export 203, not the same-numbered
-        // local Ghidra function. Its app-owned LFSR starts at zero and stays
-        // zero, so bound 16 returns zero and +0x0b becomes 1.
-        let mut app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
         record.saved_b = u8::from(app_lfsr.bounded(16) == 0);
         record.kind = 6;
         record.state = 5;
@@ -1766,7 +2419,7 @@ fn mac_kind3_sound_requested(random_word: u16) -> bool {
 /// kind-5 option-zero caller from the kind-6 option-`0xff` caller.
 /// The object class passes `0xff00ff00` to FUN_0003dc90, enabling both
 /// export-80 render draws and footprint ignition outside the portal bypass.
-/// Its `ffffceda` affected-class publication is still outside this actor port.
+/// The footprint worker also publishes the affected class for the completion story.
 fn mac_export247_candidate(
     city: &mut City,
     x: usize,

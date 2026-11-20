@@ -235,6 +235,34 @@ pub struct Win95OverlayRecord {
     pub saved_b: u8,
 }
 
+/// Rotate the PE's saved actor records by one quarter turn. The original
+/// `0x466410`/`0x467610` workers leave slot zero and inactive slots alone.
+/// Train kinds 10..=13 use bytes 6..8 as a second coordinate/direction tuple;
+/// other kinds use bytes 8..9 as their destination. This is kept separate from
+/// CityGame's camera rotation until the whole saved map is transformed.
+#[allow(dead_code)]
+pub(crate) fn pe_rotate_saved_actors(records: &mut [Win95OverlayRecord], clockwise: bool) {
+    for record in records.iter_mut().take(40).skip(1) {
+        if record.kind == 0 { continue; }
+        let rotate_point = |x: u8, y: u8| {
+            if clockwise { (127_u8.wrapping_sub(y), x) } else { (y, 127_u8.wrapping_sub(x)) }
+        };
+        (record.tile_x, record.tile_y) = rotate_point(record.tile_x, record.tile_y);
+        if (10..=13).contains(&record.kind) {
+            record.lane = if clockwise { record.lane.wrapping_add(1) } else { record.lane.wrapping_sub(1) } & 3;
+            record.target_x = if clockwise { record.target_x.wrapping_add(2) } else { record.target_x.wrapping_sub(2) } & 7;
+            (record.sub_x, record.sub_y) = rotate_point(record.sub_x, record.sub_y);
+        } else {
+            record.lane = if clockwise { record.lane.wrapping_add(2) } else { record.lane.wrapping_sub(2) } & 7;
+            (record.target_x, record.target_y) = rotate_point(record.target_x, record.target_y);
+            if record.kind == 1 {
+                let phase = if clockwise { record.state.wrapping_add(0x20) } else { record.state.wrapping_sub(0x20) };
+                record.state = (phase & 0x70) | (record.state & 0x0f);
+            }
+        }
+    }
+}
+
 /// Map and event values consumed by the PE Maxis Man constructor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PeMaxisManSpawnInputs {
@@ -612,6 +640,39 @@ pub fn spawn_pe_maxis_man(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pe_actor_rotation_matches_sampled_original_records() {
+        let mut records = [Win95OverlayRecord::default(); 3];
+        records[0] = Win95OverlayRecord::from_bytes(&[0, 0x11, 0x31, 0xa3, 0x54, 0xde, 0xc8, 0xa7, 0x21, 0xef, 0x75, 0xb4]);
+        records[1] = Win95OverlayRecord::from_bytes(&[1, 0xda, 0xa5, 0xde, 0x24, 0x41, 0x56, 0x8e, 0x85, 0x2a, 0xae, 0xbc]);
+        records[2] = Win95OverlayRecord::from_bytes(&[10, 0x51, 0xba, 0xd3, 0x67, 0x63, 0x3e, 0x19, 0x26, 0x87, 0x17, 0xf5]);
+        pe_rotate_saved_actors(&mut records, true);
+        assert_eq!(records[0].to_bytes(), [0, 0x11, 0x31, 0xa3, 0x54, 0xde, 0xc8, 0xa7, 0x21, 0xef, 0x75, 0xb4]);
+        assert_eq!(records[1].to_bytes(), [1, 4, 0x45, 0x5b, 0xde, 0x41, 0x56, 0x8e, 0x55, 0x85, 0xae, 0xbc]);
+        assert_eq!(records[2].to_bytes(), [10, 2, 0xba, 0x18, 0xd3, 0x63, 0x66, 0x3e, 0, 0x87, 0x17, 0xf5]);
+    }
+
+    #[test]
+    #[ignore = "requires private original-PE actor rotation fixtures"]
+    fn pe_actor_rotation_matches_original_instruction_fixtures() {
+        fn bytes(s: &str) -> Vec<u8> {
+            s.as_bytes().chunks_exact(2).map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+            }).collect()
+        }
+        let path = std::env::var_os("CITYGAME_PE_ACTOR_ROTATION_FIXTURE").unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 200);
+        for row in rows {
+            let before = bytes(row["before"].as_str().unwrap());
+            let expected = bytes(row["after"].as_str().unwrap());
+            let mut records: Vec<_> = before.chunks_exact(12).map(Win95OverlayRecord::from_bytes).collect();
+            pe_rotate_saved_actors(&mut records, row["direction"] == "cw");
+            let actual: Vec<_> = records.iter().flat_map(|record| record.to_bytes()).collect();
+            assert_eq!(actual, expected, "direction {}", row["direction"]);
+        }
+    }
 
     #[test]
     fn xthg_record_round_trip_bytes() {

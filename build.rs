@@ -14,8 +14,11 @@ fn main() {
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rerun-if-changed=native/mac_menu.m");
+        println!("cargo:rerun-if-changed=native/mac_document_open.m");
+        println!("cargo:rerun-if-changed=native/mac_document_open.h");
         cc::Build::new()
             .file("native/mac_menu.m")
+            .file("native/mac_document_open.m")
             .file("native/title_midi.m")
             .flag("-fobjc-arc")
             .compile("sc2000_mac_menu");

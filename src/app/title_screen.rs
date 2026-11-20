@@ -219,7 +219,7 @@ impl TitleScreen {
             if self.city_name.chars().count() >= 31 {
                 break;
             }
-            if ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '-' | '\'') {
+            if !ch.is_control() {
                 self.city_name.push(ch);
             }
         }
@@ -1495,6 +1495,17 @@ mod tests {
             .map(|s| (s.x, s.y, s.w, s.h))
             .collect();
         assert_ne!(mixed, upper);
+    }
+
+    #[test]
+    fn city_name_input_keeps_western_characters_and_punctuation() {
+        let path = std::env::temp_dir().join(format!("citygame-title-western-{}.json", std::process::id()));
+        let profile = AssetProfile::load_from(path).unwrap();
+        let mut title = TitleScreen::new(&profile);
+        title.append_city_name("Café – €");
+        assert_eq!(title.city_name, "Café – €");
+        title.backspace_city_name();
+        assert_eq!(title.city_name, "Café – ");
     }
 
     #[test]

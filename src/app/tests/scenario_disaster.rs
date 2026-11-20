@@ -1962,6 +1962,71 @@ fn loaded_scenario_disaster_skips_unsupported_or_existing_events() {
 }
 
 #[test]
+fn pe_save_current_city_appends_sc2_to_scenario_without_overwriting_source() {
+    let directory = std::env::temp_dir().join(format!("citygame-scenario-save-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("flint.SCN");
+    let saved = directory.join("flint.SCN.sc2");
+    let mut scenario = City::new_blank(&source, "Flint").unwrap();
+    scenario.kind = CityFileKind::WinScenario;
+    scenario.chunks.push(test_scen_chunk(2, 12, 34));
+    scenario.save(&source).unwrap();
+    let original = std::fs::read(&source).unwrap();
+
+    for scenario_open in [false, true] {
+        let mut state = test_state(City::new_blank(directory.join("holder.sc2"), "Holder").unwrap());
+        if scenario_open {
+            state.load_win_scenario(&source, (800, 600), 1.0).unwrap();
+        } else {
+            state.load_city(&source, (800, 600), 1.0).unwrap();
+        }
+        assert_eq!(state.city.pe_scenario_active(), scenario_open);
+        state.save_current_city((800, 600), 1.0).unwrap();
+        assert_eq!(state.city.path, saved);
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert!(saved.is_file());
+        let tags = crate::city::chunk_tags_in_file(&std::fs::read(&saved).unwrap()).unwrap();
+        assert!(!tags.iter().any(|tag| matches!(tag.as_str(), "SCEN" | "TEXT" | "PICT")));
+        assert!(state.city.chunks.iter().any(|chunk| chunk.name == "SCEN"));
+        assert!(state.city.scenario_time_limit_months().is_some());
+        assert_eq!(state.city.pe_scenario_active(), scenario_open);
+        state.save_current_city((800, 600), 1.0).unwrap();
+        assert_eq!(state.city.path, saved);
+        assert!(!directory.join("flint.SCN.sc2.sc2").exists());
+        state.load_city(&saved, (800, 600), 1.0).unwrap();
+        assert!(!state.city.pe_scenario_active());
+        assert_eq!(state.city.scenario_time_limit_months(), None);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn pe_scenario_open_route_controls_activation_and_opening_disaster() {
+    let path = std::env::temp_dir().join(format!("citygame-scenario-route-{}.scn", std::process::id()));
+    let mut scenario = City::new_blank(&path, "Scenario route").unwrap();
+    scenario.kind = CityFileKind::WinScenario;
+    scenario.chunks.push(test_scen_chunk(2, 12, 34));
+    scenario.save(&path).unwrap();
+    let mut state = test_state(City::new_blank("/tmp/citygame-route-holder.sc2", "Holder").unwrap());
+
+    state.load_city(&path, (800, 600), 1.0).unwrap();
+    assert!(!state.city.pe_scenario_active());
+    assert_eq!(state.city_info_dialog, None);
+    assert_ne!(state.pe_idle_scheduler.pending_disaster_point, Some((12, 34)));
+
+    state.load_win_scenario(&path, (800, 600), 1.0).unwrap();
+    assert!(state.city.pe_scenario_active());
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Scenario));
+    assert_eq!(state.city.pe_w_trigger_disaster, 2);
+    assert_eq!(state.pe_idle_scheduler.pending_disaster_point, Some((12, 34)));
+
+    state.load_city(&path, (800, 600), 1.0).unwrap();
+    assert!(!state.city.pe_scenario_active());
+    assert_eq!(state.city_info_dialog, None);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn load_city_dispatches_scen_disaster_after_first_unpaused_calendar_phase() {
     let path = std::env::temp_dir().join("sc2000_rust_scenario_disaster_load.scn");
     let mut scenario = City::new_blank(&path, "Atlanta").expect("blank scenario");
@@ -1982,7 +2047,7 @@ fn load_city_dispatches_scen_disaster_after_first_unpaused_calendar_phase() {
     let city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     let mut state = test_state(city);
     state
-        .load_city(&path, (800, 600), 1.0)
+        .load_win_scenario(&path, (800, 600), 1.0)
         .expect("load scenario");
 
     assert_eq!(state.city.kind, CityFileKind::WinScenario);
@@ -2150,7 +2215,7 @@ fn load_city_scenario_disaster_chooser_matches_native_start_checkpoints() {
         let mut state = test_state(city);
         state.pe_process_crt = Win95CrtRand::new(3);
         state
-            .load_city(&path, (800, 600), 1.0)
+            .load_win_scenario(&path, (800, 600), 1.0)
             .expect("load scenario");
 
         assert_eq!(state.city.pe_w_trigger_disaster, selector);
@@ -13564,7 +13629,7 @@ fn load_city_win_scenario_preserves_saved_national_and_geography_state() {
     let mut state = test_state(City::new_blank("/tmp/sc2000-holder.sc2", "H").expect("blank"));
     state.pe_process_crt = Win95CrtRand::new(1);
     state
-        .load_city(&path, (1024, 768), 1.0)
+        .load_win_scenario(&path, (1024, 768), 1.0)
         .expect("load scenario");
     assert_eq!(state.city.kind, CityFileKind::WinScenario);
     assert_eq!(state.city.pe_dw_national_population, 99_999);
@@ -13586,6 +13651,11 @@ fn load_city_win_scenario_preserves_saved_national_and_geography_state() {
         state.city.misc_u32_at(MISC_CITY_MODE_OFFSET),
         Some(CITY_MODE_GAMEPLAY)
     );
+    // Ordinary File Open of these same bytes keeps their saved editor mode;
+    // the dedicated scenario route above explicitly supplies gameplay mode.
+    state.load_city(&path, (1024, 768), 1.0).expect("ordinary open");
+    assert!(!state.city.pe_scenario_active());
+    assert_eq!(state.city.pe_w_city_mode, CITY_MODE_EDIT_MAP as u16);
     let _ = std::fs::remove_file(path);
 }
 
@@ -13732,7 +13802,7 @@ fn pe_w_monster_xthg_index_bss_4ca81c_hydrate_and_readers() {
     assert_eq!(loaded.pe_w_monster_xthg_index(), 0xffff);
     assert_eq!(
         loaded.misc_u32_at(MISC_MONSTER_XTHG_INDEX_OFFSET),
-        Some(0xffff)
+        Some(u32::MAX)
     );
     // MISC layout: monster @ 0x1040, current disaster @ 0x1044 (not the same slot).
     assert_ne!(
@@ -15060,7 +15130,7 @@ fn pe_retail_win_scenario_open_checkpoints() {
         state.pe_process_crt = Win95CrtRand::new(1);
         state.menu_checks.citygame_newspaper = false;
         state
-            .load_city(&root.join(format!("{name}.SCN")), (800, 600), 1.0)
+            .load_win_scenario(&root.join(format!("{name}.SCN")), (800, 600), 1.0)
             .expect("load retail scenario");
         assert_eq!(
             pe_open_xbit_fingerprint(&state.city),
@@ -16541,7 +16611,7 @@ fn pe_retail_win_scenario_first_disaster() {
         state.pe_process_crt = Win95CrtRand::new(1);
         state.menu_checks.citygame_newspaper = false;
         state
-            .load_city(&root.join(format!("{name}.SCN")), (800, 600), 1.0)
+            .load_win_scenario(&root.join(format!("{name}.SCN")), (800, 600), 1.0)
             .unwrap();
         state.close_city_info_dialog();
         state.traffic.set_speed(GameSpeed::Cheetah);

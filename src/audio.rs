@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::asset_profile::SoundPaths;
@@ -40,9 +41,13 @@ pub const SOUND_LAUNCH_ARCO_WIPE_END: u16 = 0x212;
 
 const RATE: usize = 22_050;
 
-/// Resolve each event by slot ID and convert mixed-edition WAV formats to one stream.
+/// Resolve each event by slot ID and convert mixed-edition WAV formats for playback.
 pub struct SoundPlayer {
     stream: AudioStreamOwner,
+    mac_second_stream: Option<AudioStreamOwner>,
+    mac_voice_mode: Cell<bool>,
+    mac_voice_order: Cell<[u64; 2]>,
+    mac_next_order: Cell<u64>,
     effects: HashMap<u16, Vec<f32>>,
     suspended: bool,
 }
@@ -87,8 +92,17 @@ impl SoundPlayer {
             .open_device_stream(Some(&spec))
             .ok()?;
         stream.resume().ok()?;
+        // The captured Mac driver configures two effect voices. SDL mixes
+        // logical playback streams, allowing both to remain audible together.
+        let mac_second_stream = audio.default_playback_device()
+            .open_device_stream(Some(&spec)).ok()
+            .and_then(|stream| stream.resume().ok().map(|_| stream));
         Some(Self {
             stream,
+            mac_second_stream,
+            mac_voice_mode: Cell::new(false),
+            mac_voice_order: Cell::new([0; 2]),
+            mac_next_order: Cell::new(1),
             effects,
             suspended: false,
         })
@@ -100,9 +114,29 @@ impl SoundPlayer {
         if suspended {
             let _ = self.stream.clear();
             let _ = self.stream.pause();
+            if let Some(stream) = &self.mac_second_stream {
+                let _ = stream.clear();
+                let _ = stream.pause();
+            }
         } else {
             let _ = self.stream.resume();
+            if let Some(stream) = &self.mac_second_stream { let _ = stream.resume(); }
         }
+    }
+
+    /// Select the edition's effect playback policy when the active game changes.
+    pub(crate) fn set_mac_voice_mode(&self, mac: bool) {
+        if self.mac_voice_mode.replace(mac) != mac {
+            self.stop_effects();
+        }
+    }
+
+    /// Clear queued effects at an original-game stop-all boundary.
+    pub(crate) fn stop_effects(&self) {
+        let _ = self.stream.clear();
+        if let Some(stream) = &self.mac_second_stream { let _ = stream.clear(); }
+        self.mac_voice_order.set([0; 2]);
+        self.mac_next_order.set(1);
     }
 
     pub fn play_click(&self) {
@@ -126,11 +160,33 @@ impl SoundPlayer {
             log::debug!("{label} sound disabled: missing sound slot {sound_id}");
             return;
         };
-        let _ = self.stream.clear();
-        if let Err(error) = self.stream.put_data_f32(samples) {
+        let stream = if self.mac_voice_mode.get() {
+            if let Some(second) = &self.mac_second_stream {
+                let slot = choose_mac_effect_slot(
+                    [self.stream.queued_bytes().ok(), second.queued_bytes().ok()],
+                    self.mac_voice_order.get(),
+                );
+                let mut order = self.mac_voice_order.get();
+                order[slot] = self.mac_next_order.get();
+                self.mac_voice_order.set(order);
+                self.mac_next_order.set(self.mac_next_order.get().wrapping_add(1));
+                if slot == 0 { &self.stream } else { second }
+            } else { &self.stream }
+        } else { &self.stream };
+        let _ = stream.clear();
+        if let Err(error) = stream.put_data_f32(samples) {
             log::debug!("{label} sound enqueue failed: {error}");
         }
     }
+}
+
+// The native driver selects the first free slot, then the lowest voice state
+// with ties resolved to the later slot. SDL queue state and start order are an
+// approximation; they do not reproduce the original service-counter ties.
+fn choose_mac_effect_slot(queued: [Option<i32>; 2], order: [u64; 2]) -> usize {
+    if queued[0].is_some_and(|bytes| bytes <= 0) { return 0; }
+    if queued[1].is_some_and(|bytes| bytes <= 0) { return 1; }
+    if order[0] < order[1] { 0 } else { 1 }
 }
 
 fn decode_wav(wav: &AudioSpecWAV) -> Option<Vec<f32>> {
@@ -266,4 +322,72 @@ fn citygame_effect(id: u16) -> Vec<f32> {
         samples.push((sample * env * 0.38).clamp(-0.8, 0.8));
     }
     samples
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_effect_slots_prefer_free_then_oldest() {
+        assert_eq!(choose_mac_effect_slot([Some(0), Some(0)], [3, 4]), 0);
+        assert_eq!(choose_mac_effect_slot([Some(20), Some(0)], [3, 4]), 1);
+        assert_eq!(choose_mac_effect_slot([Some(20), Some(30)], [3, 4]), 0);
+        assert_eq!(choose_mac_effect_slot([Some(20), Some(30)], [4, 4]), 1);
+    }
+
+    #[test]
+    #[ignore = "requires private live Mac admission trace"]
+    fn mac_effect_slot_policy_matches_observed_live_admissions() {
+        use crate::mac_sound_state::{mac_start_sound_voice, MacSoundVoice};
+        let path = std::env::var_os("CITYGAME_MAC_SOUND_ADMISSIONS_LIVE").unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(rows.len() > 10);
+        let mut order = [0; 2];
+        for (i, row) in rows.iter().enumerate() {
+            let mut voices: [MacSoundVoice; 2] = std::array::from_fn(|slot| {
+                let voice = &row["voices"][slot];
+                MacSoundVoice { descriptor: voice["descriptor"].as_u64().unwrap() as u16,
+                    state: voice["state"].as_u64().unwrap() as u16 as i16 }
+            });
+            let queued = voices.map(|voice| Some(if voice.state < 0 { 0 } else { 1 }));
+            let expected = row["selected"].as_u64().unwrap() as usize;
+            assert_eq!(choose_mac_effect_slot(queued, order), expected, "{row}");
+            assert_eq!(mac_start_sound_voice(&mut voices, row["descriptor"].as_u64().unwrap() as u16, true),
+                Some(expected), "{row}");
+            order[expected] = i as u64 + 1;
+        }
+    }
+
+    #[test]
+    #[ignore = "requires SDL's dummy audio driver"]
+    fn mac_effect_streams_overlap_and_win95_replaces() {
+        let sdl = sdl3::init().unwrap();
+        let audio = sdl.audio().unwrap();
+        let paths = SoundPaths { effects: HashMap::new(), citygame_effects: HashMap::new(),
+            use_citygame_effects: true };
+        let player = SoundPlayer::new(&audio, &paths).unwrap();
+        let second = player.mac_second_stream.as_ref().expect("second SDL stream");
+        player.stream.pause().unwrap();
+        second.pause().unwrap();
+        player.set_mac_voice_mode(true);
+        player.play_sc2k_effect(500, "first");
+        player.play_sc2k_effect(507, "second");
+        let (first_bytes, second_bytes) = (player.stream.queued_bytes().unwrap(), second.queued_bytes().unwrap());
+        assert!(first_bytes > 0 && second_bytes > 0);
+        player.play_sc2k_effect(504, "third");
+        assert_ne!(player.stream.queued_bytes().unwrap(), first_bytes);
+        assert_eq!(second.queued_bytes().unwrap(), second_bytes);
+        player.stop_effects();
+        assert_eq!((player.stream.queued_bytes().unwrap(), second.queued_bytes().unwrap()), (0, 0));
+        player.play_sc2k_effect(520, "disaster alert");
+        assert!(player.stream.queued_bytes().unwrap() > 0);
+        assert_eq!(second.queued_bytes().unwrap(), 0);
+        player.set_mac_voice_mode(false);
+        assert_eq!((player.stream.queued_bytes().unwrap(), second.queued_bytes().unwrap()), (0, 0));
+        player.play_sc2k_effect(500, "win first");
+        player.play_sc2k_effect(507, "win second");
+        assert_eq!(player.stream.queued_bytes().unwrap(), second_bytes);
+        assert_eq!(second.queued_bytes().unwrap(), 0);
+    }
 }

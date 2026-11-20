@@ -126,15 +126,19 @@ pub(in crate::app) fn ensure_budget_misc_defaults_before_extension(city: &mut Ci
 }
 
 pub(in crate::app) fn initialize_new_city_budget_rows(city: &mut City, fidelity: EngineFidelity) {
-    // The two executables independently initialize the same 16-row book. The
-    // accessor routes native Mac rows to the isolated Mac row-book buffer.
+    // The accessor routes native Mac rows to the isolated Mac row-book buffer.
     let defaults = match fidelity {
         EngineFidelity::Win95 => PE_NEW_CITY_BUDGET_DEFAULTS_4E6730,
         EngineFidelity::Mac68k => MAC_NEW_CITY_BUDGET_DEFAULTS_A5_51DC,
     };
     for (row, value) in defaults.into_iter().enumerate() {
         if let Some(offset) = budget_row_misc_offset_for_city(city, row, 0) {
-            city.set_budget_misc_u32_values(offset, &[value, value]);
+            match fidelity {
+                // PE 0x40e722..0x40e756 clears current and YTD, sets
+                // funding, and initializes month-zero's funding history.
+                EngineFidelity::Win95 => city.set_budget_misc_u32_values(offset, &[0, value, 0, 0, value]),
+                EngineFidelity::Mac68k => city.set_budget_misc_u32_values(offset, &[value, value]),
+            }
         }
     }
 }

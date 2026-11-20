@@ -23,7 +23,61 @@ pub(super) fn drain_commands(
     let sound = assets.sound;
     let city_music = assets.city_music;
     let audio = assets.audio;
+    let mut deferred = std::collections::VecDeque::new();
     while let Some(command) = pop_command() {
+        if input.blocking_file_dialog()
+            && !matches!(command, AppCommand::Quit | AppCommand::CloseSaveDialogResult(_) | AppCommand::Win95FileDialogResult(_, _))
+        {
+            deferred.push_back(command);
+            continue;
+        }
+        if input.blocking_file_dialog() && matches!(command, AppCommand::Quit) {
+            continue;
+        }
+        if state.mac_loop_scheduler.fiscal_notice.is_some() && input::mac_fiscal_notice_defers_command(&command) {
+            deferred.push_back(command);
+            continue;
+        }
+        if input::handle_mac_fiscal_notice_command(state, &command) {
+            continue;
+        }
+        let (command, close_approved) = match command {
+            AppCommand::ContinueAfterClose(action) => (action.command(), true),
+            other => (other, false),
+        };
+        if !close_approved
+            && cfg!(not(any(target_os = "android", target_os = "ios")))
+            && state.engine_fidelity.uses_win95()
+            && let Some(action) = Win95CloseAction::from_command(&command)
+            && win95_close_action_needs_prompt(&action, state.mode)
+        {
+            if action == Win95CloseAction::Quit {
+                // SDL can report one close through both app and window events.
+                super::super::command_bus::command_queue()
+                    .lock()
+                    .expect("command queue")
+                    .retain(|queued| !matches!(queued, AppCommand::Quit));
+            }
+            match confirm_win95_close(window, &state.city.name) {
+                Win95CloseChoice::Cancel => continue,
+                Win95CloseChoice::Discard => {}
+                Win95CloseChoice::Save => {
+                    if state.city.has_backing_file() {
+                        let size = renderer.size();
+                        if let Err(error) = state.save_current_city(size, pixel_scale(window, size)) {
+                            show_win95_save_failure(window, asset_profile, &error);
+                        } else {
+                            show_win95_save_success(window, asset_profile, &state.city.path);
+                        }
+                    } else {
+                        if save_city_dialog_before_close(window, state.city.kind, &state.city.name) {
+                            input.close_save_pending = Some(action);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
         if matches!(&command, AppCommand::ReturnToTitle) {
             if confirm_return_to_title(window) {
                 input.return_to_title = true;
@@ -153,19 +207,60 @@ pub(super) fn drain_commands(
             }
             continue;
         }
+        let title_dialog_open = matches!(&command, AppCommand::OpenTitleDialogPath(_) | AppCommand::OpenTitleScenarioPath(_));
+        let scenario_open = matches!(&command, AppCommand::OpenScenarioPath(_) | AppCommand::OpenTitleScenarioPath(_));
+        let confirmed_city_open = matches!(&command, AppCommand::OpenConfirmedCityPath(_));
         match command {
             AppCommand::OpenCityDialog => {
-                open_city_dialog(window);
+                let track = cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95();
+                if open_city_dialog(window, track) && track {
+                    input.win95_file_dialog_pending = Some(Win95FileDialog::City);
+                }
             }
             AppCommand::OpenScenarioDialog => {
-                open_scenario_dialog(window, asset_profile);
+                let track = cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95();
+                if open_scenario_dialog(window, asset_profile, track) && track {
+                    input.win95_file_dialog_pending = Some(Win95FileDialog::Scenario);
+                    state.set_pe_external_modal(true);
+                }
             }
-            AppCommand::OpenPath(path) | AppCommand::OpenTitlePath(path) => {
-                state.load_city(&path, renderer.size(), pixel_scale(window, renderer.size()))?;
+            AppCommand::Win95FileDialogResult(kind, path) => {
+                let admitted_scenario = kind == Win95FileDialog::Scenario
+                    && input.win95_file_dialog_pending == Some(kind);
+                if let Some(command) = finish_win95_file_dialog(input, kind, path) {
+                    super::super::command_bus::command_queue().lock().expect("command queue").push_front(command);
+                }
+                if admitted_scenario { state.set_pe_external_modal(false); }
+            }
+            AppCommand::OpenPath(path)
+            | AppCommand::OpenConfirmedCityPath(path)
+            | AppCommand::OpenTitlePath(path)
+            | AppCommand::OpenTitleDialogPath(path)
+            | AppCommand::OpenScenarioPath(path)
+            | AppCommand::OpenTitleScenarioPath(path) => {
+                if let Err(error) = open_city_document_with_title_tail(
+                    state, &path, renderer.size(), pixel_scale(window, renderer.size()),
+                    title_dialog_open, scenario_open,
+                    |state| update_mac_city_music(state, city_music, asset_profile),
+                    |state| state.update_window_title(video, window.id()),
+                ) {
+                    if state.engine_fidelity.uses_win95() && !scenario_open
+                        && cfg!(not(any(target_os = "android", target_os = "ios")))
+                    {
+                        crate::win95_file_error::record_city_io_error(&path, &error);
+                        show_win95_city_open_errors(window, asset_profile, &error, confirmed_city_open);
+                        if confirmed_city_open {
+                            return_to_title_after_failed_replacement(input);
+                            break;
+                        }
+                    } else {
+                        show_asset_error(window, "Could Not Open City", &error);
+                    }
+                    continue;
+                }
                 if let Err(error) = asset_profile.remember_city(&path) {
                     log::warn!("could not remember city {}: {error:#}", path.display());
                 }
-                state.update_window_title(video, window.id());
             }
             AppCommand::StartMacScenario(path) => {
                 if let Err(error) = state.load_mac_scenario(
@@ -349,6 +444,8 @@ pub(super) fn drain_commands(
                             asset_profile,
                             state.music_enabled,
                             asset_profile.citygame_city_music_enabled(),
+                            !state.engine_fidelity.uses_win95(),
+                            None,
                         );
                     }
                 }
@@ -403,6 +500,8 @@ pub(super) fn drain_commands(
                             asset_profile,
                             state.music_enabled,
                             enabled,
+                            !state.engine_fidelity.uses_win95(),
+                            None,
                         );
                         state.sync_menu_citygame_overrides(
                             asset_profile.citygame_effects_enabled(),
@@ -452,6 +551,26 @@ pub(super) fn drain_commands(
             AppCommand::Quit => {
                 input.running = false;
             }
+            AppCommand::CloseSaveDialogResult(path) => {
+                let size = renderer.size();
+                let path_was_selected = path.is_some();
+                if let Some((action, result)) = finish_close_save_dialog(input, path, |path| {
+                    state.save_city_as(path, size, pixel_scale(window, size))
+                }) {
+                    if let Err(error) = result {
+                        show_win95_save_failure(window, asset_profile, &error);
+                    } else if state.city.has_backing_file() {
+                        // A canceled Save As has no path and must not show a success alert.
+                        if path_was_selected {
+                            show_win95_save_success(window, asset_profile, &state.city.path);
+                        }
+                    }
+                    super::super::command_bus::command_queue()
+                        .lock()
+                        .expect("command queue")
+                        .push_front(AppCommand::ContinueAfterClose(action));
+                }
+            }
             AppCommand::ZoomIn => state.zoom_in_at(
                 viewport_center(renderer.size()),
                 renderer.size(),
@@ -499,7 +618,12 @@ pub(super) fn drain_commands(
                 let snapshot =
                     state.city_save_snapshot(renderer.size(), pixel_scale(window, renderer.size()));
                 if let Err(error) =
-                    crate::ios_documents::save_city(window, snapshot, state.city.path.clone())
+                    crate::ios_documents::save_city(
+                        window,
+                        snapshot,
+                        state.city.path.clone(),
+                        state.engine_fidelity.uses_win95(),
+                    )
                 {
                     crate::ios_documents::show_error(window, &error);
                 }
@@ -511,6 +635,7 @@ pub(super) fn drain_commands(
             } => {
                 if state.city.path == previous_path {
                     state.city.adopt_saved_document(path.clone());
+                    state.update_mac_name_after_save();
                     if let Err(error) = asset_profile.remember_city(&path) {
                         log::warn!("could not remember saved city: {error:#}");
                     }
@@ -519,22 +644,50 @@ pub(super) fn drain_commands(
             }
             #[cfg(not(target_os = "ios"))]
             AppCommand::SaveCity => {
-                let path = state.city.path.clone();
-                let size = renderer.size();
-                if let Err(error) = state.save_city(&path, size, pixel_scale(window, size)) {
-                    log::error!("save failed: {error:#}");
+                if state.engine_fidelity.uses_win95() && !state.city.has_backing_file() {
+                    // The PE's current-path string is empty for a new city;
+                    // its ordinary Save command enters the Save As chooser.
+                    let track = cfg!(not(any(target_os = "android", target_os = "ios")));
+                    if save_city_dialog(window, state.city.kind, &state.city.name, true, track) && track {
+                        input.win95_file_dialog_pending = Some(Win95FileDialog::SaveAs);
+                    }
                 } else {
-                    log::info!("saved city to {}", path.display());
+                    let size = renderer.size();
+                    if let Err(error) = state.save_current_city(size, pixel_scale(window, size)) {
+                        if state.engine_fidelity.uses_win95() {
+                            show_win95_save_failure(window, asset_profile, &error);
+                        } else {
+                            log::error!("save failed: {error:#}");
+                        }
+                    } else {
+                        log::info!("saved city to {}", state.city.path.display());
+                        if state.engine_fidelity.uses_win95() {
+                            show_win95_save_success(window, asset_profile, &state.city.path);
+                        }
+                    }
                 }
             }
             #[cfg(not(target_os = "ios"))]
-            AppCommand::SaveCityAs => save_city_dialog(window, state.city.kind),
+            AppCommand::SaveCityAs => {
+                let track = cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95();
+                if save_city_dialog(window, state.city.kind, &state.city.name, state.engine_fidelity.uses_win95(), track) && track {
+                    input.win95_file_dialog_pending = Some(Win95FileDialog::SaveAs);
+                }
+            }
             AppCommand::SaveToPath(path) => {
                 let size = renderer.size();
-                if let Err(error) = state.save_city(&path, size, pixel_scale(window, size)) {
-                    log::error!("save failed: {error:#}");
+                if let Err(error) = state.save_city_as(&path, size, pixel_scale(window, size)) {
+                    if state.engine_fidelity.uses_win95() {
+                        show_win95_save_failure(window, asset_profile, &error);
+                    } else {
+                        log::error!("save failed: {error:#}");
+                    }
                 } else {
                     log::info!("saved city to {}", path.display());
+                    if state.engine_fidelity.uses_win95() {
+                        show_win95_save_success(window, asset_profile, &state.city.path);
+                    }
+                    state.update_window_title(video, window.id());
                 }
             }
             AppCommand::NewCity => {
@@ -587,8 +740,13 @@ pub(super) fn drain_commands(
                     };
                 }
             }
-            AppCommand::ToggleEditMap => {
+            AppCommand::FinishWin95Charter | AppCommand::ToggleEditMap => {
+                if matches!(command, AppCommand::FinishWin95Charter) {
+                    state.finish_edit_map_after_charter();
+                    state.update_window_title(video, window.id());
+                } else {
                 state.toggle_edit_mode(video, window.id());
+                }
                 *palette_logical_size = match palette_renderer.as_deref_mut() {
                     Some(palette_renderer) => palette_window::sync_for_mode_ex(
                         video,
@@ -616,15 +774,330 @@ pub(super) fn drain_commands(
             | AppCommand::ToggleBalloonHelp
             | AppCommand::StartDisaster(_)
             | AppCommand::OpenCityInfo(_)
+            | AppCommand::OpenMacPaper(_)
             | AppCommand::SetSpeed(_)
             | AppCommand::SetTool(_)
             | AppCommand::ReturnToTitle
+            | AppCommand::ContinueAfterClose(_)
             | AppCommand::RotateView(_) => {
                 unreachable!("state command should have been handled before runtime match")
             }
         }
+        if !input.running {
+            break;
+        }
+    }
+    if !deferred.is_empty() {
+        let mut queue = super::super::command_bus::command_queue().lock().expect("command queue");
+        restore_deferred_commands(&mut queue, deferred);
     }
     Ok(())
+}
+
+fn restore_deferred_commands(queue: &mut std::collections::VecDeque<AppCommand>, mut deferred: std::collections::VecDeque<AppCommand>) {
+    while let Some(command) = deferred.pop_back() { queue.push_front(command); }
+}
+
+fn win95_save_feedback(profile: &AssetProfile, index: usize, fallback: &str) -> String {
+    profile.win95_save_feedback_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|data| serde_json::from_slice::<[String; 2]>(&data).ok())
+        .and_then(|strings| strings.get(index).cloned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn show_win95_save_success(window: &sdl3::video::Window, profile: &AssetProfile, path: &std::path::Path) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let prefix = win95_save_feedback(profile, 0, "City saved: ");
+        let _ = sdl3::messagebox::show_simple_message_box(
+            MessageBoxFlag::INFORMATION, "CityGame", &format!("{prefix}{}", path.display()), window,
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (window, profile, path);
+}
+
+fn show_win95_save_failure(window: &sdl3::video::Window, profile: &AssetProfile, error: &anyhow::Error) {
+    log::error!("save failed: {error:#}");
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let message = win95_save_feedback(profile, 1, "City could not be saved.");
+        let _ = sdl3::messagebox::show_simple_message_box(
+            MessageBoxFlag::ERROR, "CityGame", &message, window,
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (window, profile);
+}
+
+fn show_win95_not_iff(window: &sdl3::video::Window, profile: &AssetProfile) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let message = profile.win95_not_iff_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|data| serde_json::from_slice::<String>(&data).ok())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "This file is not a supported IFF city.".to_owned());
+        let _ = sdl3::messagebox::show_simple_message_box(
+            MessageBoxFlag::ERROR, "CityGame", &message, window,
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (window, profile);
+}
+
+fn show_win95_wrong_iff_city_type(window: &sdl3::video::Window, profile: &AssetProfile) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let message = profile.win95_wrong_iff_city_type_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|data| serde_json::from_slice::<String>(&data).ok())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "This IFF file is not a SimCity 2000 city.".to_owned());
+        let _ = sdl3::messagebox::show_simple_message_box(
+            MessageBoxFlag::ERROR, "CityGame", &message, window,
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (window, profile);
+}
+
+fn show_win95_city_open_failure(window: &sdl3::video::Window, profile: &AssetProfile, error: &anyhow::Error) {
+    log::error!("city open failed: {error:#}");
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let message = profile.win95_city_open_failure_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|data| serde_json::from_slice::<String>(&data).ok())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Could not open the city.".to_owned());
+        let _ = sdl3::messagebox::show_simple_message_box(
+            MessageBoxFlag::ERROR, "CityGame", &message, window,
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (window, profile);
+}
+
+pub(in crate::app) fn show_win95_city_open_errors(window: &sdl3::video::Window, profile: &AssetProfile, error: &anyhow::Error, include_format_error: bool) {
+    if include_format_error && error.downcast_ref::<crate::city::CityReadEof>().is_some() {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let messages = profile.win95_read_error_path()
+                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|data| serde_json::from_slice::<Vec<String>>(&data).ok());
+            let message = crate::win95_file_error::read_message(messages.as_deref(), crate::win95_file_error::current_cause());
+            let _ = sdl3::messagebox::show_simple_message_box(MessageBoxFlag::ERROR, "CityGame", &message, window);
+        }
+    } else if include_format_error && error.downcast_ref::<crate::city::NotIffCityFile>().is_some() {
+        show_win95_not_iff(window, profile);
+    } else if include_format_error && error.downcast_ref::<crate::city::WrongIffCityType>().is_some() {
+        show_win95_wrong_iff_city_type(window, profile);
+    }
+    show_win95_city_open_failure(window, profile, error);
+}
+
+fn return_to_title_after_failed_replacement(input: &mut InputState) {
+    input.return_to_title = true;
+    input.running = false;
+}
+
+fn win95_close_action_needs_prompt(action: &Win95CloseAction, mode: AppMode) -> bool {
+    // PE 0x42e250 bypasses its close helper when the edit-map latch is set.
+    // The CityGame editor-exit toggle is not the PE's replace-city command.
+    !matches!(action, Win95CloseAction::NewCity | Win95CloseAction::EditMap)
+        || mode != AppMode::EditNewMap
+}
+
+fn finish_win95_file_dialog(
+    input: &mut InputState, kind: Win95FileDialog, path: Option<std::path::PathBuf>,
+) -> Option<AppCommand> {
+    if input.win95_file_dialog_pending != Some(kind) { return None; }
+    input.win95_file_dialog_pending = None;
+    path.map(|path| match kind {
+        Win95FileDialog::City => AppCommand::OpenConfirmedCityPath(path),
+        Win95FileDialog::Scenario => AppCommand::OpenScenarioPath(path),
+        Win95FileDialog::SaveAs => AppCommand::SaveToPath(path),
+    })
+}
+
+fn finish_close_save_dialog(
+    input: &mut InputState,
+    path: Option<std::path::PathBuf>,
+    save: impl FnOnce(&std::path::Path) -> Result<()>,
+) -> Option<(Win95CloseAction, Result<()>)> {
+    let action = input.close_save_pending.take()?;
+    let result = path.map_or(Ok(()), |path| save(&path));
+    Some((action, result))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Win95CloseChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
+fn confirm_win95_close(window: &sdl3::video::Window, city_name: &str) -> Win95CloseChoice {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let buttons = [
+            ButtonData { flags: MessageBoxButtonFlag::RETURNKEY_DEFAULT, button_id: 6, text: "Yes" },
+            ButtonData { flags: MessageBoxButtonFlag::empty(), button_id: 7, text: "No" },
+            ButtonData { flags: MessageBoxButtonFlag::ESCAPEKEY_DEFAULT, button_id: 2, text: "Cancel" },
+        ];
+        let message = format!("Do You Want To Save Your City: {city_name}");
+        return match sdl3::messagebox::show_message_box(
+            MessageBoxFlag::INFORMATION, &buttons, "CityGame", &message, window, None,
+        ) {
+            Ok(ClickedButton::CustomButton(button)) if button.button_id == 6 => Win95CloseChoice::Save,
+            Ok(ClickedButton::CustomButton(button)) if button.button_id == 7 => Win95CloseChoice::Discard,
+            Ok(_) => Win95CloseChoice::Cancel,
+            Err(error) => {
+                log::warn!("could not show save-before-exit prompt: {error}");
+                Win95CloseChoice::Cancel
+            }
+        };
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (window, city_name);
+        Win95CloseChoice::Cancel
+    }
+}
+
+#[cfg(test)]
+mod fiscal_command_tests {
+    use super::*;
+
+    #[test]
+    fn win95_save_feedback_uses_local_resources_and_falls_back() {
+        let root = std::env::temp_dir().join(format!("citygame-save-feedback-{}", std::process::id()));
+        let pack = root.join("pack");
+        let catalog = pack.join("catalog/data");
+        std::fs::create_dir_all(&catalog).unwrap();
+        let settings = root.join("settings.json");
+        std::fs::write(&settings, serde_json::json!({"schema_version": 1, "original_graphics": pack}).to_string()).unwrap();
+        let profile = AssetProfile::load_from(settings).unwrap();
+        assert_eq!(win95_save_feedback(&profile, 1, "fallback"), "fallback");
+        let path = catalog.join("win95-save-feedback.json");
+        std::fs::write(&path, b"invalid json").unwrap();
+        assert_eq!(win95_save_feedback(&profile, 1, "fallback"), "fallback");
+        std::fs::write(&path, br#"["prefix ","failure"]"#).unwrap();
+        assert_eq!(win95_save_feedback(&profile, 0, "fallback"), "prefix ");
+        assert_eq!(win95_save_feedback(&profile, 1, "fallback"), "failure");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fiscal_notice_preserves_deferred_file_operations_in_order() {
+        let save = AppCommand::SaveToPath("/tmp/fiscal-save.sc2".into());
+        let open = AppCommand::OpenPath("/tmp/fiscal-open.sc2".into());
+        let later = AppCommand::SetSpeed(GameSpeed::Llama);
+        let mut queue = std::collections::VecDeque::from([later.clone()]);
+        restore_deferred_commands(&mut queue, std::collections::VecDeque::from([save.clone(), open.clone()]));
+        assert_eq!(queue.into_iter().collect::<Vec<_>>(), [save, open, later]);
+    }
+
+    #[test]
+    fn win95_open_dialog_holds_simulation_and_resumes_only_its_own_result() {
+        let mut input = InputState::new();
+        let path = std::path::PathBuf::from("/tmp/example.sc2");
+        assert!(!input.blocking_file_dialog());
+        input.win95_file_dialog_pending = Some(Win95FileDialog::City);
+        assert!(input.blocking_file_dialog());
+        assert!(input.holds_pe_idle_for_common_dialog());
+        assert_eq!(finish_win95_file_dialog(&mut input, Win95FileDialog::Scenario, Some(path.clone())), None);
+        assert!(input.blocking_file_dialog());
+        let city = finish_win95_file_dialog(&mut input, Win95FileDialog::City, Some(path.clone())).unwrap();
+        assert_eq!(city, AppCommand::OpenConfirmedCityPath(path.clone()));
+        assert_eq!(Win95CloseAction::from_command(&city), None);
+        assert!(!input.blocking_file_dialog());
+        assert_eq!(finish_win95_file_dialog(&mut input, Win95FileDialog::City, Some(path.clone())), None);
+        input.win95_file_dialog_pending = Some(Win95FileDialog::Scenario);
+        assert!(input.blocking_file_dialog());
+        assert!(!input.holds_pe_idle_for_common_dialog());
+        let scenario = finish_win95_file_dialog(&mut input, Win95FileDialog::Scenario, Some(path.clone())).unwrap();
+        assert_eq!(scenario, AppCommand::OpenScenarioPath(path));
+        assert!(Win95CloseAction::from_command(&scenario).is_some());
+        input.win95_file_dialog_pending = Some(Win95FileDialog::Scenario);
+        assert_eq!(finish_win95_file_dialog(&mut input, Win95FileDialog::Scenario, None), None);
+        assert!(!input.blocking_file_dialog());
+        input.win95_file_dialog_pending = Some(Win95FileDialog::SaveAs);
+        assert!(input.holds_pe_idle_for_common_dialog());
+        let target = std::path::PathBuf::from("/tmp/saved.sc2");
+        assert_eq!(finish_win95_file_dialog(&mut input, Win95FileDialog::SaveAs, Some(target.clone())), Some(AppCommand::SaveToPath(target)));
+        assert!(!input.blocking_file_dialog());
+    }
+
+    #[test]
+    fn close_save_dialog_resumes_the_requested_action_after_each_save_outcome() {
+        use crate::city::City;
+        let directory = std::env::temp_dir().join(format!("citygame-quit-save-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("new.sc2");
+        let mut city = City::new_blank(&target, "New City").unwrap();
+        let mut input = InputState::new();
+
+        input.close_save_pending = Some(Win95CloseAction::LoadCity);
+        let (action, result) = finish_close_save_dialog(&mut input, None, |_| panic!("cancel must not save")).unwrap();
+        assert_eq!(action, Win95CloseAction::LoadCity);
+        assert!(result.is_ok());
+        assert!(input.running && input.close_save_pending.is_none() && !city.has_backing_file());
+        assert!(finish_close_save_dialog(&mut input, Some(target.clone()), |_| panic!("stale result must not save")).is_none());
+        assert!(input.running && !city.has_backing_file());
+
+        input.close_save_pending = Some(Win95CloseAction::NewCity);
+        let (action, result) = finish_close_save_dialog(&mut input, Some(directory.clone()), |path| city.save(path)).unwrap();
+        assert_eq!(action, Win95CloseAction::NewCity);
+        assert!(result.is_err());
+        assert!(input.running && input.close_save_pending.is_none() && !city.has_backing_file());
+
+        input.close_save_pending = Some(Win95CloseAction::LoadCity);
+        let (action, result) = finish_close_save_dialog(&mut input, Some(target.clone()), |path| city.save(path)).unwrap();
+        result.unwrap();
+        assert_eq!(action.command(), AppCommand::OpenCityDialog);
+        assert!(input.running && input.close_save_pending.is_none() && city.has_backing_file());
+        assert_eq!(City::load(&target).unwrap().name, "New City");
+
+        input.close_save_pending = Some(Win95CloseAction::Quit);
+        let (action, result) = finish_close_save_dialog(&mut input, Some(target.clone()), |path| city.save(path)).unwrap();
+        result.unwrap();
+        assert_eq!(action, Win95CloseAction::Quit);
+        assert_eq!(Win95CloseAction::Quit.command(), AppCommand::Quit);
+        input.close_save_pending = Some(Win95CloseAction::NewCity);
+        let (action, result) = finish_close_save_dialog(&mut input, Some(target.clone()), |path| city.save(path)).unwrap();
+        result.unwrap();
+        assert_eq!(action, Win95CloseAction::NewCity);
+        assert_eq!(Win95CloseAction::NewCity.command(), AppCommand::NewCity);
+        assert_eq!(Win95CloseAction::from_command(&AppCommand::OpenTitleDialogPath(target.clone())), None);
+        for command in [AppCommand::OpenPath(target.clone()), AppCommand::OpenScenarioPath(target.clone()), AppCommand::OpenTitlePath(target.clone())] {
+            let action = Win95CloseAction::from_command(&command).unwrap();
+            input.close_save_pending = Some(action);
+            let (resumed, result) = finish_close_save_dialog(&mut input, Some(target.clone()), |path| city.save(path)).unwrap();
+            result.unwrap();
+            assert_eq!(resumed.command(), command);
+        }
+        assert_eq!(Win95CloseAction::from_command(&AppCommand::OpenConfirmedCityPath(target.clone())), None);
+        assert_eq!(Win95CloseAction::from_command(&AppCommand::OpenCityDialog), Some(Win95CloseAction::LoadCity));
+        assert_eq!(Win95CloseAction::from_command(&AppCommand::ToggleEditMap), Some(Win95CloseAction::EditMap));
+        input.close_save_pending = Some(Win95CloseAction::EditMap);
+        let (action, result) = finish_close_save_dialog(&mut input, None, |_| panic!("cancel must not save")).unwrap();
+        result.unwrap();
+        assert_eq!(action.command(), AppCommand::ToggleEditMap);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn win95_new_city_and_edit_map_prompt_depend_on_editor_mode() {
+        for action in [Win95CloseAction::NewCity, Win95CloseAction::EditMap] {
+            assert!(win95_close_action_needs_prompt(&action, AppMode::CityView));
+            assert!(!win95_close_action_needs_prompt(&action, AppMode::EditNewMap));
+        }
+        assert!(win95_close_action_needs_prompt(&Win95CloseAction::Quit, AppMode::EditNewMap));
+    }
 }
 
 fn confirm_return_to_title(window: &sdl3::video::Window) -> bool {
@@ -663,4 +1136,181 @@ fn confirm_return_to_title(window: &sdl3::video::Window) -> bool {
         let _ = window;
         true
     }
+}
+
+pub(super) fn update_mac_city_music(
+    state: &mut ViewerState,
+    player: &mut Option<crate::title_music::CityMusic>,
+    profile: &AssetProfile,
+) {
+    state.mac_music_callback_with_playback(
+        mac_tick_count(), player,
+        |player| player.as_ref().is_some_and(crate::title_music::CityMusic::song_active),
+        |player, song| {
+            if let Some(player) = player {
+                player.request_original_song(profile, song);
+            }
+            mac_tick_count()
+        },
+    );
+}
+
+#[cfg(test)]
+pub(super) fn open_city_document(
+    state: &mut ViewerState,
+    path: &std::path::Path,
+    size: (u32, u32),
+    scale: f32,
+    music_callback: impl FnMut(&mut ViewerState),
+    finish: impl FnOnce(&ViewerState),
+) -> Result<()> {
+    open_city_document_with_title_tail(state, path, size, scale, true, false, music_callback, finish)
+}
+
+#[cfg(test)]
+mod music_open_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn invalid_city_open_skips_completion_and_returns_to_title_after_replacement() {
+        let root = std::env::temp_dir().join(format!("citygame-invalid-open-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let bad = root.join("broken.sc2");
+        std::fs::write(&bad, b"not a city").unwrap();
+        let city = crate::city::City::new_blank(root.join("current.sc2"), "Current").unwrap();
+        let mut state = crate::app::tests::test_state(city);
+        let path = state.city.path.clone();
+        let funds = state.city.city_funds();
+        let callbacks = RefCell::new(Vec::new());
+        let result = open_direct_city_document(&mut state, &bad, (640, 480), 1.0,
+            |_: &mut ViewerState| callbacks.borrow_mut().push("music"),
+            |_: &ViewerState| callbacks.borrow_mut().push("finish"));
+        assert!(result.unwrap_err().downcast_ref::<crate::city::NotIffCityFile>().is_some());
+        assert_eq!(state.city.path, path);
+        assert_eq!(state.city.name, "Current");
+        assert_eq!(state.city.city_funds(), funds);
+        assert!(callbacks.borrow().is_empty());
+        std::fs::write(&bad, b"FORM\0\0\0\x04ILBM").unwrap();
+        let result = open_direct_city_document(&mut state, &bad, (640, 480), 1.0,
+            |_: &mut ViewerState| callbacks.borrow_mut().push("music"),
+            |_: &ViewerState| callbacks.borrow_mut().push("finish"));
+        assert!(result.unwrap_err().downcast_ref::<crate::city::WrongIffCityType>().is_some());
+        assert_eq!(state.city.path, path);
+        assert!(callbacks.borrow().is_empty());
+        let mut input = InputState::new();
+        return_to_title_after_failed_replacement(&mut input);
+        assert!(!input.running);
+        assert!(input.return_to_title);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn not_iff_error_handles_partial_legacy_and_form_headers() {
+        let path = std::path::Path::new("fixture.sc2");
+        for bytes in [vec![], vec![0; 0x6a70], b"FORMxxxxxxxx".to_vec()] {
+            let error = crate::city::detect_city_kind(path, &bytes).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::NotIffCityFile>().is_none());
+        }
+        let error = crate::city::detect_city_kind(path, b"invalid city fixture\n").unwrap_err();
+        assert!(error.downcast_ref::<crate::city::NotIffCityFile>().is_some());
+        for bytes in [&b"X"[..], &b"FX"[..], &b"FOX"[..]] {
+            let error = crate::city::detect_city_kind(path, bytes).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::NotIffCityFile>().is_some());
+        }
+        // Matching partial FORM prefixes depend on the original stack residue.
+        for bytes in [&b"F"[..], &b"FO"[..], &b"FOR"[..]] {
+            let error = crate::city::detect_city_kind(path, bytes).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::NotIffCityFile>().is_none());
+        }
+    }
+
+    #[test]
+    fn wrong_iff_city_type_handles_partial_type_reads() {
+        let path = std::path::Path::new("fixture.sc2");
+        let wrong = crate::city::detect_city_kind(path, b"FORM\0\0\0\x04ILBM").unwrap_err();
+        assert!(wrong.downcast_ref::<crate::city::WrongIffCityType>().is_some());
+        for bytes in [&b"FORM\0\0\0\x04S"[..], &b"FORM\0\0\0\x04SC"[..], &b"FORM\0\0\0\x04SCD"[..], &b"FORM\0\0\0\x04ILB"[..]] {
+            let error = crate::city::detect_city_kind(path, bytes).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::WrongIffCityType>().is_some());
+        }
+        for bytes in [&b"FORM\0\0\0\x04"[..], &b"NOPE\0\0\0\x04ILBM"[..]] {
+            let error = crate::city::detect_city_kind(path, bytes).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::WrongIffCityType>().is_none());
+        }
+        assert!(crate::city::detect_city_kind(path, b"FORM\0\0\0\x04SCDH").is_ok());
+    }
+
+    #[test]
+    fn win95_header_eof_covers_short_length_words() {
+        let path = std::path::Path::new("fixture.sc2");
+        let header = b"FORM\x12\x34\x56\x78SCDH";
+        for len in [0, 4, 5, 6, 7, 8] {
+            let error = crate::city::detect_city_kind(path, &header[..len]).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::CityReadEof>().is_some(), "length {len}");
+        }
+        for len in [1, 2, 3, 9, 10, 11] {
+            let error = crate::city::detect_city_kind(path, &header[..len]).unwrap_err();
+            assert!(error.downcast_ref::<crate::city::CityReadEof>().is_none(), "length {len}");
+        }
+    }
+
+    #[test]
+    fn title_and_direct_open_service_music_at_their_native_boundaries() {
+        let path = std::env::temp_dir().join(format!("citygame-music-open-{}.sc2", std::process::id()));
+        let mut city = crate::city::City::new_blank(&path, "Music open").unwrap();
+        city.save(&path).unwrap();
+        for title in [false, true] {
+            let mut state = crate::app::tests::test_state(city.clone());
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            let calls = RefCell::new(Vec::new());
+            let music = |_: &mut ViewerState| calls.borrow_mut().push("music");
+            let finish = |_: &ViewerState| calls.borrow_mut().push("finish");
+            if title {
+                open_city_document(&mut state, &path, (640, 480), 1.0, music, finish).unwrap();
+                assert_eq!(*calls.borrow(), ["music", "finish", "music"]);
+            } else {
+                open_direct_city_document(&mut state, &path, (640, 480), 1.0, music, finish).unwrap();
+                assert_eq!(*calls.borrow(), ["music", "finish"]);
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+fn open_direct_city_document(
+    state: &mut ViewerState,
+    path: &std::path::Path,
+    size: (u32, u32),
+    scale: f32,
+    music_callback: impl FnMut(&mut ViewerState),
+    finish: impl FnOnce(&ViewerState),
+) -> Result<()> {
+    open_city_document_with_title_tail(state, path, size, scale, false, false, music_callback, finish)
+}
+
+fn open_city_document_with_title_tail(
+    state: &mut ViewerState,
+    path: &std::path::Path,
+    size: (u32, u32),
+    scale: f32,
+    title_tail: bool,
+    scenario_open: bool,
+    mut music_callback: impl FnMut(&mut ViewerState),
+    finish: impl FnOnce(&ViewerState),
+) -> Result<()> {
+    if scenario_open {
+        state.load_win_scenario(path, size, scale)?;
+    } else {
+        state.load_city(path, size, scale)?;
+    }
+    // CODE 4 enters CODE 2's city-window mode after restoring SCDH.
+    music_callback(state);
+    finish(state);
+    // CODE 5's title-choice handler services music after its load branch.
+    if title_tail {
+        music_callback(state);
+    }
+    Ok(())
 }

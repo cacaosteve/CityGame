@@ -524,6 +524,75 @@ fn pack_atlas(tiles: &[DecodedTile]) -> Result<(RgbaImage, AtlasManifest)> {
 }
 
 fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
+    // The original reset loads reserved XLAB names from the executable's
+    // localized RT_STRING resources. Store only data from the user's copy.
+    if let Some(executable) = find_case_insensitive(source, &["SIMCITY.EXE"]) {
+        if let Ok(messages) = fs::read(&executable)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::win95_resources::read_error_strings(&bytes))
+        {
+            let directory = output.join("catalog/data");
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("win95-read-error.json"), serde_json::to_vec(&messages)?)?;
+        }
+        if let Ok(message) = fs::read(&executable)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::win95_resources::wrong_iff_city_type_string(&bytes))
+        {
+            let directory = output.join("catalog/data");
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("win95-wrong-iff-city-type.json"), serde_json::to_vec(&message)?)?;
+        }
+        if let Ok(message) = fs::read(&executable)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::win95_resources::not_iff_string(&bytes))
+        {
+            let directory = output.join("catalog/data");
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("win95-not-iff.json"), serde_json::to_vec(&message)?)?;
+        }
+        if let Ok(message) = fs::read(&executable)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::win95_resources::city_open_failure_string(&bytes))
+        {
+            let directory = output.join("catalog/data");
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("win95-city-open-failure.json"), serde_json::to_vec(&message)?)?;
+        }
+        if let Ok(feedback) = fs::read(&executable)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::win95_resources::save_feedback_strings(&bytes))
+        {
+            let directory = output.join("catalog/data");
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("win95-save-feedback.json"), serde_json::to_vec(&feedback)?)?;
+        }
+        match fs::read(&executable)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::win95_resources::new_city_reserved_labels(&bytes))
+        {
+            Ok(labels) => {
+                let directory = output.join("catalog/data");
+                fs::create_dir_all(&directory)?;
+                fs::write(
+                    directory.join("win95-new-city-labels.json"),
+                    serde_json::to_vec(&labels)?,
+                )?;
+            }
+            Err(error) => log::warn!("could not extract Win95 new-city labels: {error:#}"),
+        }
+    }
+    // Keep each archive member independently. A partial original installation
+    // is observably different depending on which of the two opens fails first.
+    for name in ["DATA_USA.DAT", "DATA_USA.IDX"] {
+        if let Some(source) = find_case_insensitive(source, &["DATA", name]).filter(|p| p.is_file()) {
+            let destination = output.join("catalog/data");
+            fs::create_dir_all(&destination)
+                .with_context(|| format!("creating {}", destination.display()))?;
+            fs::copy(&source, destination.join(name))
+                .with_context(|| format!("copying {}", source.display()))?;
+        }
+    }
     for (source_name, dest_name, extensions) in [
         ("CITIES", "cities", &["SC2"][..]),
         ("SCENARIO", "scenarios", &["SCN"][..]),
@@ -794,6 +863,8 @@ mod tests {
         let mut dat = vec![0, 1, 0x04, 0xbb, 0, 0, 0, 12, 0, 1, 0, 2];
         dat.extend_from_slice(&[6, 2, 0, 0, 2, 0, 7, 7]);
         fs::write(source.join("Data/large.dat"), dat).unwrap();
+        fs::write(source.join("Data/data_usa.dat"), b"local newspaper data").unwrap();
+        fs::write(source.join("Data/DaTa_UsA.IdX"), b"local newspaper index").unwrap();
         fs::write(source.join("Sounds/10018.mid"), b"MIDI fixture").unwrap();
 
         import(&source, &output).unwrap();
@@ -802,9 +873,74 @@ mod tests {
         assert!(output.join("win95_tiles/SMALLMED/atlas.json").is_file());
         assert!(output.join("win95_tiles/SPECIAL/atlas.json").is_file());
         assert!(output.join("catalog/sounds/10018.MID").is_file());
+        assert_eq!(
+            fs::read(output.join("catalog/data/DATA_USA.DAT")).unwrap(),
+            b"local newspaper data"
+        );
+        assert_eq!(
+            fs::read(output.join("catalog/data/DATA_USA.IDX")).unwrap(),
+            b"local newspaper index"
+        );
         crate::asset_catalog::Catalog::load(std::slice::from_ref(&output)).unwrap();
 
         fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn preserves_each_available_newspaper_archive_member() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-partial-pe-data-{}-{nonce}", std::process::id()));
+        for (dat, idx) in [(false, false), (true, false), (false, true), (true, true)] {
+            let source = root.join(format!("source-{dat}-{idx}"));
+            let output = root.join(format!("output-{dat}-{idx}"));
+            fs::create_dir_all(source.join("Data")).unwrap();
+            if dat { fs::write(source.join("Data/data_usa.dat"), b"dat").unwrap(); }
+            if idx { fs::write(source.join("Data/data_usa.idx"), b"idx").unwrap(); }
+            copy_catalog(&source, &output).unwrap();
+            for (name, present, expected) in [("DATA_USA.DAT", dat, &b"dat"[..]), ("DATA_USA.IDX", idx, &b"idx"[..])] {
+                let path = output.join("catalog/data").join(name);
+                assert_eq!(path.is_file(), present, "{name}");
+                if present { assert_eq!(fs::read(path).unwrap(), expected); }
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a locally supplied original Win95 installation"]
+    fn catalog_imports_new_city_resource_labels() {
+        let source = PathBuf::from(std::env::var_os("CITYGAME_WIN95_INSTALL").unwrap());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("citygame-win95-catalog-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&output).unwrap();
+        copy_catalog(&source, &output).unwrap();
+        let labels: [String; 5] = serde_json::from_slice(
+            &fs::read(output.join("catalog/data/win95-new-city-labels.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(labels, ["Llamas", "Alpacas", "Camels", "Dromedaries", "Army Ants"]);
+        let feedback: [String; 2] = serde_json::from_slice(
+            &fs::read(output.join("catalog/data/win95-save-feedback.json")).unwrap(),
+        ).unwrap();
+        let executable = fs::read(source.join("simcity.exe")).unwrap();
+        assert_eq!(feedback, crate::win95_resources::save_feedback_strings(&executable).unwrap());
+        let open_failure: String = serde_json::from_slice(
+            &fs::read(output.join("catalog/data/win95-city-open-failure.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(open_failure, crate::win95_resources::city_open_failure_string(&executable).unwrap());
+        let not_iff: String = serde_json::from_slice(
+            &fs::read(output.join("catalog/data/win95-not-iff.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(not_iff, crate::win95_resources::not_iff_string(&executable).unwrap());
+        let wrong_type: String = serde_json::from_slice(
+            &fs::read(output.join("catalog/data/win95-wrong-iff-city-type.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(wrong_type, crate::win95_resources::wrong_iff_city_type_string(&executable).unwrap());
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
@@ -824,6 +960,19 @@ mod tests {
         ));
         import(&source, &output).unwrap();
         crate::asset_profile::validate_original_pack(&output).unwrap();
+        if let (Some(data), Some(index)) = (
+            find_case_insensitive(&source, &["DATA", "DATA_USA.DAT"]),
+            find_case_insensitive(&source, &["DATA", "DATA_USA.IDX"]),
+        ) {
+            assert_eq!(
+                fs::read(data).unwrap(),
+                fs::read(output.join("catalog/data/DATA_USA.DAT")).unwrap()
+            );
+            assert_eq!(
+                fs::read(index).unwrap(),
+                fs::read(output.join("catalog/data/DATA_USA.IDX")).unwrap()
+            );
+        }
         let catalog = crate::asset_catalog::Catalog::load(std::slice::from_ref(&output)).unwrap();
         assert!(
             catalog.assets.len() > 1000,

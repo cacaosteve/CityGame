@@ -125,11 +125,38 @@ impl City {
         self.traffic_overlays.as_deref_mut()
     }
 
+    /// PE 0x44cdb5 clears the first two bytes of each XTHG slot and
+    /// leaves the remaining bytes in the process-owned table intact.
+    pub(crate) fn reset_pe_new_city_overlay_backing(&mut self, source: &[Win95OverlayRecord]) {
+        if source.len() != crate::win95_overlay::XTHG_RECORD_COUNT {
+            return;
+        }
+        let mut records = source.to_vec();
+        for record in &mut records {
+            record.kind = 0;
+            record.lane = 0;
+        }
+        self.traffic_overlays = Some(records);
+    }
+
+    pub(crate) fn restore_pe_overlay_backing(&mut self, source: &[Win95OverlayRecord]) {
+        if source.len() == crate::win95_overlay::XTHG_RECORD_COUNT {
+            self.traffic_overlays = Some(source.to_vec());
+        }
+    }
+
     /// Write one native Mac XTHG slot while marking the city as changed.
     pub(crate) fn set_mac_object_slot_record(&mut self, slot: usize, record: Win95OverlayRecord) {
-        if let Some(target) = self.mac_object_slot_records_mut().get_mut(slot) {
-            *target = record;
-            self.modified = true;
+        let Some(old) = self.mac_object_slot_records_mut().get(slot).copied() else { return; };
+        self.mac_object_slot_records_mut()[slot] = record;
+        self.modified = true;
+        if old != record {
+            for actor in [old, record] {
+                let (x, y) = (usize::from(actor.tile_x), usize::from(actor.tile_y));
+                if actor.kind != 0 && x < CITY_WIDTH && y < CITY_HEIGHT {
+                    self.mark_dirty(x, y);
+                }
+            }
         }
     }
 

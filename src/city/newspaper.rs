@@ -16,7 +16,85 @@ pub(super) enum PeNewspaperStorage {
     Runtime(Box<PeNewspaperTables>),
 }
 
+/// CODE 7 stores each eight-byte Mac record as six expanded MISC dwords.
+const MAC_STORY_QUEUE_OFFSET: usize = 0x0ec8;
+const MAC_STORY_FIELDS: usize = 6;
+const MAC_STORY_ACTIVE: usize = 7;
+
 impl City {
+    pub(crate) fn mac_story_record(&self, index: usize) -> [u32; MAC_STORY_FIELDS] {
+        std::array::from_fn(|field| {
+            let slot = index * MAC_STORY_FIELDS + field;
+            self.mac_story_runtime.as_ref().map(|table| table[slot]).unwrap_or_else(||
+                self.mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * slot).unwrap_or(0))
+        })
+    }
+
+    fn write_mac_story_record(&mut self, index: usize, record: [u32; MAC_STORY_FIELDS]) {
+        if self.kind.is_win95() {
+            if self.mac_story_runtime.is_none() {
+                self.mac_story_runtime = Some(Box::new(std::array::from_fn(|slot|
+                    self.mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * slot).unwrap_or(0))));
+            }
+            self.mac_story_runtime.as_mut().unwrap()[index * MAC_STORY_FIELDS..(index + 1) * MAC_STORY_FIELDS].copy_from_slice(&record);
+            return;
+        }
+        for (field, value) in record.into_iter().enumerate() {
+            self.set_mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * (index * MAC_STORY_FIELDS + field), value);
+        }
+    }
+
+    pub(crate) fn set_mac_story_choices(&mut self, index: usize, choices: [u8; 3]) {
+        let mut row = self.mac_story_record(index);
+        for (field, value) in row[3..6].iter_mut().zip(choices) { *field = u32::from(value); }
+        self.write_mac_story_record(index, row);
+    }
+
+    /// CODE 7 `0x334ce..0x33508`: refresh the weather and opinion story
+    /// selectors for this paper, retaining their existing choice caches.
+    pub(crate) fn prepare_mac_newspaper_open_rows(&mut self, page: usize) -> Option<()> {
+        if page >= 6 { return None; }
+        let paper_type = self.mac_state_misc_u32_at(MISC_NEWSPAPER_PAPER_LIST_OFFSET + page * 20 + 12)? as u8;
+        let selector = *[42u32, 43, 43, 44, 44, 45].get(usize::from(paper_type))?;
+        let mut weather = self.mac_story_record(7);
+        weather[0] = 0;
+        weather[2] = self.mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET).unwrap_or(0) as u8 as u32;
+        self.write_mac_story_record(7, weather);
+        let mut opinion = self.mac_story_record(8);
+        opinion[0] = selector;
+        opinion[2] = u32::from(self.mac_opinion_order[0] as u8);
+        self.write_mac_story_record(8, opinion);
+        Some(())
+    }
+
+    /// CODE 7 export 234 inserts into seven priority-ordered Mac story records.
+    /// The UI refresh triggered by some selectors is handled separately.
+    pub(crate) fn queue_mac_newspaper_story(&mut self, selector: u16, parameter: u8) {
+        let Some(&priority) = PE_NEWSPAPER_STORY_PRIORITIES.get(usize::from(selector)) else { return; };
+        let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] = std::array::from_fn(|i| self.mac_story_record(i));
+        let mut insert = 6;
+        while insert > 0 && (priority as i16) >= (records[insert - 1][1] as u16 as i16) {
+            records[insert] = records[insert - 1]; insert -= 1;
+        }
+        records[insert] = [u32::from(selector), u32::from(priority), u32::from(parameter), 255, 255, 255];
+        for (i, record) in records.into_iter().enumerate() { self.write_mac_story_record(i, record); }
+    }
+
+    /// CODE 7 export 235 ages and sorts the seven active records before phase 21 inserts.
+    pub(crate) fn age_mac_newspaper_story_queue(&mut self) {
+        let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] = std::array::from_fn(|i| self.mac_story_record(i));
+        for record in &mut records {
+            let selector = record[0] as u16 as i16;
+            let Some(decay) = usize::try_from(selector).ok().and_then(|i| PE_NEWSPAPER_STORY_DECAY.get(i)).copied() else { continue; };
+            let priority = record[1] as u16;
+            record[1] = if decay >= priority { 0 } else { i32::from((priority - decay) as i16) as u32 };
+        }
+        for left in 0..6 { for right in left+1..7 {
+            if (records[left][1] as u16 as i16) < (records[right][1] as u16 as i16) { records.swap(left, right); }
+        }}
+        for (i, record) in records.into_iter().enumerate() { self.write_mac_story_record(i, record); }
+    }
+
     /// Read the live Win95 newspaper tables without interpreting Mac MISC.
     pub(crate) fn pe_newspaper_tables(&self) -> Option<PeNewspaperTables> {
         if let PeNewspaperStorage::Runtime(tables) = &self.pe_newspaper_storage {
@@ -238,6 +316,65 @@ impl City {
         values.get(slot * NEWSPAPER_STORY_MISC_FIELDS + 1).copied()
     }
 
+    /// The PE story table has two WORDs followed by four mutable bytes.
+    /// Loading from MISC truncates the serialized DWORD entries to these widths.
+    pub(crate) fn pe_newspaper_text_row(
+        &self,
+        slot: usize,
+    ) -> Option<(i16, crate::win95_newspaper::PeHeadlineState)> {
+        let values = self.pe_newspaper_story_values();
+        let start = slot.checked_mul(NEWSPAPER_STORY_MISC_FIELDS)?;
+        let row = values.get(start..start.checked_add(NEWSPAPER_STORY_MISC_FIELDS)?)?;
+        Some((
+            row[0] as i16,
+            crate::win95_newspaper::PeHeadlineState {
+                param: row[2] as u8,
+                choice_b: row[3] as u8,
+                choice_a: row[4] as u8,
+                number: row[5] as u8,
+            },
+        ))
+    }
+
+    /// Commit generated text choices without changing the story ID or priority.
+    pub(crate) fn set_pe_newspaper_text_row(
+        &mut self,
+        slot: usize,
+        state: crate::win95_newspaper::PeHeadlineState,
+    ) -> Option<()> {
+        let mut values = self.pe_newspaper_story_values();
+        let start = slot.checked_mul(NEWSPAPER_STORY_MISC_FIELDS)?;
+        let row = values.get_mut(start..start.checked_add(NEWSPAPER_STORY_MISC_FIELDS)?)?;
+        row[2..6].copy_from_slice(&[
+            u32::from(state.param),
+            u32::from(state.choice_b),
+            u32::from(state.choice_a),
+            u32::from(state.number),
+        ]);
+        self.write_pe_newspaper_story_values(&values);
+        Some(())
+    }
+
+    /// PE `0x4779d1..0x477a28`: set weather and opinion headline rows after
+    /// the opening poll. Existing priorities and generated choices survive.
+    pub(crate) fn prepare_pe_newspaper_open_rows(&mut self, paper: usize) -> Option<()> {
+        let tables = self.pe_newspaper_tables()?;
+        let paper_type = *tables.papers.get(paper.checked_mul(5)?.checked_add(3)?)? as u8;
+        let headline = *[42u32, 43, 43, 44, 44, 45].get(usize::from(paper_type))?;
+        let mut stories = self.pe_newspaper_story_values();
+        if stories.len() != NEWSPAPER_STORY_LIST_MISC_DWORDS {
+            return None;
+        }
+        let weather_row = 7 * NEWSPAPER_STORY_MISC_FIELDS;
+        let opinion_row = 8 * NEWSPAPER_STORY_MISC_FIELDS;
+        stories[weather_row] = 0;
+        stories[weather_row + 2] = u32::from(self.pe_b_weather_trend);
+        stories[opinion_row] = headline;
+        stories[opinion_row + 2] = u32::from(self.pe_opinion_order[0] as u8);
+        self.write_pe_newspaper_story_values(&stories);
+        Some(())
+    }
+
     pub fn pe_mayor_approval(&self) -> u16 {
         self.pe_mayor_approval
     }
@@ -378,17 +515,35 @@ impl City {
             self.pe_city_crime,
             self.pe_city_pollution,
         );
+        self.pe_opinion_counts = [0; 7];
+        self.pe_opinion_order = [0, 1, 2, 3, 4, 5, 6];
         if total == 0 || self.pe_dw_city_population < 100 {
             return false;
         }
         // PE tests the WORD total for zero, then sign-extends it into IDIV's divisor.
         let divisor = i32::from(total as i16);
         let previous = self.pe_mayor_approval;
-        self.pe_mayor_approval = sample_opinion_poll(&weights, || {
+        let (approval, counts) = sample_opinion_poll(&weights, || {
             // `and eax,0xffff; cdq; idiv edi`; the remainder is compared as a signed WORD.
             (i32::from(rng.random_u16()) % divisor) as i16
         });
+        self.pe_mayor_approval = approval;
+        self.pe_opinion_order
+            .sort_by_key(|&index| std::cmp::Reverse(counts[usize::from(index)]));
+        self.pe_opinion_counts = self
+            .pe_opinion_order
+            .map(|index| counts[usize::from(index)]);
         (previous as i16) < 80 && self.pe_mayor_approval >= 80
+    }
+
+    pub(crate) fn pe_opinion_poll_results(&self) -> ([u16; 7], [u16; 7]) {
+        (self.pe_opinion_counts, self.pe_opinion_order)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_pe_opinion_poll_results_for_test(&mut self, counts: [u16; 7]) {
+        self.pe_opinion_counts = counts;
+        self.pe_opinion_order = [0, 1, 2, 3, 4, 5, 6];
     }
 
     /// CODE 4 restores the Extra menu flag from the low byte of its saved dword.
@@ -424,6 +579,8 @@ impl City {
     /// Carry the process-owned poll state when replacing a city document.
     pub(crate) fn inherit_mac_newspaper_state(&mut self, previous: &Self) {
         self.mac_mayor_approval = previous.mac_mayor_approval;
+        self.mac_opinion_counts = previous.mac_opinion_counts;
+        self.mac_opinion_order = previous.mac_opinion_order;
         self.mac_newspaper_suppressed = previous.mac_newspaper_suppressed;
     }
 
@@ -431,11 +588,18 @@ impl City {
         self.mac_newspaper_suppressed = suppressed;
     }
 
+    pub(crate) fn mac_newspaper_suppressed(&self) -> bool {
+        self.mac_newspaper_suppressed
+    }
+
     /// CODE 7 export 233 gates the poll at `0x35d42` on application activity.
     pub(crate) fn mac_poll_for_newspaper(&mut self, mut random_word: impl FnMut() -> u16) {
-        if self.mac_newspaper_suppressed || self.mac_state_misc_u32_at(0x102c).unwrap_or(0) < 100 {
+        if self.mac_newspaper_suppressed {
             return;
         }
+        self.mac_opinion_counts = [0; 7];
+        self.mac_opinion_order = [0, 1, 2, 3, 4, 5, 6];
+        if self.mac_state_misc_u32_at(0x102c).unwrap_or(0) < 100 { return; }
         const VALUES_PER_SERIES: usize = 52;
         let history = self.chunk_u32_values(
             "XGRP",
@@ -458,9 +622,15 @@ impl City {
         );
         if total != 0 {
             // Mac DIVU.W uses the unsigned total, with signed bucket comparisons.
-            self.mac_mayor_approval =
-                sample_opinion_poll(&weights, || (random_word() % total) as i16);
+            let (approval, counts) = sample_opinion_poll(&weights, || (random_word() % total) as i16);
+            self.mac_mayor_approval = approval;
+            self.mac_opinion_order.sort_by_key(|&index| std::cmp::Reverse(counts[usize::from(index)]));
+            self.mac_opinion_counts = self.mac_opinion_order.map(|index| counts[usize::from(index)]);
         }
+    }
+
+    pub(crate) fn mac_opinion_poll_results(&self) -> (u16, [u16; 7], [u16; 7]) {
+        (self.mac_mayor_approval, self.mac_opinion_counts, self.mac_opinion_order)
     }
 
     /// Win95 `RecalculateMayorsHouseStats` (`0x414b40` / thunk `0x40247d`).
@@ -710,19 +880,24 @@ pub fn pe_opinion_poll_weights(
     (weights, total)
 }
 
-fn sample_opinion_poll(weights: &[u16; 7], mut next_remainder: impl FnMut() -> i16) -> u16 {
+fn sample_opinion_poll(
+    weights: &[u16; 7],
+    mut next_remainder: impl FnMut() -> i16,
+) -> (u16, [u16; 7]) {
     let mut approval = 0;
+    let mut counts = [0u16; 7];
     'sample: for _ in 0..100 {
         let mut remainder = next_remainder();
-        for &weight in weights {
+        for (index, &weight) in weights.iter().enumerate() {
             if remainder < weight as i16 {
+                counts[index] += 1;
                 continue 'sample;
             }
             remainder = remainder.wrapping_sub(weight as i16);
         }
         approval += 1;
     }
-    approval
+    (approval, counts)
 }
 
 impl City {

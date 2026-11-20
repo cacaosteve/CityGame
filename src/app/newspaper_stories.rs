@@ -61,7 +61,11 @@ pub(super) fn pe_disaster_end_summary_headline(edition: NewspaperEdition, story_
     let label = pe_disaster_end_summary_label(story_id).unwrap_or("Disaster");
     match edition {
         NewspaperEdition::Extra => format!("Extra: {label} Contained"),
-        NewspaperEdition::Courier | NewspaperEdition::Subscription | NewspaperEdition::Founding => {
+        NewspaperEdition::Courier
+        | NewspaperEdition::Subscription
+        | NewspaperEdition::Founding
+        | NewspaperEdition::MacStandard
+        | NewspaperEdition::MacDisaster => {
             format!("{label} Contained")
         }
     }
@@ -79,7 +83,11 @@ pub(super) fn pe_power_plant_aging_headline(edition: NewspaperEdition, param: u8
     let kind = pe_power_plant_type_name(param);
     match edition {
         NewspaperEdition::Extra => format!("Extra: Aging {kind} plant"),
-        NewspaperEdition::Courier | NewspaperEdition::Subscription | NewspaperEdition::Founding => {
+        NewspaperEdition::Courier
+        | NewspaperEdition::Subscription
+        | NewspaperEdition::Founding
+        | NewspaperEdition::MacStandard
+        | NewspaperEdition::MacDisaster => {
             format!("Aging {kind} power plant")
         }
     }
@@ -95,7 +103,11 @@ pub(super) fn pe_power_plant_aging_story(city_name: &str, param: u8) -> String {
 pub(super) fn pe_fund_education_headline(edition: NewspaperEdition) -> String {
     match edition {
         NewspaperEdition::Extra => "Extra: Schools underfunded".to_string(),
-        NewspaperEdition::Courier | NewspaperEdition::Subscription | NewspaperEdition::Founding => {
+        NewspaperEdition::Courier
+        | NewspaperEdition::Subscription
+        | NewspaperEdition::Founding
+        | NewspaperEdition::MacStandard
+        | NewspaperEdition::MacDisaster => {
             "Schools need funding".to_string()
         }
     }
@@ -110,7 +122,11 @@ pub(super) fn pe_fund_education_story(city_name: &str) -> String {
 pub(super) fn pe_prison_overcrowded_headline(edition: NewspaperEdition) -> String {
     match edition {
         NewspaperEdition::Extra => "Extra: Prisons overcrowded".to_string(),
-        NewspaperEdition::Courier | NewspaperEdition::Subscription | NewspaperEdition::Founding => {
+        NewspaperEdition::Courier
+        | NewspaperEdition::Subscription
+        | NewspaperEdition::Founding
+        | NewspaperEdition::MacStandard
+        | NewspaperEdition::MacDisaster => {
             "Prisons overcrowded".to_string()
         }
     }
@@ -123,7 +139,11 @@ pub(super) fn pe_prison_overcrowded_story(city_name: &str) -> String {
 pub(super) fn pe_bridge_collapse_headline(edition: NewspaperEdition) -> String {
     match edition {
         NewspaperEdition::Extra => "Extra: Bridge collapse disrupts traffic".to_string(),
-        NewspaperEdition::Courier | NewspaperEdition::Subscription | NewspaperEdition::Founding => {
+        NewspaperEdition::Courier
+        | NewspaperEdition::Subscription
+        | NewspaperEdition::Founding
+        | NewspaperEdition::MacStandard
+        | NewspaperEdition::MacDisaster => {
             "Bridge collapse disrupts traffic".to_string()
         }
     }
@@ -177,7 +197,11 @@ pub(super) fn pe_health_amenities_newspaper_headline(
     let label = pe_health_amenities_newspaper_label(story_id).unwrap_or("City report");
     match edition {
         NewspaperEdition::Extra => format!("Extra: {label}"),
-        NewspaperEdition::Courier | NewspaperEdition::Subscription | NewspaperEdition::Founding => {
+        NewspaperEdition::Courier
+        | NewspaperEdition::Subscription
+        | NewspaperEdition::Founding
+        | NewspaperEdition::MacStandard
+        | NewspaperEdition::MacDisaster => {
             label.to_string()
         }
     }

@@ -95,6 +95,9 @@ impl ViewerState {
             // its rooted radioactivity/tree gates and PlaceTile effects are
             // replayed. Run this proven map slice on either city container.
             mac_rci_nature_sample(&mut self.city, || self.mac_process_rng.random_i16() as u16);
+            // CODE 8 ages the Mac queue and inserts the monthly baseline here.
+            self.city.age_mac_newspaper_story_queue();
+            self.city.queue_mac_newspaper_story(1, 0);
             // The intervening story gates and any admitted technology poll
             // share the QuickDraw stream with the native weather choice.
             // Preserve that stream order on either city container. For date
@@ -116,8 +119,11 @@ impl ViewerState {
                 .advance_mac_national_economy_month(&mut self.mac_process_rng);
             self.city
                 .advance_mac_neighbor_economy_month(&mut self.mac_process_rng);
-            self.city
-                .advance_mac_industry_mix_month(&mut self.mac_process_rng);
+            self.city.advance_mac_industry_mix_month(
+                &mut self.mac_process_rng,
+                &mut self.mac_app_lfsr,
+                self.game_clock.year(),
+            );
             self.city
                 .advance_mac_cohorts_month(&mut self.mac_process_rng);
             // The last phase-21 helper publishes the saved riot-gate ratio
@@ -234,6 +240,12 @@ impl ViewerState {
     }
 
     pub(super) fn sim_calendar_day23_stats_dialogs(&mut self) {
+        if !self.engine_fidelity.uses_win95() {
+            // CODE 12's phase-23 map refresh precedes three CODE 14
+            // palette calls and window refreshes.
+            self.redraw_mac_map();
+            self.advance_mac_presentation_palettes();
+        }
         // Win95 UpdatePopulationDialog / UpdateIndustryDialog / UpdateGraphDialog
         // (`0x401087` view invalidates 0x80 / 0xa0 / 0x98). UI-only; XGRP samples
         // were appended on day 21 by `UpdateGraphData`.
@@ -257,6 +269,7 @@ impl ViewerState {
     pub(super) fn sim_calendar_day24_ui_chrome(&mut self) -> u32 {
         if !self.engine_fidelity.uses_win95() {
             // Mac phase 24 runs its own proposal worker after presentation.
+            self.advance_mac_presentation_palettes();
             return 0;
         }
         let newly_available = self.refresh_reward_availability();

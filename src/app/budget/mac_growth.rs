@@ -524,10 +524,16 @@ pub(in crate::app) fn mac_budget_place_generic_rotated_edge(
     rng: &mut MacToolboxRng,
 ) {
     let marker = city.zone_at(x, y).map_or(0, |zone| zone.raw_bits() & 0xf0);
-    // The XZON corner marker already records the map-oriented placement
-    // orientation. The native helper consumes it directly; subtracting the
-    // saved city rotation here rotates the anchors a second time.
-    let offsets = match marker {
+    // CODE 8 FUN_000378c6 rotates the marker relative to its saved view
+    // orientation. Rotation 3 is the identity mapping for these anchors.
+    let adjusted = match marker {
+        0x10 | 0x20 | 0x40 | 0x80 => {
+            let index = marker.trailing_zeros() - 4;
+            0x10u8 << ((index + 3 - u32::from(city.saved_rotation() & 3)) & 3)
+        }
+        _ => marker,
+    };
+    let offsets = match adjusted {
         // FUN_000378c6's marker-selected four single-cell placement anchors.
         0x10 => [(-1, 1), (0, 1), (0, 0), (-1, 0)],
         0x20 => [(-1, 0), (0, 0), (0, -1), (-1, -1)],

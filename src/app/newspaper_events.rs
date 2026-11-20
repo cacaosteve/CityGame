@@ -187,12 +187,17 @@ pub(super) fn pe_rci_demand_updates_neighbor_fame_newspaper_4689c8(
 }
 
 impl ViewerState {
-    /// Presentation-only welcome edition: no PE paper-list writes in Mac-layout saves.
+    /// Complete the new-city founding event when the city view becomes active.
     pub(super) fn maybe_show_founding_newspaper(&mut self) {
         if !self.founding_newspaper_pending || self.mode != crate::city::AppMode::CityView {
             return;
         }
         self.founding_newspaper_pending = false;
+        if self.engine_fidelity.uses_win95() {
+            // PE 0x42e726 pushes (story 2, parameter 0) into the same
+            // priority-ordered queue used by later newspaper events.
+            self.city.queue_pe_newspaper_story(2, 0);
+        }
         if self.menu_checks.citygame_newspaper {
             self.open_city_info_dialog(CityInfoDialog::Newspaper(NewspaperEdition::Founding));
         }

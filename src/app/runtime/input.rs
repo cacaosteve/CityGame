@@ -1,6 +1,7 @@
 //! Input dispatch for the main window and floating/docked Tools palette.
 
 use super::super::CityInfoDialog;
+use crate::app::dialogs::city_info_dialog_rect_for_engine;
 use super::super::map_interaction::{
     handle_map_left_pointer_down, release_map_tools, update_map_paint_pointer_motion,
 };
@@ -9,12 +10,15 @@ use super::*;
 pub(super) struct InputState {
     pub(super) running: bool,
     pub(super) return_to_title: bool,
+    pub(super) close_save_pending: Option<Win95CloseAction>,
+    pub(super) win95_file_dialog_pending: Option<Win95FileDialog>,
     pub(super) dragging: bool,
     pub(super) painting: bool,
     pub(super) paint_tile: Option<(usize, usize)>,
     pub(super) shift_down: bool,
     pub(super) mouse_pos: Vec2,
     pub(super) touch: TouchTracker,
+    pub(super) fiscal_notice_mouse_down: bool,
     pub(super) map_touch: MapTouchArbiter,
     pub(super) docked_palette: DockedPalette,
     info_preview: Option<(Vec2, Vec2, Vec2, Vec2, bool)>,
@@ -26,17 +30,28 @@ impl InputState {
         Self {
             running: true,
             return_to_title: false,
+            close_save_pending: None,
+            win95_file_dialog_pending: None,
             dragging: false,
             painting: false,
             paint_tile: None,
             shift_down: false,
             mouse_pos: Vec2::ZERO,
             touch: TouchTracker::new(),
+            fiscal_notice_mouse_down: false,
             map_touch: MapTouchArbiter::new(),
             docked_palette: DockedPalette::new(),
             info_preview: None,
             lifecycle: AppLifecycle::new(),
         }
+    }
+
+    pub(super) fn blocking_file_dialog(&self) -> bool {
+        self.close_save_pending.is_some() || self.win95_file_dialog_pending.is_some()
+    }
+
+    pub(super) fn holds_pe_idle_for_common_dialog(&self) -> bool {
+        self.close_save_pending.is_some() || matches!(self.win95_file_dialog_pending, Some(Win95FileDialog::City | Win95FileDialog::SaveAs))
     }
 }
 
@@ -101,6 +116,158 @@ mod preview_tests {
         assert_eq!(state.info_panel_scale, 1.0);
         assert_eq!(state.info_panel_origin, None);
     }
+
+    #[test]
+    fn mac_palette_rotation_music_matches_two_native_lcg_boundaries() {
+        let city = City::new_blank("/tmp/palette-music.sc2", "Palette music").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.music_enabled = true;
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc40e_094b);
+        assert!(mac_palette_has_post_action_music(UiAction::RotateViewCcw));
+        assert!(!mac_palette_has_post_action_music(UiAction::CenterMap));
+
+        // The Quadra's two selector entries around this rotation had ticks
+        // 6249/6251 and game-LCG states c40e094b/fbd0ff28/66ab0441.
+        assert_eq!(state.mac_music_callback(6249, true), None);
+        assert_eq!(state.mac_game_rng.state(), 0xfbd0_ff28);
+        state.handle_ui_action_state(UiAction::RotateViewCcw);
+        assert_eq!(state.mac_music_callback(6251, true), None);
+        assert_eq!(state.mac_game_rng.state(), 0x66ab_0441);
+
+        state.music_enabled = false;
+        state.mac_music_callback(6252, true);
+        assert_eq!(state.mac_game_rng.state(), 0x66ab_0441);
+        state.engine_fidelity = EngineFidelity::Win95;
+        state.music_enabled = true;
+        state.mac_music_callback(6253, true);
+        assert_eq!(state.mac_game_rng.state(), 0x66ab_0441);
+    }
+
+    #[test]
+    fn palette_music_service_uses_the_mac_game_stream_in_city_and_editor() {
+        let city = City::new_blank("/tmp/palette-music-service.sc2", "Palette music").unwrap();
+        let mut state = test_state(city);
+        let profile = crate::asset_profile::AssetProfile::load_from(
+            std::env::temp_dir().join(format!("citygame-palette-music-{}.json", std::process::id())),
+        ).unwrap();
+        let mut music = None;
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.music_enabled = true;
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0x4724_20c5);
+        service_mac_palette_music(&mut state, &mut music, &profile);
+        assert_eq!(state.mac_game_rng.state(), 0xa9bc_2a1a);
+
+        state.engine_fidelity = EngineFidelity::Win95;
+        service_mac_palette_music(&mut state, &mut music, &profile);
+        assert_eq!(state.mac_game_rng.state(), 0xa9bc_2a1a);
+        let city = City::new_blank("/tmp/palette-editor-music.sc2", "Music").expect("blank");
+        let mut editor = test_state(city);
+        editor.engine_fidelity = EngineFidelity::Mac68k;
+        editor.mode = AppMode::EditNewMap;
+        editor.music_enabled = true;
+        editor.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0x4724_20c5);
+        service_mac_palette_music(&mut editor, &mut music, &profile);
+        assert_eq!(editor.mac_game_rng.state(), 0xa9bc_2a1a);
+    }
+}
+
+/// Feed one SDL input to the native-style fiscal notice. Returns true for
+/// input events consumed by the notice, including events it does not dismiss.
+pub(super) fn handle_mac_fiscal_notice_input(state: &mut ViewerState, event: &Event) -> bool {
+    let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() else { return false; };
+    match event {
+        Event::KeyDown { repeat: false, .. } => notice.dismissed = true,
+        Event::MouseButtonDown { .. } | Event::FingerDown { .. } => {
+            notice.dismissed = true;
+            notice.button_down = true;
+        }
+        Event::MouseButtonUp { .. } | Event::FingerUp { .. } => notice.button_down = false,
+        Event::KeyDown { .. } | Event::MouseMotion { .. } | Event::MouseWheel { .. }
+        | Event::FingerMotion { .. } | Event::KeyUp { .. } | Event::TextInput { .. } => {}
+        _ => return false,
+    }
+    true
+}
+
+/// Keep physical touch bookkeeping current while the modal notice consumes
+/// gestures, including fingers that were already down when it opened.
+fn handle_mac_fiscal_notice_touch(
+    state: &mut ViewerState,
+    input: &mut InputState,
+    event: &Event,
+) {
+    match event {
+        Event::FingerDown { finger_id, x, y, .. } => {
+            input.touch.on_down(*finger_id, Vec2::new(*x, *y));
+        }
+        Event::FingerUp { finger_id, .. } => {
+            input.touch.on_up(*finger_id);
+            if input.touch.finger_count() == 0 {
+                if input.map_touch.is_active() || input.painting || input.dragging {
+                    state.cancel_active_drag();
+                }
+                input.map_touch.clear();
+                input.painting = false;
+                input.dragging = false;
+                input.paint_tile = None;
+            }
+        }
+        _ => return,
+    }
+    if let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() {
+        notice.button_down = input.fiscal_notice_mouse_down || input.touch.finger_count() != 0;
+    }
+}
+
+pub(super) fn consume_mac_fiscal_notice_event(
+    state: &mut ViewerState,
+    input: &mut InputState,
+    event: &Event,
+) -> bool {
+    if matches!(event,
+        Event::MouseButtonDown { which, .. } | Event::MouseButtonUp { which, .. }
+        | Event::MouseMotion { which, .. } | Event::MouseWheel { which, .. }
+        if touch_input::is_touch_synthesized_mouse(*which))
+    {
+        return true;
+    }
+    if !handle_mac_fiscal_notice_input(state, event) {
+        return false;
+    }
+    match event {
+        Event::MouseButtonDown { .. } => input.fiscal_notice_mouse_down = true,
+        Event::MouseButtonUp { .. } => input.fiscal_notice_mouse_down = false,
+        _ => {}
+    }
+    handle_mac_fiscal_notice_touch(state, input, event);
+    if matches!(event, Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. })
+        && let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut()
+    {
+        notice.button_down = input.fiscal_notice_mouse_down || input.touch.finger_count() != 0;
+    }
+    true
+}
+
+/// Native menu callbacks bypass SDL input, but the Mac notice consumes the
+/// click or key before the main event dispatcher can execute the command.
+pub(super) fn handle_mac_fiscal_notice_command(state: &mut ViewerState, command: &AppCommand) -> bool {
+    let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() else { return false; };
+    let _ = command;
+    notice.dismissed = true;
+    true
+}
+
+/// Dialog/provider completions can arrive asynchronously, so retain them for
+/// after the notice rather than interpreting them as a new click or key.
+pub(super) fn mac_fiscal_notice_defers_command(command: &AppCommand) -> bool {
+    #[cfg(target_os = "ios")]
+    if matches!(command, AppCommand::DocumentSaved { .. }) { return true; }
+    matches!(command, AppCommand::OpenPath(_) | AppCommand::OpenConfirmedCityPath(_) | AppCommand::OpenTitlePath(_)
+        | AppCommand::OpenTitleDialogPath(_) | AppCommand::OpenScenarioPath(_)
+        | AppCommand::OpenTitleScenarioPath(_) | AppCommand::SaveToPath(_)
+        | AppCommand::LoadTileSet(_) | AppCommand::ImportOriginalAssets(_)
+        | AppCommand::SetOriginalAssets(_) | AppCommand::SetReplacementAssets(_))
 }
 
 pub(super) fn handle_event(
@@ -110,7 +277,19 @@ pub(super) fn handle_event(
     input: &mut InputState,
     sound: &mut Option<crate::audio::SoundPlayer>,
     city_music: &mut Option<crate::title_music::CityMusic>,
+    asset_profile: &crate::asset_profile::AssetProfile,
 ) -> Result<()> {
+    if input.blocking_file_dialog()
+        && matches!(
+            &event,
+            Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
+                | Event::MouseMotion { .. } | Event::MouseWheel { .. }
+                | Event::FingerDown { .. } | Event::FingerMotion { .. } | Event::FingerUp { .. }
+                | Event::KeyDown { .. } | Event::KeyUp { .. } | Event::TextInput { .. }
+        )
+    {
+        return Ok(());
+    }
     #[cfg(target_os = "ios")]
     if crate::ios_documents::is_presenting()
         && matches!(
@@ -129,6 +308,24 @@ pub(super) fn handle_event(
     {
         return Ok(());
     }
+    // CODE 2 export 66 consumes events while its temporary message is up.
+    // Keep the notice until the frame dispatcher resumes the suspended worker,
+    // so the rest of this event batch is discarded as the native flush does.
+    if state.mac_loop_scheduler.fiscal_notice.is_some() {
+        if consume_mac_fiscal_notice_event(state, input, &event) {
+            return Ok(());
+        }
+        // Window and application lifecycle events must still be handled.
+        match event {
+            Event::Quit { .. } | Event::AppTerminating { .. } => input.running = false,
+            event @ (Event::AppDidEnterBackground { .. }
+            | Event::AppWillEnterForeground { .. } | Event::Window { .. }) => {
+                handle_window_event(event, &mut windows, state, input, sound, city_music);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
     match event {
         // Finger* events already drive touch; ignore SDL's mirrored mouse events.
         Event::MouseButtonDown { which, .. }
@@ -136,6 +333,7 @@ pub(super) fn handle_event(
         | Event::MouseMotion { which, .. }
         | Event::MouseWheel { which, .. }
             if touch_input::is_touch_synthesized_mouse(which) => {}
+        Event::Quit { .. } if cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95() => push_command(AppCommand::Quit),
         Event::Quit { .. } | Event::AppTerminating { .. } => input.running = false,
         event @ (Event::AppDidEnterBackground { .. }
         | Event::AppWillEnterForeground { .. }
@@ -149,11 +347,11 @@ pub(super) fn handle_event(
         | Event::MouseButtonUp { .. }
         | Event::MouseMotion { .. }
         | Event::MouseWheel { .. }) => {
-            handle_mouse_event(event, &mut windows, state, input, sound)?;
+            handle_mouse_event(event, &mut windows, state, input, sound, city_music, asset_profile)?;
         }
         event
         @ (Event::FingerDown { .. } | Event::FingerMotion { .. } | Event::FingerUp { .. }) => {
-            handle_touch_event(event, &windows, state, input, sound);
+            handle_touch_event(event, &windows, state, input, sound, city_music, asset_profile);
         }
         _ => {}
     }
@@ -251,7 +449,11 @@ fn handle_window_event(
             win_event: WindowEvent::CloseRequested,
             ..
         } if window_id == window.id() => {
-            input.running = false;
+            if cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95() {
+                push_command(AppCommand::Quit);
+            } else {
+                input.running = false;
+            }
         }
         Event::Window {
             window_id,
@@ -400,6 +602,37 @@ fn handle_keyboard_event(
     if let Event::KeyDown { keymod, .. } | Event::KeyUp { keymod, .. } = event {
         state.modifiers = keymod;
     }
+    if let Some(setup) = state.win95_new_city_setup.as_mut() {
+        match event {
+            Event::KeyDown { keycode: Some(Keycode::Return | Keycode::KpEnter), .. } => {
+                state.commit_win95_new_city_setup();
+                push_command(AppCommand::FinishWin95Charter);
+                video.text_input().stop(window);
+            }
+            Event::KeyDown { keycode: Some(Keycode::Backspace), .. } => {
+                if setup.selected { setup.name.clear(); setup.selected = false; } else { setup.name.pop(); }
+            }
+            Event::TextInput { text, .. } => {
+                if setup.selected { setup.name.clear(); setup.selected = false; }
+                for ch in text.chars() {
+                    if setup.name.chars().count() >= 31 { break; }
+                    if !ch.is_control() { setup.name.push(ch); }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+    if state.pe_newspaper_article.is_some() {
+        match event {
+            Event::KeyDown { keycode: Some(Keycode::Escape), .. } => state.pe_newspaper_article = None,
+            Event::KeyDown { keycode: Some(Keycode::Up), .. } => { state.scroll_pe_newspaper_article(-1); }
+            Event::KeyDown { keycode: Some(Keycode::Down), .. } => { state.scroll_pe_newspaper_article(1); }
+            Event::KeyUp { keycode: Some(Keycode::LShift | Keycode::RShift), .. } => input.shift_down = false,
+            _ => {}
+        }
+        return;
+    }
     match event {
         Event::KeyDown {
             keycode: Some(Keycode::LShift | Keycode::RShift),
@@ -434,6 +667,8 @@ fn handle_keyboard_event(
                 state.close_power_plant_dialog();
             } else if state.arcology_dialog.is_some() {
                 state.close_arcology_dialog();
+            } else if state.mac_newspaper.detail_open {
+                state.close_mac_paper_detail();
             } else if state.city_info_dialog.is_some() {
                 super::super::dialog_input::close_city_info_dialog_from_input(state, window);
             }
@@ -463,11 +698,26 @@ fn handle_keyboard_event(
             keycode: Some(Keycode::Backspace),
             ..
         } if state.sign_dialog.is_some() => state.backspace_sign_dialog_text(),
+        Event::KeyDown { keycode: Some(Keycode::Left), .. }
+            if state.sign_dialog.is_some() && !state.engine_fidelity.uses_win95() => state.move_sign_dialog_caret(false),
+        Event::KeyDown { keycode: Some(Keycode::Right), .. }
+            if state.sign_dialog.is_some() && !state.engine_fidelity.uses_win95() => state.move_sign_dialog_caret(true),
         Event::KeyDown { .. } if state.sign_dialog.is_some() => {}
         Event::TextInput {
             window_id, text, ..
         } if window_id == window.id() && state.sign_dialog.is_some() => {
             state.append_sign_dialog_text(&text);
+        }
+        Event::KeyDown {
+            keycode: Some(key),
+            keymod,
+            ..
+        } if MenubarUi::is_enabled()
+            && state.engine_fidelity.uses_win95()
+            && win95_file_menu_shortcut(key, keymod).is_some() => {
+            push_command(
+                win95_file_menu_shortcut(key, keymod).expect("matched Win95 File shortcut"),
+            );
         }
         Event::KeyDown {
             keycode: Some(key),
@@ -609,6 +859,12 @@ fn handle_keyboard_event(
         {
             push_command(AppCommand::SaveCity);
         }
+        Event::KeyDown { keycode: Some(Keycode::Up), .. } if state.mac_newspaper.detail_open => {
+            state.scroll_mac_paper_detail(-1);
+        }
+        Event::KeyDown { keycode: Some(Keycode::Down), .. } if state.mac_newspaper.detail_open => {
+            state.scroll_mac_paper_detail(1);
+        }
         Event::KeyDown {
             keycode: Some(Keycode::Left),
             ..
@@ -629,12 +885,57 @@ fn handle_keyboard_event(
     }
 }
 
+fn service_mac_palette_music(
+    state: &mut ViewerState,
+    city_music: &mut Option<crate::title_music::CityMusic>,
+    asset_profile: &crate::asset_profile::AssetProfile,
+) {
+    if matches!(state.mode, AppMode::CityView | AppMode::EditNewMap)
+        && !state.engine_fidelity.uses_win95()
+    {
+        super::commands::update_mac_city_music(state, city_music, asset_profile);
+    }
+}
+
+fn mac_palette_has_post_action_music(action: UiAction) -> bool {
+    matches!(
+        action,
+        UiAction::RotateViewCcw | UiAction::RotateViewCw | UiAction::ZoomOut | UiAction::ZoomIn
+    )
+}
+
+fn apply_palette_leaf_action(
+    state: &mut ViewerState,
+    action: UiAction,
+    video: &sdl3::VideoSubsystem,
+    window: &sdl3::video::Window,
+    size: (u32, u32),
+) {
+    if state.mode == AppMode::CityView && !state.engine_fidelity.uses_win95() {
+        let scale = pixel_scale(window, size);
+        match action {
+            UiAction::ZoomOut => {
+                state.zoom_out_at(viewport_center(size), size, scale);
+                return;
+            }
+            UiAction::ZoomIn => {
+                state.zoom_in_at(viewport_center(size), size, scale);
+                return;
+            }
+            _ => {}
+        }
+    }
+    state.handle_ui_action(action, video, window.id());
+}
+
 fn handle_mouse_event(
     event: Event,
     windows: &mut RuntimeWindows<'_, '_, '_>,
     state: &mut ViewerState,
     input: &mut InputState,
     sound: &Option<crate::audio::SoundPlayer>,
+    city_music: &mut Option<crate::title_music::CityMusic>,
+    asset_profile: &crate::asset_profile::AssetProfile,
 ) -> Result<()> {
     let video = windows.video;
     let window = windows.window;
@@ -644,6 +945,17 @@ fn handle_mouse_event(
     let palette_id = windows.palette_id;
     let palette_logical_size = &mut *windows.palette_logical_size;
     let single_window = windows.single_window;
+    if state.win95_new_city_setup.is_some() {
+        if let Event::MouseButtonDown { window_id, mouse_btn: MouseButton::Left, x, y, .. } = event {
+            if window_id == window.id() {
+                let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
+                if state.win95_setup_pointer(screen, renderer.size()) {
+                    push_command(AppCommand::FinishWin95Charter);
+                }
+            }
+        }
+        return Ok(());
+    }
     match event {
         Event::MouseButtonDown {
             window_id,
@@ -665,10 +977,13 @@ fn handle_mouse_event(
                     x,
                     y,
                 ) {
+                    service_mac_palette_music(state, city_music, asset_profile);
                     state.close_tool_menu();
                     state.edit_map_slider_drag = Some(slider);
                     state.set_edit_map_slider(slider, value);
-                    state.play_click_sound(sound.as_ref());
+                    if state.engine_fidelity.uses_win95() {
+                        state.play_click_sound(sound.as_ref());
+                    }
                     state.update_window_title(video, window.id());
                 } else if let Some(action) = palette_window::palette_mouse_action(
                     palette_window,
@@ -680,6 +995,7 @@ fn handle_mouse_event(
                     y,
                 ) {
                     if state.ui_action_enabled(action) {
+                        service_mac_palette_music(state, city_music, asset_profile);
                         state.press_palette_button(action);
                         state.play_click_sound(sound.as_ref());
                         need_resync = matches!(action, UiAction::DoneEditMap);
@@ -690,7 +1006,7 @@ fn handle_mouse_event(
                             }
                             _ => {
                                 state.close_tool_menu();
-                                state.handle_ui_action(action, video, window.id());
+                                apply_palette_leaf_action(state, action, video, window, renderer.size());
                                 // The floating Tools palette can hold key focus on
                                 // macOS. Return focus to the map as soon as a leaf
                                 // tool/action is chosen, so the next map press is a
@@ -698,6 +1014,9 @@ fn handle_mouse_event(
                                 mac_menu::focus_main_window(window);
                                 palette_window::sync_palette_stacking(window, palette_window);
                             }
+                        }
+                        if state.mode == AppMode::CityView && mac_palette_has_post_action_music(action) {
+                            service_mac_palette_music(state, city_music, asset_profile);
                         }
                     }
                 } else {
@@ -795,10 +1114,13 @@ fn handle_mouse_event(
                     state.mode,
                     state.open_tool_menu,
                 ) {
+                    service_mac_palette_music(state, city_music, asset_profile);
                     state.close_tool_menu();
                     state.edit_map_slider_drag = Some(slider);
                     state.set_edit_map_slider(slider, value);
-                    state.play_click_sound(sound.as_ref());
+                    if state.engine_fidelity.uses_win95() {
+                        state.play_click_sound(sound.as_ref());
+                    }
                     state.update_window_title(video, window.id());
                     input.painting = false;
                     input.dragging = false;
@@ -813,6 +1135,7 @@ fn handle_mouse_event(
                     hit_pad,
                 ) {
                     if state.ui_action_enabled(action) {
+                        service_mac_palette_music(state, city_music, asset_profile);
                         state.press_palette_button(action);
                         state.play_click_sound(sound.as_ref());
                         let resync = matches!(action, UiAction::DoneEditMap);
@@ -823,9 +1146,12 @@ fn handle_mouse_event(
                             }
                             _ => {
                                 state.close_tool_menu();
-                                state.handle_ui_action(action, video, window.id());
+                                apply_palette_leaf_action(state, action, video, window, renderer.size());
                                 input.begin_info_preview(state, action, screen, tools_origin, Vec2::new(palette_logical_size.0 as f32 * ps, palette_logical_size.1 as f32 * ps));
                             }
+                        }
+                        if state.mode == AppMode::CityView && mac_palette_has_post_action_music(action) {
+                            service_mac_palette_music(state, city_music, asset_profile);
                         }
                         if resync {
                             *palette_logical_size = ui::palette_logical_size(state.mode);
@@ -894,7 +1220,10 @@ fn handle_mouse_event(
                 return Ok(());
             }
             if state.city_info_dialog.is_some_and(|dialog| {
-                point_in_float_rect(state.info_panel_input_point(screen, renderer.size()), city_info_dialog_rect_for(dialog, renderer.size()))
+                point_in_float_rect(
+                    state.info_panel_input_point(screen, renderer.size()),
+                    city_info_dialog_rect_for_engine(dialog, renderer.size(), state.engine_fidelity),
+                )
             }) {
                 input.painting = false;
                 input.dragging = false;
@@ -1024,25 +1353,16 @@ fn handle_mouse_event(
             if let (Some(palette_window), Some(palette_renderer)) =
                 (palette_window, &palette_renderer)
             {
-                if let Some(active_slider) = state.edit_map_slider_drag
-                    && let Some((slider, value)) = palette_window::palette_mouse_slider(
+                if let Some(active_slider) = state.edit_map_slider_drag {
+                    let value = palette_window::palette_mouse_slider_drag_value(
                         palette_window,
                         palette_renderer,
                         *palette_logical_size,
-                        state.mode,
-                        state.open_tool_menu,
+                        active_slider,
                         x,
                         y,
-                    )
-                {
-                    state.set_edit_map_slider(
-                        if slider == active_slider {
-                            slider
-                        } else {
-                            active_slider
-                        },
-                        value,
                     );
+                    state.set_edit_map_slider(active_slider, value);
                     state.update_window_title(video, window.id());
                 }
                 let label = palette_window::palette_hover_label(
@@ -1071,6 +1391,14 @@ fn handle_mouse_event(
                 state.update_window_title(video, window.id());
             }
             input.mouse_pos = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
+            if single_window && let Some(slider) = state.edit_map_slider_drag {
+                let ps = pixel_scale(window, renderer.size());
+                let origin = input.docked_palette.tools_origin(MenubarUi::occupied_top(ps), ps);
+                let value = ui::edit_map_slider_drag_value(input.mouse_pos - origin, *palette_logical_size, ps, slider);
+                state.set_edit_map_slider(slider, value);
+                state.update_window_title(video, window.id());
+                return Ok(());
+            }
             if input.move_info_preview(state, input.mouse_pos) { return Ok(()); }
             if state.drag_info_panel(input.mouse_pos, renderer.size()) {
                 return Ok(());
@@ -1118,6 +1446,16 @@ fn handle_mouse_event(
             mouse_y,
             ..
         } if y != 0.0 => {
+            let signed = match direction {
+                sdl3::mouse::MouseWheelDirection::Flipped => y,
+                sdl3::mouse::MouseWheelDirection::Normal | sdl3::mouse::MouseWheelDirection::Unknown(_) => -y,
+            };
+            if state.scroll_pe_newspaper_article((signed * 3.0).round() as i32) {
+                return Ok(());
+            }
+            if state.scroll_mac_paper_detail((signed * 3.0).round() as i32) {
+                return Ok(());
+            }
             let factor = wheel_zoom_factor(y, direction);
             let anchor = Vec2::new(mouse_x, mouse_y) * input_pixel_scale(window, renderer.size());
             state.zoom_by_at(
@@ -1138,6 +1476,8 @@ fn handle_touch_event(
     state: &mut ViewerState,
     input: &mut InputState,
     sound: &Option<crate::audio::SoundPlayer>,
+    city_music: &mut Option<crate::title_music::CityMusic>,
+    asset_profile: &crate::asset_profile::AssetProfile,
 ) {
     let video = windows.video;
     let window = windows.window;
@@ -1156,6 +1496,7 @@ fn handle_touch_event(
             input.mouse_pos = screen;
             input.touch.on_down(finger_id, screen);
             if input.touch.finger_count() >= 2 {
+                state.edit_map_slider_drag = None;
                 for action in input.map_touch.on_second_finger() {
                     apply_map_touch_action(
                         action,
@@ -1221,7 +1562,23 @@ fn handle_touch_event(
                                 } else {
                                     let tools_origin =
                                         input.docked_palette.tools_origin(menubar_top, ps);
-                                    if let Some(action) = ui::palette_hit_test_at(
+                                    if let Some((slider, value)) = ui::edit_map_slider_hit_test(
+                                        screen - tools_origin,
+                                        palette_logical_size,
+                                        ps,
+                                        state.mode,
+                                        state.open_tool_menu,
+                                    ) {
+                                        service_mac_palette_music(state, city_music, asset_profile);
+                                        state.close_tool_menu();
+                                        state.edit_map_slider_drag = Some(slider);
+                                        state.set_edit_map_slider(slider, value);
+                                        if state.engine_fidelity.uses_win95() {
+                                            state.play_click_sound(sound.as_ref());
+                                        }
+                                        state.update_window_title(video, window.id());
+                                        ui_consumed = true;
+                                    } else if let Some(action) = ui::palette_hit_test_at(
                                         screen,
                                         tools_origin,
                                         palette_logical_size,
@@ -1231,6 +1588,7 @@ fn handle_touch_event(
                                         platform_ui::touch_hit_pad(ps),
                                     ) {
                                         if state.ui_action_enabled(action) {
+                                            service_mac_palette_music(state, city_music, asset_profile);
                                             state.press_palette_button(action);
                                             state.play_click_sound(sound.as_ref());
                                             match action {
@@ -1240,13 +1598,18 @@ fn handle_touch_event(
                                                 }
                                                 _ => {
                                                     state.close_tool_menu();
-                                                    state.handle_ui_action(
+                                                    apply_palette_leaf_action(
+                                                        state,
                                                         action,
                                                         video,
-                                                        window.id(),
+                                                        window,
+                                                        renderer.size(),
                                                     );
                                                     input.begin_info_preview(state, action, screen, tools_origin, Vec2::new(palette_logical_size.0 as f32 * ps, palette_logical_size.1 as f32 * ps));
                                                 }
+                                            }
+                                            if state.mode == AppMode::CityView && mac_palette_has_post_action_music(action) {
+                                                service_mac_palette_music(state, city_music, asset_profile);
                                             }
                                         }
                                         ui_consumed = true;
@@ -1289,7 +1652,14 @@ fn handle_touch_event(
             let screen = touch_input::finger_to_screen(x, y, renderer.size());
             input.mouse_pos = screen;
             let ps = pixel_scale(window, renderer.size());
-            if input.move_info_preview(state, screen) {
+            if single_window && state.edit_map_slider_drag.is_some() && input.touch.finger_count() == 1 {
+                let slider = state.edit_map_slider_drag.expect("active slider");
+                let origin = input.docked_palette.tools_origin(MenubarUi::occupied_top(ps), ps);
+                let value = ui::edit_map_slider_drag_value(screen - origin, palette_logical_size, ps, slider);
+                state.set_edit_map_slider(slider, value);
+                state.update_window_title(video, window.id());
+                let _ = input.touch.on_motion(finger_id, screen);
+            } else if input.move_info_preview(state, screen) {
                 let _ = input.touch.on_motion(finger_id, screen);
             } else if state.drag_info_panel(screen, renderer.size()) {
                 let _ = input.touch.on_motion(finger_id, screen);
@@ -1371,6 +1741,7 @@ fn handle_touch_event(
         } if window_id == window.id() => {
             input.touch.on_up(finger_id);
             if input.touch.finger_count() == 0 {
+                state.edit_map_slider_drag = None;
                 if input.end_info_preview(state) {
                     input.painting = false;
                     input.dragging = false;
@@ -1421,6 +1792,9 @@ pub(super) fn tick_held_touch(
     input: &mut InputState,
     sound: &Option<crate::audio::SoundPlayer>,
 ) {
+    if state.mac_loop_scheduler.fiscal_notice.is_some() {
+        return;
+    }
     let video = windows.video;
     let window = windows.window;
     let renderer = &*windows.renderer;
@@ -1442,5 +1816,134 @@ pub(super) fn tick_held_touch(
                 ps,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod mac_fiscal_notice_input_tests {
+    use super::*;
+    use crate::app::tests::test_state;
+    use crate::city::City;
+
+    #[test]
+    fn mac_fiscal_notice_tracks_preheld_touch_until_last_release() {
+        let city = City::new_blank("/tmp/mac-fiscal-touch.sc2", "Fiscal").unwrap();
+        let mut state = test_state(city);
+        let mut input = InputState::new();
+        input.touch.on_down(7, Vec2::new(10.0, 10.0));
+        input.map_touch.begin_map_gesture(Vec2::ZERO, true, 1.0);
+        input.painting = true;
+        input.paint_tile = Some((2, 3));
+        state.open_mac_fiscal_crisis_notice();
+        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = true;
+        let down = Event::FingerDown {
+            timestamp: 0, touch_id: 1, finger_id: 8, x: 0.2, y: 0.3,
+            dx: 0.0, dy: 0.0, pressure: 1.0, window_id: 0,
+        };
+        let up = |finger_id| Event::FingerUp {
+            timestamp: 0, touch_id: 1, finger_id, x: 0.2, y: 0.3,
+            dx: 0.0, dy: 0.0, pressure: 0.0, window_id: 0,
+        };
+        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &down));
+        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &up(7)));
+        assert_eq!(input.touch.finger_count(), 1);
+        assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
+        let synthetic_up = Event::MouseButtonUp {
+            timestamp: 0, window_id: 0, which: u32::MAX,
+            mouse_btn: sdl3::mouse::MouseButton::Left, clicks: 1, x: 0.2, y: 0.3,
+        };
+        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &synthetic_up));
+        assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
+        let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
+        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 0);
+        let mouse_down = Event::MouseButtonDown {
+            timestamp: 0, window_id: 0, which: 0,
+            mouse_btn: sdl3::mouse::MouseButton::Left, clicks: 1, x: 0.0, y: 0.0,
+        };
+        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &mouse_down));
+        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &up(8)));
+        assert_eq!(input.touch.finger_count(), 0);
+        assert!(!input.map_touch.is_active());
+        assert!(!input.painting);
+        assert_eq!(input.paint_tile, None);
+        assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
+        let mouse_up = Event::MouseButtonUp {
+            timestamp: 0, window_id: 0, which: 0,
+            mouse_btn: sdl3::mouse::MouseButton::Left, clicks: 1, x: 0.0, y: 0.0,
+        };
+        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &mouse_up));
+        let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
+        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 1);
+    }
+
+    #[test]
+    fn mac_fiscal_notice_consumes_real_input_and_waits_for_mouse_release() {
+        let city = City::new_blank("/tmp/mac-fiscal-input.sc2", "Fiscal").unwrap();
+        let mut state = test_state(city);
+        state.open_mac_fiscal_crisis_notice();
+        let key = |repeat| Event::KeyDown {
+            timestamp: 0, window_id: 0, keycode: Some(Keycode::Return), scancode: None,
+            keymod: sdl3::keyboard::Mod::NOMOD, repeat, which: 0, raw: 0,
+        };
+        assert!(handle_mac_fiscal_notice_input(&mut state, &key(true)));
+        assert!(!state.mac_loop_scheduler.fiscal_notice.unwrap().dismissed);
+        assert!(handle_mac_fiscal_notice_input(&mut state, &key(false)));
+        assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().dismissed);
+        state.mac_loop_scheduler.fiscal_notice = None;
+        state.city_info_dialog = None;
+        state.open_mac_fiscal_crisis_notice();
+        let down = Event::MouseButtonDown {
+            timestamp: 0, window_id: 0, which: 0, mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1, x: 0.0, y: 0.0,
+        };
+        let up = Event::MouseButtonUp {
+            timestamp: 0, window_id: 0, which: 0, mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1, x: 0.0, y: 0.0,
+        };
+        assert!(handle_mac_fiscal_notice_input(&mut state, &down));
+        assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
+        assert!(handle_mac_fiscal_notice_input(&mut state, &up));
+        let notice = state.mac_loop_scheduler.fiscal_notice.unwrap();
+        assert!(notice.dismissed && !notice.button_down);
+
+        // A key can dismiss the notice while a prior mouse press is still
+        // held, but the native _Button wait does not return until release.
+        state.mac_loop_scheduler.fiscal_notice = None;
+        state.city_info_dialog = None;
+        state.open_mac_fiscal_crisis_notice();
+        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = true;
+        assert!(handle_mac_fiscal_notice_input(&mut state, &key(false)));
+        let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
+        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 0);
+        assert!(handle_mac_fiscal_notice_input(&mut state, &up));
+        let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
+        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 1);
+    }
+
+    #[test]
+    fn mac_fiscal_notice_consumes_native_menu_command_before_execution() {
+        let city = City::new_blank("/tmp/mac-fiscal-menu.sc2", "Fiscal").unwrap();
+        let mut state = test_state(city);
+        let initial_speed = state.traffic.speed();
+        assert_ne!(initial_speed, GameSpeed::Cheetah);
+        assert!(mac_fiscal_notice_defers_command(&AppCommand::SaveToPath("/tmp/deferred.sc2".into())));
+        assert!(!mac_fiscal_notice_defers_command(&AppCommand::SetSpeed(GameSpeed::Cheetah)));
+        state.open_mac_fiscal_crisis_notice();
+        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = true;
+        let command = AppCommand::SetSpeed(GameSpeed::Cheetah);
+        if !handle_mac_fiscal_notice_command(&mut state, &command) {
+            state.apply_state_app_command(&command);
+        }
+        let notice = state.mac_loop_scheduler.fiscal_notice.unwrap();
+        assert!(notice.dismissed && notice.button_down);
+        assert_eq!(state.traffic.speed(), initial_speed);
+        let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
+        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 0);
+        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = false;
+        let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
+        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 1);
+        assert!(!handle_mac_fiscal_notice_command(&mut state, &command));
+        state.apply_state_app_command(&command);
+        assert_eq!(state.traffic.speed(), GameSpeed::Cheetah);
     }
 }

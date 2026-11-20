@@ -648,7 +648,8 @@ pub(super) fn live_mac_service_coverage_map(
     };
 
     let ordinance_enabled = ordinance_enabled_for_city_with_fidelity(city, ordinance, fidelity);
-    let funding = budget_service_funding_raw_for_city(city, if building == 210 { 0 } else { 1 });
+    let funding =
+        mac_budget_service_funding_raw_for_city(city, if building == 210 { 0 } else { 1 });
     let police_adjustment = if building == 210 {
         // CODE 4 reads cursor 1039 at payload byte `1039*4 + 2` and
         // saveback writes the sign-extended WORD at payload dword 1039.

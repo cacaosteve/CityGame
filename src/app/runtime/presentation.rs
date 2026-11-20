@@ -9,6 +9,8 @@ pub(super) fn present_frame(
     docked_palette: &DockedPalette,
     occluded_frames: &mut u32,
 ) {
+    state.refresh_mac_newspaper_menu();
+    state.prepare_pe_newspaper_first_paint();
     let video = windows.video;
     let window = windows.window;
     let renderer = &mut *windows.renderer;
@@ -147,6 +149,7 @@ pub(super) fn present_frame(
         &mut ui_images,
     );
     let dialog_solids_start = ui_solids.len();
+    state.push_win95_new_city_setup(renderer.size(), &mut ui_solids);
     state.push_sign_dialog(renderer.size(), &mut ui_solids);
     state.push_military_base_dialog(renderer.size(), &mut ui_solids);
     state.push_power_plant_dialog(renderer, renderer.size(), &mut ui_images, &mut ui_solids);

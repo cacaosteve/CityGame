@@ -8,6 +8,42 @@ use anyhow::{Result, anyhow, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+/// A native city-header read returned zero bytes.
+#[derive(Debug)]
+pub(crate) struct CityReadEof;
+
+impl std::fmt::Display for CityReadEof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unexpected end of city header")
+    }
+}
+
+impl std::error::Error for CityReadEof {}
+
+/// A non-FORM file that does not have the original's legacy city file size.
+#[derive(Debug)]
+pub(crate) struct NotIffCityFile;
+
+impl std::fmt::Display for NotIffCityFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "not a supported IFF city file")
+    }
+}
+
+impl std::error::Error for NotIffCityFile {}
+
+/// An IFF FORM whose type is not the city format expected by the original.
+#[derive(Debug)]
+pub(crate) struct WrongIffCityType;
+
+impl std::fmt::Display for WrongIffCityType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IFF file is not a SimCity 2000 city")
+    }
+}
+
+impl std::error::Error for WrongIffCityType {}
+
 pub(super) fn upsert_chunk(
     chunks: &mut Vec<CityChunk>,
     chunk_index: &mut HashMap<String, usize>,
@@ -25,15 +61,19 @@ pub(super) fn upsert_chunk_for_kind(
     raw: &[u8],
     kind: CityFileKind,
 ) {
-    let encoded = if kind == CityFileKind::MacCity {
-        mac_rle_encode(raw)
+    // Native Mac 1.2 writes ALTM as raw big-endian words; its other
+    // compressed city chunks use the same packet format as Win95.
+    let encoded = if kind == CityFileKind::MacCity && name == "ALTM" {
+        raw.to_vec()
+    } else if kind == CityFileKind::MacCity {
+        sc2_rle_encode_packed(raw)
     } else {
         sc2_rle_encode(raw)
     };
     upsert_encoded_chunk(chunks, chunk_index, name, encoded);
 }
 
-fn upsert_encoded_chunk(
+pub(super) fn upsert_encoded_chunk(
     chunks: &mut Vec<CityChunk>,
     chunk_index: &mut HashMap<String, usize>,
     name: &str,
@@ -84,6 +124,7 @@ const CITYGAME_EXTENSION_VERSION_WITH_MAC_RESIDENTIAL_TOTAL: u32 = 17;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_SCENARIO_CONTINUATION: u32 = 18;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS: u32 = 19;
 const CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY: u32 = 20;
+const CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG: u32 = 21;
 const MAC_SCENARIO_CONTINUATION_TAIL_LEN: usize = 4 * (1 + 16 + 5 + 1);
 const CGEX_MAC_RESIDENTIAL_PRESENT: u32 = 1 << 25;
 const CGEX_MAC_GOALS_PRESENT: u32 = 1 << 26;
@@ -108,6 +149,7 @@ pub(super) struct MacCrossLayoutSavedState {
     pub scenario: Option<MacScenarioContinuation>,
     pub road_neighbor_links: Option<u16>,
     pub police_arrest_subtotal: Option<u16>,
+    pub annual_flag: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,11 +249,13 @@ pub(super) fn encode_citygame_extension(
     let mac_scenario = mac_saved_state.and_then(|state| state.scenario);
     let mac_road_links = mac_saved_state.and_then(|state| state.road_neighbor_links);
     let mac_arrest_carry = mac_saved_state.and_then(|state| state.police_arrest_subtotal);
+    let mac_annual_flag = mac_saved_state.and_then(|state| state.annual_flag);
     let version = if pe_monster_xthg_index.is_some()
         || mac_residential_total.is_some()
         || mac_scenario.is_some()
         || mac_road_links.is_some()
         || mac_arrest_carry.is_some()
+        || mac_annual_flag.is_some()
     {
         CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE
     } else if mac_saved_state.is_some_and(|state| state.mac_scenario_active.is_some()) {
@@ -260,7 +304,9 @@ pub(super) fn encode_citygame_extension(
         CITYGAME_EXTENSION_VERSION_WITH_PE_STATE => 594,
         _ => 590,
     });
-    let header_version = if mac_arrest_carry.is_some() {
+    let header_version = if mac_annual_flag.is_some() {
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG
+    } else if mac_arrest_carry.is_some() {
         CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
     } else if mac_road_links.is_some() {
         CITYGAME_EXTENSION_VERSION_WITH_MAC_ROAD_LINKS
@@ -302,7 +348,10 @@ pub(super) fn encode_citygame_extension(
         | (u32::from(pe_monster_xthg_index.is_some()) << 24)
         | (u32::from(mac_road_links.is_some()) << 28)
         | (u32::from(mac_arrest_carry.is_some()) << 29);
-    let flags = if mac_scenario.is_some() || mac_road_links.is_some() || mac_arrest_carry.is_some()
+    let flags = if mac_scenario.is_some()
+        || mac_road_links.is_some()
+        || mac_arrest_carry.is_some()
+        || mac_annual_flag.is_some()
     {
         flags
             | if mac_residential_total.is_some() {
@@ -318,12 +367,13 @@ pub(super) fn encode_citygame_extension(
     } else {
         flags
     };
-    let flags =
-        if mac_scenario.is_some() && (mac_road_links.is_some() || mac_arrest_carry.is_some()) {
-            flags | CGEX_MAC_SCENARIO_PRESENT
-        } else {
-            flags
-        };
+    let flags = if mac_scenario.is_some()
+        && (mac_road_links.is_some() || mac_arrest_carry.is_some() || mac_annual_flag.is_some())
+    {
+        flags | CGEX_MAC_SCENARIO_PRESENT
+    } else {
+        flags
+    };
     raw.extend_from_slice(&flags.to_be_bytes());
     let state = mac_saved_state;
     for value in state.map_or([0; 8], |state| state.rci_counters) {
@@ -539,7 +589,11 @@ pub(super) fn encode_citygame_extension(
     if version == CITYGAME_EXTENSION_VERSION_WITH_PE_MONSTER_INDEX_STATE {
         raw.extend_from_slice(&u32::from(pe_monster_xthg_index.unwrap_or_default()).to_be_bytes());
     }
-    if mac_scenario.is_some() || mac_road_links.is_some() || mac_arrest_carry.is_some() {
+    if mac_scenario.is_some()
+        || mac_road_links.is_some()
+        || mac_arrest_carry.is_some()
+        || mac_annual_flag.is_some()
+    {
         let scenario = mac_scenario.unwrap_or_default();
         raw.extend_from_slice(&mac_residential_total.unwrap_or(0).to_be_bytes());
         for value in scenario
@@ -558,11 +612,14 @@ pub(super) fn encode_citygame_extension(
         raw.extend_from_slice(&total.to_be_bytes());
     }
 
-    if mac_road_links.is_some() || mac_arrest_carry.is_some() {
+    if mac_road_links.is_some() || mac_arrest_carry.is_some() || mac_annual_flag.is_some() {
         raw.extend_from_slice(&mac_road_links.unwrap_or_default().to_be_bytes());
     }
-    if let Some(carry) = mac_arrest_carry {
-        raw.extend_from_slice(&carry.to_be_bytes());
+    if mac_arrest_carry.is_some() || mac_annual_flag.is_some() {
+        raw.extend_from_slice(&mac_arrest_carry.unwrap_or_default().to_be_bytes());
+    }
+    if let Some(flag) = mac_annual_flag {
+        raw.push(flag);
     }
     raw
 }
@@ -573,12 +630,25 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
         .find(|chunk| chunk.name == CITYGAME_EXTENSION_CHUNK)
         .map(|chunk| sc2_rle_decode(&chunk.data).unwrap_or_else(|_| chunk.data.clone()))?;
     let header_version = u32::from_be_bytes(payload.get(0..4)?.try_into().ok()?);
-    let mac_v20_flags = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY {
+    let mac_annual_flag = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG {
+        payload.pop()
+    } else {
+        None
+    };
+    let mac_v20_flags = if matches!(
+        header_version,
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
+            | CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG
+    ) {
         Some(u32::from_be_bytes(payload.get(8..12)?.try_into().ok()?))
     } else {
         None
     };
-    let mac_arrest_carry = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY {
+    let mac_arrest_carry = if matches!(
+        header_version,
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
+            | CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG
+    ) {
         let (base, carry) = payload.split_last_chunk::<2>()?;
         let carry = u16::from_be_bytes(*carry);
         payload.truncate(base.len());
@@ -587,7 +657,11 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
         None
     };
     let mut decode_header_version = header_version;
-    let mac_road_links = if header_version == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY {
+    let mac_road_links = if matches!(
+        header_version,
+        CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
+            | CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG
+    ) {
         let (base, count) = payload.split_last_chunk::<2>()?;
         let count = u16::from_be_bytes(*count);
         payload.truncate(base.len());
@@ -1020,16 +1094,19 @@ pub(super) fn decode_citygame_extension(chunks: &[CityChunk]) -> Option<CityGame
                     mac_scenario_active: (flags & (1 << 22) != 0).then_some(flags & (1 << 23) != 0),
                     residential_total: mac_residential_total,
                     scenario: mac_scenario,
-                    road_neighbor_links: if header_version
-                        == CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
-                        && mac_v20_flags
-                            .is_some_and(|flags| flags & CGEX_MAC_ROAD_LINKS_PRESENT == 0)
+                    road_neighbor_links: if matches!(
+                        header_version,
+                        CITYGAME_EXTENSION_VERSION_WITH_MAC_ARREST_CARRY
+                            | CITYGAME_EXTENSION_VERSION_WITH_MAC_ANNUAL_FLAG
+                    ) && mac_v20_flags
+                        .is_some_and(|flags| flags & CGEX_MAC_ROAD_LINKS_PRESENT == 0)
                     {
                         None
                     } else {
                         mac_road_links
                     },
                     police_arrest_subtotal: mac_arrest_carry,
+                    annual_flag: mac_annual_flag,
                 }),
                 pe_residential_population,
                 pe_trigger_disaster,
@@ -1072,6 +1149,27 @@ fn read_u32_be(payload: &[u8], cursor: &mut usize) -> Option<u32> {
 }
 
 pub fn detect_city_kind(path: &Path, bytes: &[u8]) -> Result<CityFileKind> {
+    // After a complete FORM marker, the native loader accepts even a partial
+    // length word, then reports EOF when the next word has no bytes to read.
+    if bytes.is_empty() || (bytes.len() >= 4 && bytes.len() <= 8 && &bytes[..4] == b"FORM") {
+        return Err(anyhow!(CityReadEof).context(format!("reading city {}", path.display())));
+    }
+    let prefix_len = bytes.len().min(4);
+    if prefix_len > 0
+        && bytes[..prefix_len] != b"FORM"[..prefix_len]
+        && bytes.len() != 0x6a70
+    {
+        return Err(anyhow!(NotIffCityFile).context(format!("reading city {}", path.display())));
+    }
+    // After reading FORM, the PE swaps and reuses the same word for the
+    // type read. A short, nonempty type leaves its final byte as 'F', so it
+    // cannot compare equal to SCDH even when its supplied bytes are a prefix.
+    if bytes.len() >= 9
+        && &bytes[..4] == b"FORM"
+        && (bytes.len() < 12 || &bytes[8..12] != b"SCDH")
+    {
+        return Err(anyhow!(WrongIffCityType).context(format!("reading city {}", path.display())));
+    }
     if bytes.len() < 12 || &bytes[0..4] != b"FORM" || &bytes[8..12] != b"SCDH" {
         bail!(
             "{} is not a SimCity 2000™ FORM/SCDH city file",
@@ -1247,7 +1345,7 @@ pub fn mac_rle_encode(input: &[u8]) -> Vec<u8> {
 
 pub(super) fn city_rle_decode(input: &[u8], kind: CityFileKind) -> Result<Vec<u8>> {
     if kind == CityFileKind::MacCity {
-        mac_rle_decode(input)
+        sc2_rle_decode(input).or_else(|_| mac_rle_decode(input))
     } else {
         sc2_rle_decode(input)
     }
@@ -1292,6 +1390,13 @@ pub fn chunk_tags_in_file(bytes: &[u8]) -> Result<Vec<String>> {
 }
 
 pub fn encode_scdh_file(chunks: &[CityChunk]) -> Result<Vec<u8>> {
+    encode_scdh_file_for_kind(chunks, CityFileKind::WinSc2)
+}
+
+pub(super) fn encode_scdh_file_for_kind(
+    chunks: &[CityChunk],
+    _kind: CityFileKind,
+) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     let mut written = HashSet::new();
     for name in SAVE_CHUNK_ORDER {
@@ -1323,12 +1428,18 @@ fn write_chunk(out: &mut Vec<u8>, chunk: &CityChunk) {
     out.extend_from_slice(&name);
     out.extend_from_slice(&(chunk.data.len() as u32).to_be_bytes());
     out.extend_from_slice(&chunk.data);
-    if chunk.data.len() % 2 == 1 {
-        out.push(0);
-    }
 }
 
 pub fn sc2_rle_encode(input: &[u8]) -> Vec<u8> {
+    let encoded = sc2_rle_encode_packed(input);
+    if encoded.len() < input.len() {
+        encoded
+    } else {
+        input.to_vec()
+    }
+}
+
+fn sc2_rle_encode_packed(input: &[u8]) -> Vec<u8> {
     let mut encoded = Vec::new();
     let mut index = 0;
     while index < input.len() {
@@ -1363,11 +1474,7 @@ pub fn sc2_rle_encode(input: &[u8]) -> Vec<u8> {
         encoded.extend_from_slice(&input[literal_start..literal_start + literal_len]);
     }
 
-    if encoded.len() < input.len() {
-        encoded
-    } else {
-        input.to_vec()
-    }
+    encoded
 }
 
 impl City {

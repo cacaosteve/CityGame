@@ -10256,6 +10256,7 @@ fn simulation_day0_january_opens_extra_when_aging_plant_story_queued() {
     let coal = city.provision_microsim_for_building(207).expect("coal");
     let coal_index = usize::from(coal - MIN_SIM_TEXT_ENTRIES);
     assert!(city.set_microsim_stat0(coal_index, 48));
+    city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     let mut state = test_state(city);
     state.traffic.set_speed(GameSpeed::Llama);
     state.game_clock = GameClock::new_with_day(1900, 12, 24);

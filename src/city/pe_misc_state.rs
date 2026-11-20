@@ -168,19 +168,19 @@ impl City {
 
     /// PE save MISC mirror @ `0x4342ba`: word `[0x4ca1dc]` → `[MISC+0x103C]`.
     pub(super) fn persist_pe_w_prison_bonus_to_misc_4342ba(&mut self) {
-        self.set_misc_u32_at(MISC_PRISON_BONUS_OFFSET, u32::from(self.pe_w_prison_bonus));
+        self.set_misc_u32_at(MISC_PRISON_BONUS_OFFSET, i32::from(self.pe_w_prison_bonus as i16) as u32);
     }
 
     /// PE save MISC mirror @ `0x434310`: word `[0x4cb3dc]` → `[MISC+0x1050]`.
     pub(super) fn persist_pe_w_sewer_bonus_to_misc_434310(&mut self) {
-        self.set_misc_u32_at(MISC_SEWER_BONUS_OFFSET, u32::from(self.pe_w_sewer_bonus));
+        self.set_misc_u32_at(MISC_SEWER_BONUS_OFFSET, i32::from(self.pe_w_sewer_bonus as i16) as u32);
     }
 
     /// PE save MISC mirror @ `0x4342cf`: word `[0x4ca81c]` → `[MISC+0x1040]`.
     pub(super) fn persist_pe_w_monster_xthg_index_to_misc_4342cf(&mut self) {
         self.set_misc_u32_at(
             MISC_MONSTER_XTHG_INDEX_OFFSET,
-            u32::from(self.pe_w_monster_xthg_index),
+            i32::from(self.pe_w_monster_xthg_index as i16) as u32,
         );
     }
 
@@ -188,7 +188,7 @@ impl City {
     pub(super) fn persist_pe_w_current_disaster_type_to_misc_4342e4(&mut self) {
         self.set_misc_u32_at(
             MISC_CURRENT_DISASTER_TYPE_OFFSET,
-            u32::from(self.pe_w_current_disaster_type),
+            i32::from(self.pe_w_current_disaster_type as i16) as u32,
         );
     }
 
@@ -420,8 +420,7 @@ impl City {
                 .pe_cross_layout_saved_monster_xthg_index
                 .unwrap_or_else(|| {
                     self.misc_u32_at(MISC_MONSTER_XTHG_INDEX_OFFSET)
-                        .unwrap_or(0xffff)
-                        .min(u32::from(u16::MAX)) as u16
+                        .unwrap_or(0xffff) as u16
                 });
             self.pe_cross_layout_saved_monster_xthg_index = Some(self.pe_w_monster_xthg_index);
             // Both editions use the low byte of the same four weather slots.

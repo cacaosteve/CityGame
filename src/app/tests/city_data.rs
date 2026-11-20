@@ -1,6 +1,407 @@
 use super::*;
 
 #[test]
+#[ignore = "requires private Win95 sampled scheduler capture"]
+fn win95_sampled_paused_cycles_then_pending_calendar() {
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_TIMER_CAPTURE").unwrap());
+    let observations: Vec<serde_json::Value> =
+        std::fs::read_to_string(capture.join("bracket-samples.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|row| row["type"] == "observation")
+            .collect();
+    assert!(!observations.is_empty());
+    assert!(observations.iter().all(|row| {
+        row["cycle_changed_during_read"] == false && row["pending"] == 1 && row["age"] == 28237
+    }));
+    assert_eq!(observations[0]["cycle_after"], 1);
+    assert_eq!(observations.last().unwrap()["cycle_after"], 6);
+    assert_eq!(observations.last().unwrap()["speed"], 2);
+    assert!(
+        observations[..observations.len() - 1]
+            .iter()
+            .all(|row| row["speed"] == 1)
+    );
+    let mut cycle = 1_u64;
+    let mut transitions = 0;
+    for row in &observations[1..] {
+        let next = row["cycle_after"].as_u64().unwrap();
+        if next != cycle {
+            assert_eq!(next, (cycle + 1) % 8);
+            cycle = next;
+            transitions += 1;
+        }
+    }
+    assert_eq!(transitions, 37);
+
+    let read_manifest = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(capture.join(name).join("manifest.json")).unwrap())
+            .unwrap()
+    };
+    let open = read_manifest("pre-state");
+    let result = read_manifest("return-state");
+    let _live_rng = LiveGrowthRng::enable();
+    let mut state = test_state(City::new_blank("unused.sc2", "Empty").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state
+        .load_city(&capture.join("a.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    state.pe_process_crt =
+        Win95CrtRand::new(open["crt_tls_candidates"][0]["holdrand"].as_u64().unwrap() as u32);
+    state.pe_process_lfsr = Win95Lfsr::new(open["lfsr_raw"].as_u64().unwrap() as u16);
+    state.pe_process_game_rand = Win95GameRand::new(open["game_lcg_raw"].as_u64().unwrap() as u32);
+    state.traffic.set_speed(GameSpeed::Paused);
+    // Synthetic priming to the first observed cycle and pending latch.
+    assert_eq!(
+        state
+            .advance_frame_simulation(Duration::from_millis(1800))
+            .days,
+        0
+    );
+    for _ in 0..transitions {
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(200))
+                .days,
+            0
+        );
+    }
+    state.traffic.set_speed(GameSpeed::Turtle);
+    assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 1);
+    assert_eq!(
+        u64::from(state.city.city_age_days().unwrap()),
+        result["city_days"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(state.pe_process_crt.seed()),
+        result["crt_tls_candidates"][0]["holdrand"]
+            .as_u64()
+            .unwrap()
+    );
+    assert_eq!(
+        u64::from(state.pe_process_lfsr.state()),
+        result["lfsr_raw"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(state.pe_process_game_rand.state()),
+        result["game_lcg_raw"].as_u64().unwrap()
+    );
+    let actors =
+        crate::win95_overlay::encode_xthg_records(state.city.traffic_overlays().unwrap()).unwrap();
+    assert_eq!(
+        actors,
+        std::fs::read(capture.join("return-state/xthg-records.bin")).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "requires private Win95 bracketed phase-13 capture"]
+fn win95_paused_open_things_sound_gate_matches_bracketed_rng() {
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_PHASE13_CAPTURE").unwrap());
+    let manifest = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(capture.join(name).join("manifest.json")).unwrap())
+            .unwrap()
+    };
+    let open = manifest("opened3-state");
+    let entry = manifest("entry-state");
+    let mut state = test_state(City::new_blank("unused.sc2", "Empty").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state
+        .load_city(&capture.join("a.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    assert_eq!(state.city.pe_attitude_score_at(0), 26);
+    assert_eq!(state.city.pe_attitude_score_at(3), 41);
+    assert_eq!(
+        state.city.pe_dw_tile_count[POLICE_STATION_BUILDING_ID as usize],
+        9
+    );
+    state.pe_process_crt =
+        Win95CrtRand::new(open["crt_tls_candidates"][0]["holdrand"].as_u64().unwrap() as u32);
+    state.pe_process_lfsr = Win95Lfsr::new(open["lfsr_raw"].as_u64().unwrap() as u16);
+    state.pe_process_game_rand = Win95GameRand::new(open["game_lcg_raw"].as_u64().unwrap() as u32);
+    state.tick_pe_disaster_xthg_actors_in_slot_order();
+    assert_eq!(
+        u64::from(state.pe_process_crt.seed()),
+        entry["crt_tls_candidates"][0]["holdrand"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(state.pe_process_lfsr.state()),
+        entry["lfsr_raw"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(state.pe_process_game_rand.state()),
+        entry["game_lcg_raw"].as_u64().unwrap()
+    );
+    let actors =
+        crate::win95_overlay::encode_xthg_records(state.city.traffic_overlays().unwrap()).unwrap();
+    assert_eq!(
+        actors,
+        std::fs::read(capture.join("entry-state/xthg-records.bin")).unwrap()
+    );
+
+    // Exercise the frame scheduler with a deliberately selected timer
+    // sequence. The native timer deliveries were not captured, so this is a
+    // bounded integration check, not a replay of the original event stream.
+    let _live_rng = LiveGrowthRng::enable();
+    let mut scheduled = test_state(City::new_blank("unused.sc2", "Empty").unwrap());
+    scheduled.engine_fidelity = EngineFidelity::Win95;
+    scheduled
+        .load_city(&capture.join("a.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    scheduled.pe_process_crt =
+        Win95CrtRand::new(open["crt_tls_candidates"][0]["holdrand"].as_u64().unwrap() as u32);
+    scheduled.pe_process_lfsr = Win95Lfsr::new(open["lfsr_raw"].as_u64().unwrap() as u16);
+    scheduled.pe_process_game_rand =
+        Win95GameRand::new(open["game_lcg_raw"].as_u64().unwrap() as u32);
+    scheduled.traffic.set_speed(GameSpeed::Paused);
+    assert_eq!(
+        scheduled
+            .advance_frame_simulation(Duration::from_millis(1600))
+            .days,
+        0
+    );
+    scheduled.traffic.set_speed(GameSpeed::Turtle);
+    assert_eq!(
+        scheduled
+            .advance_frame_simulation(Duration::from_millis(200))
+            .days,
+        1
+    );
+    let result = manifest("return-state");
+    assert_eq!(
+        u64::from(scheduled.city.city_age_days().unwrap()),
+        result["city_days"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(scheduled.pe_process_crt.seed()),
+        result["crt_tls_candidates"][0]["holdrand"]
+            .as_u64()
+            .unwrap()
+    );
+    assert_eq!(
+        u64::from(scheduled.pe_process_lfsr.state()),
+        result["lfsr_raw"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(scheduled.pe_process_game_rand.state()),
+        result["game_lcg_raw"].as_u64().unwrap()
+    );
+    let actors =
+        crate::win95_overlay::encode_xthg_records(scheduled.city.traffic_overlays().unwrap())
+            .unwrap();
+    assert_eq!(
+        actors,
+        std::fs::read(capture.join("return-state/xthg-records.bin")).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "requires private Win95 same-session second-city capture"]
+fn win95_native_second_city_open_preserves_calendar_globals() {
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_SECOND_CITY_CAPTURE").unwrap());
+    let mut state = test_state(City::new_blank("unused.sc2", "Empty").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    let check = |state: &ViewerState, boundary: &str| {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(capture.join(boundary).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(state.city.city_age_days().unwrap()),
+            manifest["city_days"].as_u64().unwrap(),
+            "{boundary} age"
+        );
+        assert_eq!(
+            u64::from(state.city.pe_dw_city_population()),
+            manifest["city_population"].as_u64().unwrap(),
+            "{boundary} population"
+        );
+        assert_eq!(
+            u64::from(state.city.pe_w_calendar_month_mod()),
+            manifest["calendar_month_mod_word"].as_u64().unwrap(),
+            "{boundary} month"
+        );
+        assert_eq!(
+            u64::from(state.city.pe_w_local_fame_base()),
+            manifest["local_fame_base_word"].as_u64().unwrap(),
+            "{boundary} fame"
+        );
+        let live_actors = std::fs::read(capture.join(boundary).join("xthg-records.bin"))
+            .expect("missing native XTHG capture");
+        let actors = crate::win95_overlay::encode_xthg_records(
+            state
+                .city
+                .traffic_overlays()
+                .expect("missing CityGame XTHG"),
+        )
+        .unwrap();
+        assert_eq!(actors, live_actors, "{boundary} XTHG");
+        let live_xmic = std::fs::read(capture.join(boundary).join("xmic-records.bin"))
+            .expect("missing native XMIC capture");
+        let mut xmic = Vec::with_capacity(1200);
+        for index in 0..150 {
+            let record = state
+                .city
+                .microsim_at(index)
+                .expect("missing CityGame XMIC row");
+            xmic.extend([record.tile_id, record.stat0]);
+            for value in [record.stat1, record.stat2, record.stat3] {
+                xmic.extend(value.to_le_bytes());
+            }
+        }
+        assert_eq!(xmic, live_xmic, "{boundary} XMIC");
+    };
+    let check_planes = |state: &ViewerState, boundary: &str| {
+        for (name, side) in [
+            ("altm", 128),
+            ("xter", 128),
+            ("xbld", 128),
+            ("xzon", 128),
+            ("xund", 128),
+            ("xtxt", 128),
+            ("xbit", 128),
+            ("xtrf", 64),
+            ("xplt", 64),
+            ("xval", 64),
+            ("xcrm", 64),
+            ("xplc", 32),
+            ("xfir", 32),
+            ("xpop", 32),
+            ("xrog", 32),
+        ] {
+            let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..side {
+                for y in 0..side {
+                    let scale = 128 / side;
+                    let (tile_x, tile_y) = (x * scale, y * scale);
+                    let actual: u16 = match name {
+                        "altm" => {
+                            let v = state.city.altm_at(tile_x, tile_y);
+                            u16::from(v.land)
+                                | (u16::from(v.water) << 5)
+                                | (u16::from(v.tunnel_levels) << 10)
+                        }
+                        "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                        "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                        "xzon" => state
+                            .city
+                            .zone_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                        "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                        "xbit" => state
+                            .city
+                            .tile_bits_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xtrf" => state
+                            .city
+                            .traffic_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xplt" => state
+                            .city
+                            .pollution_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                        "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                        "xplc" => state
+                            .city
+                            .police_coverage_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                        "xpop" => state
+                            .city
+                            .population_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                        _ => unreachable!(),
+                    };
+                    let index = x * side + y;
+                    let expected = if name == "altm" {
+                        u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                    } else {
+                        u16::from(live[index])
+                    };
+                    assert_eq!(actual, expected, "{boundary} {name} at ({x}, {y})");
+                }
+            }
+        }
+    };
+    state
+        .load_city(&capture.join("a.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    check(&state, "first-open-state");
+    check_planes(&state, "first-open-state");
+    state.game_clock = state.game_clock.wrapping_add_days(1);
+    let date = state.game_clock;
+    state.handle_simulation_day_advanced(date.year(), date.month(), date.day());
+    check(&state, "first-advanced-state");
+    state
+        .load_city(&capture.join("b.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    check(&state, "second-open-state");
+    check_planes(&state, "second-open-state");
+}
+
+#[test]
+fn win95_city_open_retains_process_calendar_words_until_next_dispatch() {
+    let path = std::env::temp_dir().join(format!("pe-calendar-open-{}.sc2", std::process::id()));
+    let mut incoming = City::new_blank(&path, "Incoming").unwrap();
+    incoming.set_saved_date_and_day(
+        CityDate {
+            year: 1942,
+            month: 10,
+        },
+        12,
+    );
+    incoming.save(&path).unwrap();
+
+    let mut previous = City::new_blank("previous.sc2", "Previous").unwrap();
+    previous.set_saved_date_and_day(
+        CityDate {
+            year: 1907,
+            month: 4,
+        },
+        4,
+    );
+    let mut state = test_state(previous);
+    state.engine_fidelity = EngineFidelity::Win95;
+    let old = (
+        state.city.pe_w_calendar_month_mod(),
+        state.city.pe_w_season(),
+        state.city.pe_w_local_fame_base(),
+    );
+    state.load_city(&path, (800, 600), 1.0).unwrap();
+    assert_eq!(
+        (
+            state.city.pe_w_calendar_month_mod(),
+            state.city.pe_w_season(),
+            state.city.pe_w_local_fame_base()
+        ),
+        old
+    );
+    state.game_clock = state.game_clock.wrapping_add_days(1);
+    let date = state.game_clock;
+    state.handle_simulation_day_advanced(date.year(), date.month(), date.day());
+    let age = state.city.city_age_days().unwrap();
+    assert_eq!(
+        u32::from(state.city.pe_w_calendar_month_mod()),
+        (age / 25) % 12
+    );
+    assert_eq!(u32::from(state.city.pe_w_local_fame_base()), age / 300);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn pe_growth_counters_round_trip_mid_month_on_both_layouts() {
     let initial = [18, 1, 2, 3, 4, 5, 6, 7];
     let mut expected = initial;
@@ -1707,6 +2108,41 @@ fn new_city_seeds_win95_xrog_to_neutral_before_first_simulation_pass() {
 }
 
 #[test]
+fn win95_new_city_allocates_and_saves_cleared_density_planes() {
+    let mut state = test_state(City::new_blank("/tmp/citygame-density-init.sc2", "test").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state.new_city().unwrap();
+    for plane in [
+        state.city.land_value_slice(),
+        state.city.crime_density_slice(),
+        state.city.pollution_density_slice(),
+    ] {
+        assert!(plane.unwrap().iter().all(|&value| value == 0));
+    }
+    state.generate_edit_map_with_seed(123);
+    for plane in [
+        state.city.land_value_slice(),
+        state.city.crime_density_slice(),
+        state.city.pollution_density_slice(),
+    ] {
+        assert!(plane.unwrap().iter().all(|&value| value == 0));
+    }
+
+    let path =
+        std::env::temp_dir().join(format!("citygame-density-init-{}.sc2", std::process::id()));
+    state.city.save(&path).unwrap();
+    let reloaded = City::load(&path).unwrap();
+    for plane in [
+        reloaded.land_value_slice(),
+        reloaded.crime_density_slice(),
+        reloaded.pollution_density_slice(),
+    ] {
+        assert!(plane.unwrap().iter().all(|&value| value == 0));
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn new_city_initializes_original_national_misc_defaults() {
     let mut state =
         test_state(City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city"));
@@ -1757,8 +2193,18 @@ fn win95_retail_city_value_matches_native_reference_vectors() {
 
     for (label, xund, counts, expected) in [
         ("all-positive-case-table", 19i16, all_positive, 2_353_627i32),
-        ("signed-word-division-edges", i16::MIN, signed_edges, -130_337),
-        ("signed-word-wrapping-accumulation", i16::MAX, wrapping_sum, 443_153_418),
+        (
+            "signed-word-division-edges",
+            i16::MIN,
+            signed_edges,
+            -130_337,
+        ),
+        (
+            "signed-word-wrapping-accumulation",
+            i16::MAX,
+            wrapping_sum,
+            443_153_418,
+        ),
     ] {
         let mut city = City::new_blank(
             format!("/tmp/citygame-city-value-{label}.sc2"),
@@ -1772,7 +2218,10 @@ fn win95_retail_city_value_matches_native_reference_vectors() {
 
         pe_recalculate_city_value_46a270(&mut city);
 
-        assert_eq!(city.pe_city_value, expected, "native reference case {label}");
+        assert_eq!(
+            city.pe_city_value, expected,
+            "native reference case {label}"
+        );
     }
 }
 
@@ -2699,7 +3148,7 @@ fn win95_city_open_water_uses_the_saved_selector_before_display_rotation() {
         [0xf0, 0xf0, 0xf0, 0xe0, 0xf0],
     );
     state.rotate_view(1);
-    assert_eq!(state.city.pe_w_city_rotation, 2);
+    assert_eq!(state.city.pe_w_city_rotation, 0);
     assert_eq!(state.city.rotation(), 1);
 
     city.saved_rotation = 0;
@@ -2713,4 +3162,1516 @@ fn win95_city_open_water_uses_the_saved_selector_before_display_rotation() {
     );
     assert_eq!(state.city.pe_w_sewer_bonus(), 1);
     std::fs::remove_file(path).unwrap();
+}
+
+/// Replays the clock-derived startup streams from a private original-build
+/// capture. The files are intentionally external to the public repository.
+#[test]
+#[ignore = "requires private Win95 live-capture files and original bootstrap city"]
+fn win95_captured_clocks_city_open_through_phase13() {
+    let _live_rng = LiveGrowthRng::enable();
+    let capture = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_CAPTURE_DIR")
+            .expect("CITYGAME_WIN95_CAPTURE_DIR must point to the private live capture"),
+    );
+    let bootstrap = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY")
+            .expect("CITYGAME_WIN95_BOOTSTRAP_CITY must point to an original bootstrap city"),
+    );
+    // PE GetTickCount returns captured from the view constructor and the
+    // first document/newspaper initialization, respectively.
+    let view_lfsr_tick = 0x1c25a_u32;
+    let view_lcg_tick = 0x1c25a_u32;
+    let newspaper_tick = 0x31869_u32;
+    let mut view_ticks = [view_lfsr_tick, view_lcg_tick].into_iter();
+    let (lfsr, game_rand) = super::super::runtime::win95_view_randoms_from_tick_source(|| {
+        u64::from(view_ticks.next().expect("unexpected view tick read"))
+    });
+    let (tick_word, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| {
+            u64::from(newspaper_tick)
+        });
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game_rand),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    state.pe_document_tick_word = Some(tick_word);
+    assert!(state.engine_fidelity.uses_win95());
+    state
+        .load_city(&capture.join("maxis-paused.sc2"), (800, 600), 1.0)
+        .unwrap();
+    assert_eq!(state.pe_document_tick_word, Some(newspaper_tick as i16));
+    assert_eq!(
+        (
+            state.pe_process_crt.seed(),
+            state.pe_process_lfsr.state(),
+            state.pe_process_game_rand.state()
+        ),
+        (2_943_932_078, 49_755, 115_291)
+    );
+
+    let date = state.city.saved_date().unwrap();
+    state.handle_simulation_day_advanced(date.year, date.month, 13);
+    assert_eq!(state.city.city_age_days(), Some(28_238));
+    assert_eq!(
+        (
+            state.pe_process_crt.seed(),
+            state.pe_process_lfsr.state(),
+            state.pe_process_game_rand.state()
+        ),
+        (1_052_788_239, 43_836, 115_291)
+    );
+    for (name, side) in [
+        ("altm", 128),
+        ("xter", 128),
+        ("xbld", 128),
+        ("xzon", 128),
+        ("xund", 128),
+        ("xtxt", 128),
+        ("xbit", 128),
+        ("xtrf", 64),
+        ("xplt", 64),
+        ("xval", 64),
+        ("xcrm", 64),
+        ("xplc", 32),
+        ("xfir", 32),
+        ("xpop", 32),
+        ("xrog", 32),
+    ] {
+        let live = std::fs::read(capture.join(format!("tick-phase-return/{name}-x-major.bin")))
+            .expect("missing native plane capture");
+        for x in 0..side {
+            for y in 0..side {
+                let scale = 128 / side;
+                let (tile_x, tile_y) = (x * scale, y * scale);
+                let actual: u16 = match name {
+                    "altm" => {
+                        let v = state.city.altm_at(tile_x, tile_y);
+                        u16::from(v.land)
+                            | (u16::from(v.water) << 5)
+                            | (u16::from(v.tunnel_levels) << 10)
+                    }
+                    "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                    "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                    "xzon" => state
+                        .city
+                        .zone_at(tile_x, tile_y)
+                        .unwrap()
+                        .raw_bits()
+                        .into(),
+                    "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                    "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                    "xbit" => state
+                        .city
+                        .tile_bits_at(tile_x, tile_y)
+                        .unwrap()
+                        .raw_bits()
+                        .into(),
+                    "xtrf" => state
+                        .city
+                        .traffic_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xplt" => state
+                        .city
+                        .pollution_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                    "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                    "xplc" => state
+                        .city
+                        .police_coverage_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                    "xpop" => state
+                        .city
+                        .population_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                    _ => unreachable!(),
+                };
+                let index = x * side + y;
+                let expected = if name == "altm" {
+                    u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                } else {
+                    u16::from(live[index])
+                };
+                assert_eq!(actual, expected, "{name} at ({x}, {y})");
+            }
+        }
+    }
+}
+
+/// Fresh-launch Win95 clock inputs through a reopened city's first calendar dispatch.
+#[test]
+#[ignore = "requires private Win95 phase-one capture and original bootstrap city"]
+fn win95_captured_clocks_reopened_city_through_phase_one() {
+    let _live_rng = LiveGrowthRng::enable();
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_PHASE_ONE_CAPTURE").unwrap());
+    let bootstrap = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY").unwrap());
+    // These are the three GetTickCount returns in the original fresh launch.
+    let mut ticks = [0x58cd0_u64, 0x58cd0].into_iter();
+    let (lfsr, game) =
+        super::super::runtime::win95_view_randoms_from_tick_source(|| ticks.next().unwrap());
+    let (tick, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| 0x69593);
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    state.pe_document_tick_word = Some(tick);
+    state
+        .load_city(
+            &capture.join("../crt-editor-live-20261115/clockhard.sc2"),
+            (1280, 800),
+            1.0,
+        )
+        .unwrap();
+    let check_rng = |state: &ViewerState, boundary: &str| {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(capture.join(boundary).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(state.pe_process_crt.seed()),
+            manifest["crt_tls_candidates"][0]["holdrand"]
+                .as_u64()
+                .unwrap(),
+            "{boundary} CRT"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_lfsr.state()),
+            manifest["lfsr_raw"].as_u64().unwrap(),
+            "{boundary} LFSR"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_game_rand.state()),
+            manifest["game_lcg_raw"].as_u64().unwrap(),
+            "{boundary} game RNG"
+        );
+        let live_actors = std::fs::read(capture.join(boundary).join("xthg-records.bin"))
+            .expect("missing native XTHG capture");
+        let actors = crate::win95_overlay::encode_xthg_records(
+            state
+                .city
+                .traffic_overlays()
+                .expect("missing CityGame XTHG"),
+        )
+        .unwrap();
+        assert_eq!(actors, live_actors, "{boundary} XTHG");
+    };
+    let check_planes = |state: &ViewerState, boundary: &str| {
+        for (name, side) in [
+            ("altm", 128),
+            ("xter", 128),
+            ("xbld", 128),
+            ("xzon", 128),
+            ("xund", 128),
+            ("xtxt", 128),
+            ("xbit", 128),
+            ("xtrf", 64),
+            ("xplt", 64),
+            ("xval", 64),
+            ("xcrm", 64),
+            ("xplc", 32),
+            ("xfir", 32),
+            ("xpop", 32),
+            ("xrog", 32),
+        ] {
+            let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..side {
+                for y in 0..side {
+                    let scale = 128 / side;
+                    let (tile_x, tile_y) = (x * scale, y * scale);
+                    let actual: u16 = match name {
+                        "altm" => {
+                            let v = state.city.altm_at(tile_x, tile_y);
+                            u16::from(v.land)
+                                | (u16::from(v.water) << 5)
+                                | (u16::from(v.tunnel_levels) << 10)
+                        }
+                        "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                        "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                        "xzon" => state
+                            .city
+                            .zone_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                        "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                        "xbit" => state
+                            .city
+                            .tile_bits_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xtrf" => state
+                            .city
+                            .traffic_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xplt" => state
+                            .city
+                            .pollution_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                        "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                        "xplc" => state
+                            .city
+                            .police_coverage_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                        "xpop" => state
+                            .city
+                            .population_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                        _ => unreachable!(),
+                    };
+                    let index = x * side + y;
+                    let expected = if name == "altm" {
+                        u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                    } else {
+                        u16::from(live[index])
+                    };
+                    assert_eq!(actual, expected, "{boundary} {name} at ({x}, {y})");
+                }
+            }
+        }
+    };
+    check_rng(&state, "entry2-state");
+    check_planes(&state, "entry2-state");
+    assert_eq!(state.city.city_age_days(), Some(0));
+    let date = state.city.saved_date().unwrap();
+    state.handle_simulation_day_advanced(date.year, date.month, 1);
+    assert_eq!(state.city.city_age_days(), Some(1));
+    check_rng(&state, "return2-state");
+    check_planes(&state, "return2-state");
+}
+
+/// Fresh-launch Win95 clock inputs through a mature city's phase-13 calendar dispatch.
+#[test]
+#[ignore = "requires private Win95 phase-13 capture and original bootstrap city"]
+fn win95_captured_clocks_mature_city_through_phase_13() {
+    let _live_rng = LiveGrowthRng::enable();
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_PHASE13_CAPTURE").unwrap());
+    let bootstrap = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY").unwrap());
+    // These are the three GetTickCount returns in the original fresh launch.
+    let mut ticks = [0x2ef7c_u64, 0x2ef7c].into_iter();
+    let (lfsr, game) =
+        super::super::runtime::win95_view_randoms_from_tick_source(|| ticks.next().unwrap());
+    let (tick, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| 0x39e58);
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    state.pe_document_tick_word = Some(tick);
+    state
+        .load_city(&capture.join("maxis-paused.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    let check_rng = |state: &ViewerState, boundary: &str| {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(capture.join(boundary).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(state.pe_process_crt.seed()),
+            manifest["crt_tls_candidates"][0]["holdrand"]
+                .as_u64()
+                .unwrap(),
+            "{boundary} CRT"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_lfsr.state()),
+            manifest["lfsr_raw"].as_u64().unwrap(),
+            "{boundary} LFSR"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_game_rand.state()),
+            manifest["game_lcg_raw"].as_u64().unwrap(),
+            "{boundary} game RNG"
+        );
+        assert_eq!(
+            u64::from(state.city.city_age_days().unwrap()),
+            manifest["city_days"].as_u64().unwrap(),
+            "{boundary} age"
+        );
+        assert_eq!(
+            u64::from(state.city.pe_dw_city_population()),
+            manifest["city_population"].as_u64().unwrap(),
+            "{boundary} population"
+        );
+        assert_eq!(
+            u64::from(state.city.pe_w_calendar_month_mod()),
+            manifest["calendar_month_mod_word"].as_u64().unwrap(),
+            "{boundary} calendar modulo"
+        );
+        assert_eq!(
+            u64::from(state.city.pe_w_local_fame_base()),
+            manifest["local_fame_base_word"].as_u64().unwrap(),
+            "{boundary} fame base"
+        );
+        let live_actors = std::fs::read(capture.join(boundary).join("xthg-records.bin"))
+            .expect("missing native XTHG capture");
+        let actors = crate::win95_overlay::encode_xthg_records(
+            state
+                .city
+                .traffic_overlays()
+                .expect("missing CityGame XTHG"),
+        )
+        .unwrap();
+        assert_eq!(actors, live_actors, "{boundary} XTHG");
+        let live_xmic = std::fs::read(capture.join(boundary).join("xmic-records.bin"))
+            .expect("missing native XMIC capture");
+        let mut xmic = Vec::with_capacity(1200);
+        for index in 0..150 {
+            let record = state
+                .city
+                .microsim_at(index)
+                .expect("missing CityGame XMIC row");
+            xmic.extend([record.tile_id, record.stat0]);
+            for value in [record.stat1, record.stat2, record.stat3] {
+                xmic.extend(value.to_le_bytes());
+            }
+        }
+        assert_eq!(xmic, live_xmic, "{boundary} XMIC");
+    };
+    let check_planes = |state: &ViewerState, boundary: &str| {
+        for (name, side) in [
+            ("altm", 128),
+            ("xter", 128),
+            ("xbld", 128),
+            ("xzon", 128),
+            ("xund", 128),
+            ("xtxt", 128),
+            ("xbit", 128),
+            ("xtrf", 64),
+            ("xplt", 64),
+            ("xval", 64),
+            ("xcrm", 64),
+            ("xplc", 32),
+            ("xfir", 32),
+            ("xpop", 32),
+            ("xrog", 32),
+        ] {
+            let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..side {
+                for y in 0..side {
+                    let scale = 128 / side;
+                    let (tile_x, tile_y) = (x * scale, y * scale);
+                    let actual: u16 = match name {
+                        "altm" => {
+                            let v = state.city.altm_at(tile_x, tile_y);
+                            u16::from(v.land)
+                                | (u16::from(v.water) << 5)
+                                | (u16::from(v.tunnel_levels) << 10)
+                        }
+                        "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                        "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                        "xzon" => state
+                            .city
+                            .zone_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                        "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                        "xbit" => state
+                            .city
+                            .tile_bits_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xtrf" => state
+                            .city
+                            .traffic_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xplt" => state
+                            .city
+                            .pollution_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                        "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                        "xplc" => state
+                            .city
+                            .police_coverage_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                        "xpop" => state
+                            .city
+                            .population_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                        _ => unreachable!(),
+                    };
+                    let index = x * side + y;
+                    let expected = if name == "altm" {
+                        u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                    } else {
+                        u16::from(live[index])
+                    };
+                    assert_eq!(actual, expected, "{boundary} {name} at ({x}, {y})");
+                }
+            }
+        }
+    };
+    check_rng(&state, "entry-state");
+    check_planes(&state, "entry-state");
+    assert_eq!(state.city.city_age_days(), Some(28_237));
+    let date = state.city.saved_date().unwrap();
+    state.handle_simulation_day_advanced(date.year, date.month, 13);
+    assert_eq!(state.city.city_age_days(), Some(28_238));
+    check_rng(&state, "return-state");
+    check_planes(&state, "return-state");
+}
+
+#[test]
+fn win95_year_end_latch_survives_refresh_and_follows_monthly_workers() {
+    let city = City::new_blank("/tmp/pe-year-end-latch.sc2", "Latch").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Win95;
+    state.city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 0);
+    state.city.set_saved_date_and_day(
+        CityDate {
+            year: 1900,
+            month: 12,
+        },
+        24,
+    );
+    state.game_clock = GameClock::new_with_day(1900, 12, 24);
+    state.refresh_live_misc_current_values();
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+    state.sim_calendar_day0_budget_and_date_at(1901, 1, 0);
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+
+    state.sim_calendar_day0_budget_and_date_at(1901, 12, 0);
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(1));
+    state.game_clock = GameClock::new_with_day(1901, 12, 1);
+    state.refresh_live_misc_current_values();
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(1));
+    state.sim_calendar_day0_budget_and_date_at(1902, 1, 0);
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+}
+
+/// Fresh-launch Win95 clock inputs through a date-adjusted city's January phase.
+#[test]
+#[ignore = "requires private Win95 annual capture and original bootstrap city"]
+fn win95_captured_clocks_january_without_december_gate() {
+    let _live_rng = LiveGrowthRng::enable();
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_ANNUAL_CAPTURE").unwrap());
+    let bootstrap = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY").unwrap());
+    // These are the three GetTickCount returns in the original fresh launch.
+    let mut ticks = [0xa9be_u64, 0xa9be].into_iter();
+    let (lfsr, game) =
+        super::super::runtime::win95_view_randoms_from_tick_source(|| ticks.next().unwrap());
+    let (tick, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| 0x1828d);
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    state.pe_document_tick_word = Some(tick);
+    state
+        .load_city(&capture.join("annual.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    let check_rng = |state: &ViewerState, boundary: &str| {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(capture.join(boundary).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(state.pe_process_crt.seed()),
+            manifest["crt_tls_candidates"][0]["holdrand"]
+                .as_u64()
+                .unwrap(),
+            "{boundary} CRT"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_lfsr.state()),
+            manifest["lfsr_raw"].as_u64().unwrap(),
+            "{boundary} LFSR"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_game_rand.state()),
+            manifest["game_lcg_raw"].as_u64().unwrap(),
+            "{boundary} game RNG"
+        );
+        let live_actors = std::fs::read(capture.join(boundary).join("xthg-records.bin"))
+            .expect("missing native XTHG capture");
+        let actors = crate::win95_overlay::encode_xthg_records(
+            state
+                .city
+                .traffic_overlays()
+                .expect("missing CityGame XTHG"),
+        )
+        .unwrap();
+        assert_eq!(actors, live_actors, "{boundary} XTHG");
+        let live_xmic = std::fs::read(capture.join(boundary).join("xmic-records.bin"))
+            .expect("missing native XMIC capture");
+        let mut xmic = Vec::with_capacity(1200);
+        for index in 0..150 {
+            let record = state
+                .city
+                .microsim_at(index)
+                .expect("missing CityGame XMIC row");
+            xmic.extend([record.tile_id, record.stat0]);
+            for value in [record.stat1, record.stat2, record.stat3] {
+                xmic.extend(value.to_le_bytes());
+            }
+        }
+        assert_eq!(xmic, live_xmic, "{boundary} XMIC");
+    };
+    let check_planes = |state: &ViewerState, boundary: &str| {
+        for (name, side) in [
+            ("altm", 128),
+            ("xter", 128),
+            ("xbld", 128),
+            ("xzon", 128),
+            ("xund", 128),
+            ("xtxt", 128),
+            ("xbit", 128),
+            ("xtrf", 64),
+            ("xplt", 64),
+            ("xval", 64),
+            ("xcrm", 64),
+            ("xplc", 32),
+            ("xfir", 32),
+            ("xpop", 32),
+            ("xrog", 32),
+        ] {
+            let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..side {
+                for y in 0..side {
+                    let scale = 128 / side;
+                    let (tile_x, tile_y) = (x * scale, y * scale);
+                    let actual: u16 = match name {
+                        "altm" => {
+                            let v = state.city.altm_at(tile_x, tile_y);
+                            u16::from(v.land)
+                                | (u16::from(v.water) << 5)
+                                | (u16::from(v.tunnel_levels) << 10)
+                        }
+                        "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                        "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                        "xzon" => state
+                            .city
+                            .zone_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                        "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                        "xbit" => state
+                            .city
+                            .tile_bits_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xtrf" => state
+                            .city
+                            .traffic_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xplt" => state
+                            .city
+                            .pollution_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                        "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                        "xplc" => state
+                            .city
+                            .police_coverage_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                        "xpop" => state
+                            .city
+                            .population_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                        _ => unreachable!(),
+                    };
+                    let index = x * side + y;
+                    let expected = if name == "altm" {
+                        u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                    } else {
+                        u16::from(live[index])
+                    };
+                    assert_eq!(actual, expected, "{boundary} {name} at ({x}, {y})");
+                }
+            }
+        }
+    };
+    check_rng(&state, "entry-state");
+    check_planes(&state, "entry-state");
+    assert_eq!(state.city.city_age_days(), Some(28_499));
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+    state.game_clock = state.game_clock.wrapping_add_days(1);
+    assert_eq!(
+        (
+            state.game_clock.year(),
+            state.game_clock.month(),
+            state.game_clock.day()
+        ),
+        (1995, 1, 0)
+    );
+    state.handle_simulation_day_advanced(1995, 1, 0);
+    assert_eq!(state.city.city_age_days(), Some(28_500));
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+    check_rng(&state, "return-state");
+    check_planes(&state, "return-state");
+}
+
+/// Fresh-launch Win95 clock inputs through a date-adjusted city's January phase.
+#[test]
+#[ignore = "requires private Win95 annual capture and original bootstrap city"]
+fn win95_captured_clocks_january_with_december_gate() {
+    let _live_rng = LiveGrowthRng::enable();
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_ANNUAL_CAPTURE").unwrap());
+    let bootstrap = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY").unwrap());
+    // These are the three GetTickCount returns in the original fresh launch.
+    let mut ticks = [0x53290_u64, 0x53290].into_iter();
+    let (lfsr, game) =
+        super::super::runtime::win95_view_randoms_from_tick_source(|| ticks.next().unwrap());
+    let (tick, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| 0x8bd87);
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    state.pe_document_tick_word = Some(tick);
+    state
+        .load_city(&capture.join("armed.sc2"), (1280, 800), 1.0)
+        .unwrap();
+    let check_rng = |state: &ViewerState, boundary: &str| {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(capture.join(boundary).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(state.pe_process_crt.seed()),
+            manifest["crt_tls_candidates"][0]["holdrand"]
+                .as_u64()
+                .unwrap(),
+            "{boundary} CRT"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_lfsr.state()),
+            manifest["lfsr_raw"].as_u64().unwrap(),
+            "{boundary} LFSR"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_game_rand.state()),
+            manifest["game_lcg_raw"].as_u64().unwrap(),
+            "{boundary} game RNG"
+        );
+        let live_actors = std::fs::read(capture.join(boundary).join("xthg-records.bin"))
+            .expect("missing native XTHG capture");
+        let actors = crate::win95_overlay::encode_xthg_records(
+            state
+                .city
+                .traffic_overlays()
+                .expect("missing CityGame XTHG"),
+        )
+        .unwrap();
+        assert_eq!(actors, live_actors, "{boundary} XTHG");
+        let live_xmic = std::fs::read(capture.join(boundary).join("xmic-records.bin"))
+            .expect("missing native XMIC capture");
+        let mut xmic = Vec::with_capacity(1200);
+        for index in 0..150 {
+            let record = state
+                .city
+                .microsim_at(index)
+                .expect("missing CityGame XMIC row");
+            xmic.extend([record.tile_id, record.stat0]);
+            for value in [record.stat1, record.stat2, record.stat3] {
+                xmic.extend(value.to_le_bytes());
+            }
+        }
+        assert_eq!(xmic, live_xmic, "{boundary} XMIC");
+    };
+    let check_planes = |state: &ViewerState, boundary: &str| {
+        for (name, side) in [
+            ("altm", 128),
+            ("xter", 128),
+            ("xbld", 128),
+            ("xzon", 128),
+            ("xund", 128),
+            ("xtxt", 128),
+            ("xbit", 128),
+            ("xtrf", 64),
+            ("xplt", 64),
+            ("xval", 64),
+            ("xcrm", 64),
+            ("xplc", 32),
+            ("xfir", 32),
+            ("xpop", 32),
+            ("xrog", 32),
+        ] {
+            let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..side {
+                for y in 0..side {
+                    let scale = 128 / side;
+                    let (tile_x, tile_y) = (x * scale, y * scale);
+                    let actual: u16 = match name {
+                        "altm" => {
+                            let v = state.city.altm_at(tile_x, tile_y);
+                            u16::from(v.land)
+                                | (u16::from(v.water) << 5)
+                                | (u16::from(v.tunnel_levels) << 10)
+                        }
+                        "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                        "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                        "xzon" => state
+                            .city
+                            .zone_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                        "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                        "xbit" => state
+                            .city
+                            .tile_bits_at(tile_x, tile_y)
+                            .unwrap()
+                            .raw_bits()
+                            .into(),
+                        "xtrf" => state
+                            .city
+                            .traffic_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xplt" => state
+                            .city
+                            .pollution_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                        "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                        "xplc" => state
+                            .city
+                            .police_coverage_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                        "xpop" => state
+                            .city
+                            .population_density_at(tile_x, tile_y)
+                            .unwrap()
+                            .into(),
+                        "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                        _ => unreachable!(),
+                    };
+                    let index = x * side + y;
+                    let expected = if name == "altm" {
+                        u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                    } else {
+                        u16::from(live[index])
+                    };
+                    assert_eq!(actual, expected, "{boundary} {name} at ({x}, {y})");
+                }
+            }
+        }
+    };
+    check_rng(&state, "armed-run/armed-entry");
+    check_planes(&state, "armed-run/armed-entry");
+    assert_eq!(state.city.city_age_days(), Some(28_499));
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(1));
+    state.game_clock = state.game_clock.wrapping_add_days(1);
+    assert_eq!(
+        (
+            state.game_clock.year(),
+            state.game_clock.month(),
+            state.game_clock.day()
+        ),
+        (1995, 1, 0)
+    );
+    state.handle_simulation_day_advanced(1995, 1, 0);
+    assert_eq!(state.city.city_age_days(), Some(28_500));
+    assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+    check_rng(&state, "armed-run/armed-return");
+    check_planes(&state, "armed-run/armed-return");
+    let budget: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(capture.join("armed-run/budget-return.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        i64::from(state.city.city_funds()),
+        budget["funds"].as_i64().unwrap(),
+        "funds"
+    );
+    assert_eq!(
+        u64::from(state.city.misc_u32_at(MISC_YEAR_END_OFFSET).unwrap()),
+        budget["annual_flag"].as_u64().unwrap(),
+        "annual latch"
+    );
+    let hex = budget["budget_hex"].as_str().unwrap().as_bytes();
+    let bytes: Vec<u8> = hex
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    assert_eq!(bytes.len(), 16 * 0x70);
+    let mut budget_differences = Vec::new();
+    for row in 0..16 {
+        for field in 0..27 {
+            let native_offset = row * 0x70
+                + match field {
+                    0 => 0x60,
+                    1 => 0x64,
+                    2 => 0x68,
+                    _ if field % 2 == 1 => ((field - 3) / 2) * 4,
+                    _ => 0x30 + ((field - 4) / 2) * 4,
+                };
+            let expected =
+                u32::from_le_bytes(bytes[native_offset..native_offset + 4].try_into().unwrap());
+            let offset = budget_row_misc_offset_for_city(&state.city, row, field).unwrap();
+            let actual = state.city.budget_misc_u32_at(offset).unwrap();
+            if actual != expected {
+                budget_differences.push((row, field, actual, expected));
+            }
+        }
+    }
+    assert!(
+        budget_differences.is_empty(),
+        "budget differences: {budget_differences:?}"
+    );
+}
+
+/// The original reopens the same city without creating another view or reseeding.
+#[test]
+#[ignore = "requires private Win95 live-capture files and original bootstrap city"]
+fn win95_captured_clocks_two_city_opens_keep_process_rng() {
+    let capture = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_CAPTURE_DIR")
+            .expect("CITYGAME_WIN95_CAPTURE_DIR must point to the private live capture"),
+    );
+    let bootstrap = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY")
+            .expect("CITYGAME_WIN95_BOOTSTRAP_CITY must point to an original bootstrap city"),
+    );
+    let mut ticks = [0x10987_u64, 0x10987].into_iter();
+    let (lfsr, game_rand) = super::super::runtime::win95_view_randoms_from_tick_source(|| {
+        ticks.next().expect("unexpected view clock read")
+    });
+    let (_, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| 0x1bb7d);
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game_rand),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    assert!(state.engine_fidelity.uses_win95());
+    for (native_snapshot, expected_crt) in [
+        ("lifecycle-first", 2_214_272_338),
+        ("lifecycle-second", 1_906_082_161),
+    ] {
+        state
+            .load_city(&capture.join("maxis-paused.sc2"), (800, 600), 1.0)
+            .unwrap();
+        assert_eq!(state.pe_process_crt.seed(), expected_crt);
+        assert_eq!(state.pe_process_lfsr.state(), 2_439);
+        assert_eq!(state.pe_process_game_rand.state(), 67_975);
+        assert_eq!(state.city.city_age_days(), Some(28_237));
+        for (name, read_city) in [
+            ("xbld", City::building_at as fn(&City, usize, usize) -> u8),
+            ("xbit", |city: &City, x, y| {
+                city.tile_bits_at(x, y).unwrap().raw_bits()
+            }),
+        ] {
+            let live = std::fs::read(capture.join(format!("{native_snapshot}/{name}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..128 {
+                for y in 0..128 {
+                    assert_eq!(
+                        read_city(&state.city, x, y),
+                        live[x * 128 + y],
+                        "{name} at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires private Win95 editor clock capture and original assets"]
+fn win95_captured_clocks_prior_city_through_editor_charter() {
+    let root =
+        std::path::PathBuf::from(std::env::var_os("CITYGAME_WIN95_EDITOR_CLOCK_CAPTURE").unwrap());
+    let bootstrap =
+        std::path::PathBuf::from(std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY").unwrap());
+    let exe = std::path::PathBuf::from(std::env::var_os("CITYGAME_WIN95_EXE").unwrap());
+    let data = std::path::PathBuf::from(std::env::var_os("CITYGAME_WIN95_DATA_DIR").unwrap());
+    let mut ticks = [0x303f3_u64, 0x303f3].into_iter();
+    let (lfsr, game) =
+        super::super::runtime::win95_view_randoms_from_tick_source(|| ticks.next().unwrap());
+    let (tick, crt, tables) =
+        super::super::runtime::win95_document_randoms_from_tick_source(|| 0x5d776);
+    let mut state = ViewerState::load_default_from_path_with_process_rng(
+        bootstrap,
+        Some(crt),
+        Some(game),
+        Some(lfsr),
+        Some(tables),
+    )
+    .unwrap();
+    state.pe_document_tick_word = Some(tick);
+    state.pe_newspaper_data = Some(std::sync::Arc::new(
+        crate::win95_newspaper::PeNewspaperData::load(
+            &data.join("data_usa.dat"),
+            &data.join("data_usa.idx"),
+        )
+        .unwrap(),
+    ));
+    state.menu_checks.citygame_newspaper = true;
+    state.pe_registered_mayor_name = "Trace".into();
+    state.pe_new_city_reserved_labels = Some(
+        crate::win95_resources::new_city_reserved_labels(&std::fs::read(exe).unwrap()).unwrap(),
+    );
+    let check = |state: &ViewerState, name: &str| {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(name).join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            u64::from(state.pe_process_crt.seed()),
+            manifest["crt_tls_candidates"][0]["holdrand"]
+                .as_u64()
+                .unwrap(),
+            "{name} CRT"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_lfsr.state()),
+            manifest["lfsr_raw"].as_u64().unwrap(),
+            "{name} LFSR"
+        );
+        assert_eq!(
+            u64::from(state.pe_process_game_rand.state()),
+            manifest["game_lcg_raw"].as_u64().unwrap(),
+            "{name} game RNG"
+        );
+        for (label, read) in [
+            ("xbld", City::building_at as fn(&City, usize, usize) -> u8),
+            ("xbit", |city: &City, x, y| {
+                city.tile_bits_at(x, y).unwrap().raw_bits()
+            }),
+        ] {
+            let native =
+                std::fs::read(root.join(name).join(format!("{label}-x-major.bin"))).unwrap();
+            for x in 0..128 {
+                for y in 0..128 {
+                    assert_eq!(
+                        read(&state.city, x, y),
+                        native[x * 128 + y],
+                        "{name} {label} ({x},{y})"
+                    );
+                }
+            }
+        }
+    };
+    state
+        .load_city(
+            &root.join("../budget-second-city-20261114/native-prior.sc2"),
+            (1280, 800),
+            1.0,
+        )
+        .unwrap();
+    check(&state, "loaded-state");
+    state.new_win95_edit_map_from_city().unwrap();
+    check(&state, "editor-state");
+    state.begin_win95_new_city_setup();
+    check(&state, "charter-state");
+    let setup = state.win95_new_city_setup.as_mut().unwrap();
+    setup.name = "lake city".into();
+    setup.difficulty = 2;
+    setup.year = 3;
+    state.commit_win95_new_city_setup();
+    state.finish_edit_map_after_charter();
+    state.prepare_pe_newspaper_first_paint();
+    assert!(state.pe_newspaper_paint.is_some());
+    check(&state, "founded-state");
+    state.close_city_info_dialog();
+    let tmp = std::env::temp_dir().join(format!("citygame-editor-clock-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let path = tmp.join("clockhard.sc2");
+    state.save_city_as(&path, (1280, 800), 1.0).unwrap();
+    let actual = City::load(&path).unwrap();
+    let native = City::load(root.join("clockhard.sc2")).unwrap();
+    for tag in [
+        "ALTM", "MISC", "XBIT", "XBLD", "XCRM", "XFIR", "XGRP", "XLAB", "XMIC", "XPLC", "XPLT",
+        "XPOP", "XROG", "XTER", "XTHG", "XTRF", "XTXT", "XUND", "XVAL", "XZON",
+    ] {
+        let decode = |city: &City| {
+            let data = &city.chunk(tag).unwrap().data;
+            if tag == "ALTM" {
+                data.clone()
+            } else {
+                crate::city::sc2_rle_decode(data).unwrap()
+            }
+        };
+        assert_eq!(decode(&actual), decode(&native), "saved {tag}");
+    }
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(tmp).unwrap();
+}
+
+#[test]
+fn win95_title_new_city_defaults_to_river_without_ocean() {
+    let mut state = test_state(City::new_blank("/tmp/pe-title-river.sc2", "Empty").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state
+        .new_city_from_title(
+            "River City".into(),
+            20_000,
+            1900,
+            1,
+            0,
+            title_screen::NewCityStartFlow::GenerateAndPlay,
+        )
+        .unwrap();
+    assert!(!state.edit_map_option_enabled(EDIT_MAP_COAST_MISC_OFFSET));
+    assert!(state.edit_map_option_enabled(EDIT_MAP_RIVER_MISC_OFFSET));
+}
+
+#[test]
+#[ignore = "requires private Quadra native save and reopened RAM capture"]
+fn mac_native_edited_budget_save_reopens_with_native_budget_and_facilities() {
+    let root = PathBuf::from(std::env::var_os("CITYGAME_QUADRA_REOPEN_DIR").unwrap());
+    let native = std::fs::read(root.join("reopened.ram")).unwrap();
+    let read_u32 = |at: usize| u32::from_be_bytes(native[at..at + 4].try_into().unwrap());
+    let a5 = read_u32(0x904) as usize;
+    let ptr = |offset: usize| read_u32(a5 + offset - 0x10000) as usize;
+    let mut state = test_state(City::new_blank("/tmp/quadra-reopen.city", "Blank").unwrap());
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state
+        .load_city(&root.join("budgetreplay.city"), (640, 480), 1.0)
+        .unwrap();
+
+    assert_eq!(state.city.city_funds(), read_u32(a5 - 0x1054) as i32);
+    let book = ptr(0xfd66);
+    for row in 0..16 {
+        let native_row = book + row * 0x70;
+        let mut expected = vec![
+            read_u32(native_row + 96),
+            read_u32(native_row + 100),
+            read_u32(native_row + 104),
+        ];
+        for month in 0..12 {
+            expected.push(read_u32(native_row + month * 4));
+            expected.push(read_u32(native_row + 48 + month * 4));
+        }
+        for (field, expected) in expected.into_iter().enumerate() {
+            let offset = budget_row_misc_offset_for_city(&state.city, row, field).unwrap();
+            assert_eq!(
+                state.city.budget_misc_u32_at(offset),
+                Some(expected),
+                "budget {row}/{field}"
+            );
+        }
+    }
+    let xmic = ptr(0xfd48);
+    for slot in 0..150 {
+        let row = state.city.microsim_at(slot).unwrap();
+        let mut actual = vec![row.tile_id, row.stat0];
+        for value in [row.stat1, row.stat2, row.stat3] {
+            actual.extend(value.to_be_bytes());
+        }
+        assert_eq!(
+            actual,
+            native[xmic + slot * 8..xmic + slot * 8 + 8],
+            "XMIC {slot}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires private Quadra native edited-budget save"]
+fn mac_native_edited_budget_citygame_save_and_reopen_preserves_budget_and_facilities() {
+    let root = PathBuf::from(std::env::var_os("CITYGAME_QUADRA_REOPEN_DIR").unwrap());
+    let path = std::env::temp_dir().join(format!(
+        "citygame-edited-budget-reopen-{}.city",
+        std::process::id()
+    ));
+    let mut state = test_state(City::new_blank("/tmp/quadra-save.city", "Blank").unwrap());
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state
+        .load_city(&root.join("budgetreplay.city"), (640, 480), 1.0)
+        .unwrap();
+    let before = state.city.clone();
+    state.save_city(&path, (640, 480), 1.0).unwrap();
+    state.load_city(&path, (640, 480), 1.0).unwrap();
+    assert_eq!(state.city.city_funds(), before.city_funds());
+    for row in 0..16 {
+        for field in 0..27 {
+            let offset = budget_row_misc_offset_for_city(&before, row, field).unwrap();
+            assert_eq!(
+                state.city.budget_misc_u32_at(offset),
+                before.budget_misc_u32_at(offset),
+                "budget {row}/{field}"
+            );
+        }
+    }
+    for slot in 0..150 {
+        let a = before.microsim_at(slot).unwrap();
+        let b = state.city.microsim_at(slot).unwrap();
+        assert_eq!(
+            (a.tile_id, a.stat0, a.stat1, a.stat2, a.stat3),
+            (b.tile_id, b.stat0, b.stat1, b.stat2, b.stat3),
+            "XMIC {slot}"
+        );
+    }
+    for offset in (0x16c..0x1f0).step_by(4) {
+        assert_eq!(
+            state.city.mac_state_misc_u32_at(offset),
+            before.mac_state_misc_u32_at(offset),
+            "industry {offset:#x}"
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+#[ignore = "requires private original Mac cities and an output directory"]
+fn mac_original_city_corpus_saves_and_reopens() {
+    let input = PathBuf::from(std::env::var_os("CITYGAME_MAC_CORPUS_DIR").unwrap());
+    let output = PathBuf::from(std::env::var_os("CITYGAME_MAC_CORPUS_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    for name in [
+        "Charleston",
+        "Dullsville",
+        "Flint",
+        "Happyland",
+        "Hollywood",
+        "Lakeland",
+        "Maxis Land",
+        "Oakland",
+        "Seven Spires",
+        "Volcano City",
+    ] {
+        let mut state = test_state(City::new_blank("/tmp/corpus.city", "Blank").unwrap());
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.load_city(&input.join(name), (640, 480), 1.0).unwrap();
+        match name {
+            "Charleston" => assert_eq!(state.city.label_at(2), Some("Ashley River Mem. Bridge")),
+            "Hollywood" => assert_eq!(state.city.label_at(3), Some("Golden State Freeway (5)")),
+            _ => {}
+        }
+        let before = state.city.clone();
+        let path = output.join(format!("{}.city", name.replace(' ', "-")));
+        state.save_city(&path, (640, 480), 1.0).unwrap();
+        state.load_city(&path, (640, 480), 1.0).unwrap();
+        assert_eq!(
+            before.city_funds(),
+            state.city.city_funds(),
+            "{name}: funds"
+        );
+        for row in 0..16 {
+            for field in 0..27 {
+                let offset = budget_row_misc_offset_for_city(&before, row, field).unwrap();
+                assert_eq!(
+                    before.budget_misc_u32_at(offset),
+                    state.city.budget_misc_u32_at(offset),
+                    "{name}: budget {row}/{field}"
+                );
+            }
+        }
+        for slot in 0..150 {
+            let a = before.microsim_at(slot).unwrap();
+            let b = state.city.microsim_at(slot).unwrap();
+            assert_eq!(
+                (a.tile_id, a.stat0, a.stat1, a.stat2, a.stat3),
+                (b.tile_id, b.stat0, b.stat1, b.stat2, b.stat3),
+                "{name}: XMIC {slot}"
+            );
+        }
+        for label in 0..=u8::MAX {
+            assert_eq!(
+                before.label_at(label),
+                state.city.label_at(label),
+                "{name}: label {label}"
+            );
+        }
+        for x in 0..128 {
+            for y in 0..128 {
+                assert_eq!(
+                    before.altm_at(x, y),
+                    state.city.altm_at(x, y),
+                    "{name}: ALTM ({x},{y})"
+                );
+                assert_eq!(
+                    before.terrain_at(x, y),
+                    state.city.terrain_at(x, y),
+                    "{name}: XTER ({x},{y})"
+                );
+                assert_eq!(
+                    before.building_at(x, y),
+                    state.city.building_at(x, y),
+                    "{name}: XBLD ({x},{y})"
+                );
+                assert_eq!(
+                    before.zone_at(x, y),
+                    state.city.zone_at(x, y),
+                    "{name}: XZON ({x},{y})"
+                );
+                assert_eq!(
+                    before.underground_at(x, y),
+                    state.city.underground_at(x, y),
+                    "{name}: XUND ({x},{y})"
+                );
+                assert_eq!(
+                    before.tile_bits_at(x, y),
+                    state.city.tile_bits_at(x, y),
+                    "{name}: XBIT ({x},{y})"
+                );
+                assert_eq!(
+                    before.text_overlay_at(x, y),
+                    state.city.text_overlay_at(x, y),
+                    "{name}: XTXT ({x},{y})"
+                );
+            }
+        }
+        assert_eq!(
+            before.traffic_overlays(),
+            state.city.traffic_overlays(),
+            "{name}: XTHG"
+        );
+        assert_eq!(
+            before.police_coverage_slice(),
+            state.city.police_coverage_slice(),
+            "{name}: XPLC"
+        );
+        assert_eq!(
+            before.fire_coverage_slice(),
+            state.city.fire_coverage_slice(),
+            "{name}: XFIR"
+        );
+        assert_eq!(
+            before.population_density_slice(),
+            state.city.population_density_slice(),
+            "{name}: XPOP"
+        );
+        eprintln!("saved and reopened {name}");
+    }
+}
+
+#[test]
+#[ignore = "requires private Quadra fresh-launch clock and RAM capture"]
+fn mac_native_edited_budget_save_launch_uses_captured_startup_clocks() {
+    let root = PathBuf::from(std::env::var_os("CITYGAME_QUADRA_LAUNCH_DIR").unwrap());
+    let capture = std::fs::read(root.join("open.ram")).unwrap();
+    let word = |offset: usize| u32::from_be_bytes(capture[offset..offset + 4].try_into().unwrap());
+    let a5 = word(0x904) as usize;
+    let port = word(a5) as usize;
+    let mut ticks = [2743, 2745, 2746].into_iter();
+    let mut startup = super::super::title_flow::MacTitleStartup::new(|| ticks.next().unwrap());
+    startup.initialize_newspaper(2751);
+    let mut state = test_state(City::new_blank("/tmp/quadra-launch.city", "Blank").unwrap());
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    startup.install(&mut state);
+    state
+        .load_city(
+            &root.join("../budget-reopen-live/budgetreplay.city"),
+            (640, 480),
+            1.0,
+        )
+        .unwrap();
+    state.mac_music_callback(4610, true);
+    state.mac_music_callback(4613, true);
+    assert_eq!(
+        state.mac_process_rng.seed(),
+        word(port - 126),
+        "QuickDraw at reopened city"
+    );
+    assert_eq!(
+        state.mac_game_rng.state(),
+        word(a5 - 8),
+        "game LCG at reopened city"
+    );
+    assert_eq!(
+        state.mac_app_lfsr.state(),
+        u16::from_be_bytes(capture[a5 - 2..a5].try_into().unwrap()),
+        "app LFSR at reopened city"
+    );
+}
+
+/// The original map captures were taken at the new-city naming dialog, before
+/// its later newspaper/confirmation work. They are private original-build data.
+#[test]
+#[ignore = "requires private Win95 live-capture files and original bootstrap city"]
+fn win95_captured_clocks_new_city_generation_matches_native_planes() {
+    let capture = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_CAPTURE_DIR")
+            .expect("CITYGAME_WIN95_CAPTURE_DIR must point to the private live capture"),
+    );
+    let bootstrap = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_BOOTSTRAP_CITY")
+            .expect("CITYGAME_WIN95_BOOTSTRAP_CITY must point to an original bootstrap city"),
+    );
+    // Each row is one independently captured native launch. These are clock
+    // inputs, not post-initialization RNG seeds or a replayed draw schedule.
+    for (snapshot, view_tick, document_tick, expected_game_lcg, newspaper_lfsr) in [
+        (
+            "newcity-generated",
+            0x9478_u64,
+            0x11970_u64,
+            2_661_696_527,
+            13_063,
+        ),
+        (
+            "generator-result",
+            0x33ccf_u64,
+            0x3eb09_u64,
+            3_083_102_840,
+            31_134,
+        ),
+    ] {
+        let (lfsr, game_rand) =
+            super::super::runtime::win95_view_randoms_from_tick_source(|| view_tick);
+        let (_, crt, tables) =
+            super::super::runtime::win95_document_randoms_from_tick_source(|| document_tick);
+        let mut state = ViewerState::load_default_from_path_with_process_rng(
+            bootstrap.clone(),
+            Some(crt),
+            Some(game_rand),
+            Some(lfsr),
+            Some(tables),
+        )
+        .unwrap();
+        assert!(state.engine_fidelity.uses_win95());
+        state
+            .new_city_from_title(
+                "New City".into(),
+                20_000,
+                1900,
+                1,
+                0,
+                title_screen::NewCityStartFlow::GenerateAndPlay,
+            )
+            .unwrap();
+        assert_eq!(
+            state.pe_process_game_rand.state(),
+            expected_game_lcg,
+            "{snapshot}"
+        );
+        // The captured map is at the naming dialog; CityGame's title path
+        // has already opened the founding paper and consumed its cue draw.
+        assert_eq!(state.pe_process_lfsr.state(), newspaper_lfsr, "{snapshot}");
+        for plane in ["altm", "xter", "xbld", "xzon", "xund", "xtxt", "xbit"] {
+            let live = std::fs::read(capture.join(format!("{snapshot}/{plane}-x-major.bin")))
+                .expect("missing native plane capture");
+            for x in 0..128 {
+                for y in 0..128 {
+                    let actual: u16 = match plane {
+                        "altm" => {
+                            let v = state.city.altm_at(x, y);
+                            u16::from(v.land)
+                                | (u16::from(v.water) << 5)
+                                | (u16::from(v.tunnel_levels) << 10)
+                        }
+                        "xter" => state.city.terrain_at(x, y).into(),
+                        "xbld" => state.city.building_at(x, y).into(),
+                        "xzon" => state.city.zone_at(x, y).unwrap().raw_bits().into(),
+                        "xund" => state.city.underground_at(x, y).into(),
+                        "xtxt" => state.city.text_overlay_at(x, y).unwrap().into(),
+                        "xbit" => state.city.tile_bits_at(x, y).unwrap().raw_bits().into(),
+                        _ => unreachable!(),
+                    };
+                    let index = x * 128 + y;
+                    let expected = if plane == "altm" {
+                        u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                    } else {
+                        u16::from(live[index])
+                    };
+                    assert_eq!(actual, expected, "{snapshot}: {plane} at ({x}, {y})");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires private Win95 native generated-city capture"]
+fn win95_native_generated_city_survives_citygame_save_reload() {
+    let capture = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_CAPTURE_DIR")
+            .expect("CITYGAME_WIN95_CAPTURE_DIR must point to the private live capture"),
+    );
+    let mut native = City::load(capture.join("native-generated-play.sc2")).unwrap();
+    let roundtrip_path = std::env::temp_dir().join(format!(
+        "citygame-native-generated-roundtrip-{}.sc2",
+        std::process::id()
+    ));
+    native.save(&roundtrip_path).unwrap();
+    let roundtrip = City::load(&roundtrip_path).unwrap();
+    std::fs::remove_file(roundtrip_path).unwrap();
+    for plane in ["altm", "xter", "xbld", "xzon", "xund", "xtxt", "xbit"] {
+        let live = std::fs::read(capture.join(format!("generator-play/{plane}-x-major.bin")))
+            .expect("missing native plane capture");
+        for x in 0..128 {
+            for y in 0..128 {
+                let actual: u16 = match plane {
+                    "altm" => {
+                        let v = roundtrip.altm_at(x, y);
+                        u16::from(v.land)
+                            | (u16::from(v.water) << 5)
+                            | (u16::from(v.tunnel_levels) << 10)
+                    }
+                    "xter" => roundtrip.terrain_at(x, y).into(),
+                    "xbld" => roundtrip.building_at(x, y).into(),
+                    "xzon" => roundtrip.zone_at(x, y).unwrap().raw_bits().into(),
+                    "xund" => roundtrip.underground_at(x, y).into(),
+                    "xtxt" => roundtrip.text_overlay_at(x, y).unwrap().into(),
+                    "xbit" => roundtrip.tile_bits_at(x, y).unwrap().raw_bits().into(),
+                    _ => unreachable!(),
+                };
+                let index = x * 128 + y;
+                let expected = if plane == "altm" {
+                    u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                } else {
+                    u16::from(live[index])
+                };
+                assert_eq!(actual, expected, "{plane} at ({x}, {y})");
+            }
+        }
+    }
 }

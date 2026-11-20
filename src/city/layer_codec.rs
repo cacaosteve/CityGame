@@ -8,6 +8,14 @@ pub(super) const CITYGAME_FIRE_COVERAGE_VERSION: &[u8; 4] = b"\0\0\0\x01";
 /// Marks CityGame saves whose other compact maps also use native order.
 pub(super) const CITYGAME_MAP_PLANES_CHUNK: &str = "CGMP";
 pub(super) const CITYGAME_MAP_PLANES_VERSION: &[u8; 4] = b"\0\0\0\x01";
+/// Distinguishes Windows-1252 XLAB in new saves from older CityGame UTF-8.
+pub(super) const CITYGAME_WIN_LABELS_CHUNK: &str = "CGLB";
+pub(super) const CITYGAME_WIN_LABELS_VERSION: &[u8; 4] = b"\0\0\0\x01";
+pub(super) const CITYGAME_WIN_LABELS_UTF8_VERSION: &[u8; 4] = b"\0\0\0\x02";
+/// CNAM used UTF-8 in CityGame saves before this marker existed.
+pub(super) const CITYGAME_WIN_NAME_CHUNK: &str = "CGCN";
+pub(super) const CITYGAME_WIN_NAME_VERSION: &[u8; 4] = b"\0\0\0\x01";
+pub(super) const CITYGAME_WIN_NAME_UTF8_VERSION: &[u8; 4] = b"\0\0\0\x02";
 
 pub(super) enum MicrosimOrder {
     Native,
@@ -52,7 +60,7 @@ pub(super) fn decode_expected_chunk_for_kind(
     chunks: &[CityChunk],
     name: &str,
     expected_len: usize,
-    kind: CityFileKind,
+    _kind: CityFileKind,
 ) -> Result<Vec<u8>> {
     let chunk = chunks
         .iter()
@@ -60,12 +68,11 @@ pub(super) fn decode_expected_chunk_for_kind(
         .ok_or_else(|| anyhow!("missing {name} chunk"))?;
 
     let decoded = {
+        if name == "ALTM" && chunk.data.len() == expected_len {
+            return Ok(chunk.data.clone());
+        }
         let (first, second): (fn(&[u8]) -> Result<Vec<u8>>, fn(&[u8]) -> Result<Vec<u8>>) =
-            if kind == CityFileKind::MacCity {
-                (mac_rle_decode, sc2_rle_decode)
-            } else {
-                (sc2_rle_decode, mac_rle_decode)
-            };
+            (sc2_rle_decode, mac_rle_decode);
         let decoded = first(&chunk.data)
             .ok()
             .filter(|decoded| decoded.len() == expected_len)
@@ -93,16 +100,12 @@ pub(super) fn decode_expected_chunk_for_kind(
 
 fn decode_rle_for_expected_sizes(
     input: &[u8],
-    kind: CityFileKind,
+    _kind: CityFileKind,
     expected_sizes: &[usize],
     name: &str,
 ) -> Result<Vec<u8>> {
     let (first, second): (fn(&[u8]) -> Result<Vec<u8>>, fn(&[u8]) -> Result<Vec<u8>>) =
-        if kind == CityFileKind::MacCity {
-            (mac_rle_decode, sc2_rle_decode)
-        } else {
-            (sc2_rle_decode, mac_rle_decode)
-        };
+        (sc2_rle_decode, mac_rle_decode);
     first(input)
         .ok()
         .filter(|decoded| expected_sizes.contains(&decoded.len()))
@@ -125,8 +128,8 @@ pub(super) fn decode_win95_misc_record(chunks: &[CityChunk]) -> Result<Vec<u8>> 
     Ok(misc)
 }
 
-/// Decode Win95 `FUN_00430c00`'s on-disk `[length][text]` XLAB rows directly;
-/// the PE expands these into NUL-terminated strings only in its resident table.
+/// Decode on-disk `[length][text]` XLAB rows. Native Mac cities can use all
+/// 24 bytes after the length; the Win95 loader reserves one for a terminator.
 pub(super) fn decode_labels(chunks: &[CityChunk], kind: CityFileKind) -> Result<Vec<String>> {
     let raw = decode_expected_chunk_for_kind(
         chunks,
@@ -134,12 +137,34 @@ pub(super) fn decode_labels(chunks: &[CityChunk], kind: CityFileKind) -> Result<
         CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
         kind,
     )?;
+    let citygame_save = chunks.iter().any(|chunk| {
+        matches!(chunk.name.as_str(), CITYGAME_MAP_PLANES_CHUNK | CITYGAME_EXTENSION_CHUNK | CITYGAME_FIRE_COVERAGE_CHUNK)
+    });
+    let windows_labels = chunks.iter().any(|chunk| {
+        chunk.name == CITYGAME_WIN_LABELS_CHUNK && chunk.data == CITYGAME_WIN_LABELS_VERSION
+    });
+    let utf8_labels = chunks.iter().any(|chunk| {
+        chunk.name == CITYGAME_WIN_LABELS_CHUNK && chunk.data == CITYGAME_WIN_LABELS_UTF8_VERSION
+    });
+    let legacy_utf8 = kind != CityFileKind::MacCity
+        && (utf8_labels || (citygame_save && !windows_labels));
     let mut labels = Vec::with_capacity(CITY_LABEL_COUNT);
     for record in raw.chunks_exact(CITY_LABEL_RECORD_LEN) {
-        let count = usize::from(record[0]).min(CITY_LABEL_TEXT_MAX);
-        let text = String::from_utf8_lossy(&record[1..1 + count])
-            .trim_end_matches(char::from(0))
-            .to_owned();
+        let max = if kind == CityFileKind::MacCity {
+            CITY_LABEL_RECORD_LEN - 1
+        } else {
+            CITY_LABEL_TEXT_MAX
+        };
+        let count = usize::from(record[0]).min(max);
+        let bytes = &record[1..1 + count];
+        let text = if kind == CityFileKind::MacCity {
+            super::mac_roman::decode(bytes)
+        } else if legacy_utf8 {
+            String::from_utf8_lossy(bytes).into_owned()
+        } else {
+            super::win1252::decode(bytes)
+        };
+        let text = text.trim_end_matches(char::from(0)).to_owned();
         labels.push(text);
     }
     Ok(labels)
@@ -231,7 +256,7 @@ pub(super) fn encode_xtrf_for_save(
     }
 }
 
-/// Decode Win95 `XTHG` — 40 overlay actor records (`0x1e0` bytes raw).
+/// Decode `XTHG` — 40 overlay actor records (`0x1e0` bytes raw).
 pub(super) fn decode_xthg(
     chunks: &[CityChunk],
     kind: CityFileKind,
@@ -240,13 +265,17 @@ pub(super) fn decode_xthg(
         .iter()
         .find(|chunk| chunk.name == "XTHG")
         .ok_or_else(|| anyhow!("missing XTHG chunk"))?;
+    if chunk.data.len() == XTHG_CHUNK_SIZE {
+        return decode_xthg_records(&chunk.data);
+    }
 
-    let decoded = if chunk.data.len() == XTHG_CHUNK_SIZE {
-        chunk.data.clone()
+    let raw = if kind == CityFileKind::MacCity {
+        // The original Maxis Land save uses the older RLE packet format.
+        decode_expected_chunk_for_kind(chunks, "XTHG", XTHG_CHUNK_SIZE, kind)?
     } else {
-        city_rle_decode(&chunk.data, kind).with_context(|| "decoding XTHG")?
+        city_rle_decode(&chunk.data, kind).context("decoding XTHG")?
     };
-    decode_xthg_records(&decoded)
+    decode_xthg_records(&raw)
 }
 
 /// Nearest-neighbor upscale for 64×64 simulation maps.
@@ -458,7 +487,7 @@ pub(super) fn decode_misc_bytes(chunks: &[CityChunk]) -> Option<Vec<u8>> {
 
 pub(super) fn decode_misc_bytes_for_kind(
     chunks: &[CityChunk],
-    kind: CityFileKind,
+    _kind: CityFileKind,
 ) -> Option<Vec<u8>> {
     let chunk = chunks.iter().find(|chunk| chunk.name == "MISC")?;
     let (first, first_encode, second, second_encode): (
@@ -466,11 +495,7 @@ pub(super) fn decode_misc_bytes_for_kind(
         fn(&[u8]) -> Vec<u8>,
         fn(&[u8]) -> Result<Vec<u8>>,
         fn(&[u8]) -> Vec<u8>,
-    ) = if kind == CityFileKind::MacCity {
-        (mac_rle_decode, mac_rle_encode, sc2_rle_decode, sc2_rle_encode)
-    } else {
-        (sc2_rle_decode, sc2_rle_encode, mac_rle_decode, mac_rle_encode)
-    };
+    ) = (sc2_rle_decode, sc2_rle_encode, mac_rle_decode, mac_rle_encode);
     let first = first(&chunk.data).ok();
     if first.as_ref().is_some_and(|decoded| {
         decoded.len() == WIN95_MISC_RECORD_SIZE || first_encode(decoded) == chunk.data
@@ -589,10 +614,41 @@ pub(super) fn cnam_text(data: &[u8]) -> String {
     // passes `buffer + 1` to `FUN_004A2E6A`, which measures it with `strlen`. The first
     // byte is metadata; the text ends at the first NUL (or the chunk boundary), not
     // at the value stored in that byte.
+    String::from_utf8_lossy(cnam_bytes(data)).into_owned()
+}
+
+fn cnam_bytes(data: &[u8]) -> &[u8] {
     let text = data.get(1..).unwrap_or_default();
     let text = &text[..text
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(text.len())];
-    String::from_utf8_lossy(text).into_owned()
+    text
+}
+
+pub(super) fn win_cnam_is_utf8(chunks: &[CityChunk]) -> bool {
+    if let Some(marker) = chunks
+        .iter()
+        .find(|chunk| chunk.name == CITYGAME_WIN_NAME_CHUNK)
+    {
+        return marker.data == CITYGAME_WIN_NAME_UTF8_VERSION;
+    }
+    chunks.iter().any(|chunk| {
+        matches!(
+            chunk.name.as_str(),
+            CITYGAME_MAP_PLANES_CHUNK
+                | CITYGAME_EXTENSION_CHUNK
+                | CITYGAME_FIRE_COVERAGE_CHUNK
+                | CITYGAME_WIN_LABELS_CHUNK
+        )
+    })
+}
+
+pub(super) fn win_cnam_text(data: &[u8], utf8: bool) -> String {
+    let bytes = cnam_bytes(data);
+    if utf8 {
+        String::from_utf8_lossy(bytes).into_owned()
+    } else {
+        super::win1252::decode(bytes)
+    }
 }

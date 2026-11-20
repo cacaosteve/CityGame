@@ -4,6 +4,10 @@
 //! menu-command side-effect order are preserved. Runtime resource ownership,
 //! native simulation workers, and traffic drawing remain in their existing modules.
 
+use super::budget::{
+    BUDGET_SERVICE_MISC_STRIDE, BUDGET_TOTAL_COUNT, budget_row_misc_offset_for_city,
+};
+use super::graph_history::{XGRP_CHUNK_NAME, XGRP_SAMPLES_PER_SERIES, XGRP_VALUES};
 use super::mac_loop_scheduler::scenario_action::{
     mac_scenario_action_active, mac_scenario_action_supported,
 };
@@ -16,26 +20,27 @@ use super::{
     MISC_CITY_MODE_OFFSET, MISC_DIFFICULTY_OFFSET, MISC_HEAT_OFFSET, MISC_HUMID_OFFSET,
     MISC_NATIONAL_POPULATION_OFFSET, MISC_NATIONAL_TAX_OFFSET, MISC_NATIONAL_TREND_OFFSET,
     MISC_NATIONAL_VALUE_OFFSET, MISC_SPEED_OFFSET, MISC_WEATHER_TREND_OFFSET, MISC_WIND_OFFSET,
-    NewspaperEdition, PeGrowthAggregate, PlacementSound, RATE_OF_GROWTH_NEUTRAL, SpriteCache,
-    ViewerState, auto_budget_enabled_for_engine, auto_goto_enabled_for_engine, city_display_name,
+    MUSIC_MISC_OFFSET, NewspaperEdition, PeGrowthAggregate, PlacementSound, RATE_OF_GROWTH_NEUTRAL,
+    SOUND_EFFECTS_MISC_OFFSET, SpriteCache, ViewerState, Win95FileDialog,
+    auto_budget_enabled_for_engine, auto_goto_enabled_for_engine, city_display_name,
     disaster_start_sound, ensure_budget_misc_defaults_before_extension,
     ensure_default_city_options_for_engine, ensure_industry_misc_defaults_before_extension,
     game_clock_from_city, init_pe_process_crt, init_pe_process_lfsr, initialize_hard_start_bond,
     initialize_new_city_budget_rows, loaded_city_info_dialog_for_city, mac_loop_scheduler,
     music_enabled_for_engine, newspaper_extra_enabled_for_city,
     newspaper_subscription_enabled_for_city, no_disasters_enabled_for_engine,
-    pe_disaster_auto_goto_tile, pe_idle_scheduler, pe_misc_mirror_storage_active,
-    pe_rebuild_w_city_developed_tiles_46ab56, push_command, ordinance_flags_for_city,
-    scenario_start_clock_for_city,
-    set_auto_budget_enabled_for_engine, set_auto_goto_enabled_for_engine,
-    set_city_newspaper_extra_enabled, set_city_newspaper_subscription_enabled,
-    set_music_enabled_for_engine, set_no_disasters_enabled_for_engine,
-    set_sound_effects_enabled_for_engine, sound_effects_enabled_for_engine, terrain_generation,
-    title_screen,
+    ordinance_flags_for_city, pe_disaster_auto_goto_tile, pe_idle_scheduler,
+    pe_misc_mirror_storage_active, pe_rebuild_w_city_developed_tiles_46ab56, push_command,
+    scenario_start_clock_for_city, set_auto_budget_enabled_for_engine,
+    set_auto_goto_enabled_for_engine, set_city_newspaper_extra_enabled,
+    set_city_newspaper_subscription_enabled, set_music_enabled_for_engine,
+    set_no_disasters_enabled_for_engine, set_sound_effects_enabled_for_engine,
+    sound_effects_enabled_for_engine, terrain_generation, title_screen,
 };
 use crate::asset_profile::{AppearancePreference, AssetProfile};
 use crate::city::{
-    AppMode, BLANK_MAP_BASE_HEIGHT, CITY_HEIGHT, CITY_TILES, City, CityDate, CityFileKind, TileBits,
+    AppMode, BLANK_MAP_BASE_HEIGHT, CITY_HEIGHT, CITY_TILES, CITY_WIDTH, City, CityDate,
+    CityFileKind, TileBits,
 };
 use crate::data_map::CityDataMapMode;
 use crate::engine_fidelity::EngineFidelity;
@@ -55,9 +60,42 @@ use std::path::{Path, PathBuf};
 
 pub(super) const EDIT_MAP_GENERATION_SEED_STEP: u32 = 0x9E37_79B9;
 const MAC_NEIGHBOR_SETUP_DRAWS: usize = 20;
-const MAC_NEWSPAPER_SETUP_DRAWS: usize = 122;
+/// CODE 7 export 236 shuffles five newspaper fields in twelve rounds.
+fn shuffle_mac_newspaper_tables(rng: &mut MacToolboxRng) {
+    // Two initial swaps precede the five pairs of indices in each round.
+    for _ in 0..2 + 12 * 5 * 2 {
+        rng.random_u16();
+    }
+}
 
-fn normalize_new_city_name(value: &str) -> String {
+pub(super) fn initialize_mac_title_newspaper(rng: &mut MacToolboxRng, tick: u32) {
+    *rng = MacToolboxRng::new(i32::from(tick as i16) as u32);
+    shuffle_mac_newspaper_tables(rng);
+}
+
+/// CODE 4 FUN_2d426 copies the opened Pascal filename into the city-name
+/// global and caps it at 20 Mac Roman bytes.
+fn set_mac_loaded_city_name(city: &mut City) {
+    if city.kind == CityFileKind::MacCity {
+        let filename = city
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Untitled");
+        city.name = crate::city::mac_roman::decode(&crate::city::mac_roman::encode(filename, 20));
+    }
+}
+
+pub(super) fn normalize_new_city_name(value: &str, win95: bool) -> String {
+    if win95 {
+        // The Win95 UI uses ANSI bytes; CNAM stores at most 31 of them.
+        let bytes = crate::city::win1252::encode(value, 31);
+        return if bytes.is_empty() {
+            "New City".into()
+        } else {
+            crate::city::win1252::decode(&bytes)
+        };
+    }
     let mut name = String::new();
     for ch in value.chars() {
         if name.chars().count() >= 31 {
@@ -75,11 +113,17 @@ fn normalize_new_city_name(value: &str) -> String {
     }
 }
 
-fn new_city_path_for_name(current: &Path, name: &str) -> PathBuf {
+pub(super) fn new_city_path_for_name(current: &Path, name: &str) -> PathBuf {
     let parent = current.parent().unwrap_or_else(|| Path::new("."));
     let stem = name
         .chars()
-        .map(|ch| if ch == ' ' { '-' } else { ch })
+        .map(|ch| {
+            if matches!(ch, ' ' | '/' | '\\' | ':') {
+                '-'
+            } else {
+                ch
+            }
+        })
         .collect::<String>();
     let mut path = parent.join(format!("{stem}.SC2"));
     let mut suffix = 2u32;
@@ -152,7 +196,7 @@ pub(super) fn persist_pe_city_mode_misc(city: &mut City, mode: AppMode, fidelity
 fn pe_saved_city_open_mode(city: &City) -> u16 {
     // The SCDH loader reads the low WORD of MISC +4. The scenario
     // controller supplies mode 1 explicitly when it calls 0x406a50.
-    if city.kind == CityFileKind::WinScenario {
+    if city.pe_scenario_active() {
         return CITY_MODE_GAMEPLAY as u16;
     }
     city.misc_u32_at(MISC_CITY_MODE_OFFSET)
@@ -278,8 +322,137 @@ pub(super) fn set_window_title(video: &sdl3::VideoSubsystem, window_id: u32, tit
     }
 }
 
-pub(super) fn save_city_dialog(window: &sdl3::video::Window, kind: CityFileKind) {
+pub(super) fn save_city_dialog(
+    window: &sdl3::video::Window,
+    kind: CityFileKind,
+    city_name: &str,
+    win95: bool,
+    track_win95: bool,
+) -> bool {
+    save_city_dialog_with_completion(window, kind, city_name, win95, false, track_win95)
+}
+
+pub(super) fn save_city_dialog_before_close(
+    window: &sdl3::video::Window,
+    kind: CityFileKind,
+    city_name: &str,
+) -> bool {
+    save_city_dialog_with_completion(window, kind, city_name, true, true, false)
+}
+
+fn save_dialog_default_filename(kind: CityFileKind, city_name: &str, win95: bool) -> String {
+    if win95 {
+        // The PE seeds its Save As field from the city name plus ".sc2".
+        // Replace path separators and Windows-invalid filename characters so
+        // a loaded name cannot turn the suggested file into a different path.
+        let name: String = city_name
+            .chars()
+            .map(|ch| {
+                if ch.is_control()
+                    || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                {
+                    '_'
+                } else {
+                    ch
+                }
+            })
+            .collect();
+        let name = name.trim_end_matches([' ', '.']);
+        return format!("{}.sc2", if name.is_empty() { "Untitled" } else { name });
+    }
     let extension = if kind == CityFileKind::MacCity {
+        "city"
+    } else {
+        "sc2"
+    };
+    format!("Untitled.{extension}")
+}
+
+fn win95_save_dialog_path(mut path: PathBuf) -> PathBuf {
+    // OPENFILENAME.lpstrDefExt is "sc2" in the PE. Native Windows may have
+    // already supplied it, while another host picker can return no extension.
+    if path.file_name().is_some() && path.extension().is_none() {
+        path.as_mut_os_string().push(".sc2");
+    }
+    path
+}
+
+#[cfg(test)]
+mod save_dialog_name_tests {
+    use super::*;
+
+    #[test]
+    fn win95_save_as_uses_city_name_and_sc2_for_both_city_layouts() {
+        for kind in [
+            CityFileKind::WinSc2,
+            CityFileKind::WinScenario,
+            CityFileKind::MacCity,
+        ] {
+            assert_eq!(
+                save_dialog_default_filename(kind, "Café City", true),
+                "Café City.sc2"
+            );
+            assert_eq!(
+                save_dialog_default_filename(kind, "bad/name:city", true),
+                "bad_name_city.sc2"
+            );
+            assert_eq!(
+                save_dialog_default_filename(kind, "...", true),
+                "Untitled.sc2"
+            );
+        }
+        assert_eq!(
+            save_dialog_default_filename(CityFileKind::MacCity, "Café City", false),
+            "Untitled.city"
+        );
+    }
+
+    #[test]
+    fn win95_save_picker_adds_default_extension_only_when_missing() {
+        assert_eq!(
+            win95_save_dialog_path("/tmp/cities/My City".into()),
+            PathBuf::from("/tmp/cities/My City.sc2")
+        );
+        assert_eq!(
+            win95_save_dialog_path("/tmp/a.b/My City".into()),
+            PathBuf::from("/tmp/a.b/My City.sc2")
+        );
+        assert_eq!(
+            win95_save_dialog_path("/tmp/cities/My City.SC2".into()),
+            PathBuf::from("/tmp/cities/My City.SC2")
+        );
+        assert_eq!(
+            win95_save_dialog_path("/tmp/cities/My City.other".into()),
+            PathBuf::from("/tmp/cities/My City.other")
+        );
+    }
+
+    #[test]
+    fn win95_extensionless_save_as_writes_reopenable_sc2() {
+        let root =
+            std::env::temp_dir().join(format!("citygame-save-extension-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let city = City::new_blank(root.join("old.sc2"), "Old").unwrap();
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Win95;
+        let target = win95_save_dialog_path(root.join("New City"));
+        state.save_city_as(&target, (640, 480), 1.0).unwrap();
+        assert_eq!(target, root.join("New City.sc2"));
+        assert_eq!(City::load(&target).unwrap().name, "New City");
+        assert!(!root.join("New City").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn save_city_dialog_with_completion(
+    window: &sdl3::video::Window,
+    kind: CityFileKind,
+    city_name: &str,
+    win95: bool,
+    close_after_save: bool,
+    track_win95: bool,
+) -> bool {
+    let extension = if !win95 && kind == CityFileKind::MacCity {
         "city"
     } else {
         "sc2"
@@ -289,31 +462,59 @@ pub(super) fn save_city_dialog(window: &sdl3::video::Window, kind: CityFileKind)
         pattern: extension,
     }];
     // Tablets: SDL routes this to the platform document picker; default into Cities/.
-    let default_path = paths::default_open_dialog_dir().join(format!("Untitled.{extension}"));
+    let default_path =
+        paths::default_open_dialog_dir().join(save_dialog_default_filename(kind, city_name, win95));
     if let Err(error) = show_save_file_dialog(
         &filters,
         Some(default_path),
         window,
-        Box::new(|result, _filter| match result {
+        Box::new(move |result, _filter| match result {
             Ok(paths) => {
-                if let Some(path) = paths.into_iter().next() {
+                let path = paths.into_iter().next().map(|path| {
+                    if win95 {
+                        win95_save_dialog_path(path)
+                    } else {
+                        path
+                    }
+                });
+                if close_after_save {
+                    push_command(AppCommand::CloseSaveDialogResult(path));
+                } else if track_win95 {
+                    push_command(AppCommand::Win95FileDialogResult(
+                        Win95FileDialog::SaveAs,
+                        path,
+                    ));
+                } else if let Some(path) = path {
                     push_command(AppCommand::SaveToPath(path));
                 }
             }
-            Err(error) => log::error!("save dialog error: {error}"),
+            Err(error) => {
+                log::error!("save dialog error: {error}");
+                if close_after_save {
+                    push_command(AppCommand::CloseSaveDialogResult(None));
+                } else if track_win95 {
+                    push_command(AppCommand::Win95FileDialogResult(
+                        Win95FileDialog::SaveAs,
+                        None,
+                    ));
+                }
+            }
         }),
     ) {
         log::error!("failed to open save dialog: {error}");
+        return false;
     }
+    true
 }
 
 #[cfg(target_os = "ios")]
-pub(super) fn open_city_dialog(window: &sdl3::video::Window) {
-    crate::ios_documents::open_city(window, false);
+pub(super) fn open_city_dialog(window: &sdl3::video::Window, _track_win95: bool) -> bool {
+    crate::ios_documents::open_city(window, false, false);
+    false
 }
 
 #[cfg(not(target_os = "ios"))]
-pub(super) fn open_city_dialog(window: &sdl3::video::Window) {
+pub(super) fn open_city_dialog(window: &sdl3::video::Window, track_win95: bool) -> bool {
     let filters = [
         DialogFileFilter {
             name: "CityGame City (.sc2)",
@@ -336,22 +537,38 @@ pub(super) fn open_city_dialog(window: &sdl3::video::Window) {
         Some(default_path),
         false,
         window,
-        Box::new(|result, _filter| match result {
+        Box::new(move |result, _filter| match result {
             Ok(paths) => {
-                if let Some(path) = paths.into_iter().next() {
-                    push_command(AppCommand::OpenPath(path));
+                let path = paths.into_iter().next();
+                if track_win95 {
+                    push_command(AppCommand::Win95FileDialogResult(
+                        Win95FileDialog::City,
+                        path,
+                    ));
+                } else if let Some(path) = path {
+                    push_command(AppCommand::OpenConfirmedCityPath(path));
                 }
             }
-            Err(error) => log::error!("file dialog error: {error}"),
+            Err(error) => {
+                log::error!("file dialog error: {error}");
+                if track_win95 {
+                    push_command(AppCommand::Win95FileDialogResult(
+                        Win95FileDialog::City,
+                        None,
+                    ));
+                }
+            }
         }),
     ) {
         log::error!("failed to open file dialog: {error}");
+        return false;
     }
+    true
 }
 
 #[cfg(target_os = "ios")]
 pub(super) fn open_title_city_dialog(window: &sdl3::video::Window) {
-    crate::ios_documents::open_city(window, true);
+    crate::ios_documents::open_city(window, true, false);
 }
 
 #[cfg(not(target_os = "ios"))]
@@ -378,7 +595,7 @@ pub(super) fn open_title_city_dialog(window: &sdl3::video::Window) {
         Box::new(|result, _filter| match result {
             Ok(paths) => {
                 if let Some(path) = paths.into_iter().next() {
-                    push_command(AppCommand::OpenTitlePath(path));
+                    push_command(AppCommand::OpenTitleDialogPath(path));
                 }
             }
             Err(error) => log::error!("file dialog error: {error}"),
@@ -389,12 +606,21 @@ pub(super) fn open_title_city_dialog(window: &sdl3::video::Window) {
 }
 
 #[cfg(target_os = "ios")]
-pub(super) fn open_scenario_dialog(window: &sdl3::video::Window, _profile: &AssetProfile) {
-    crate::ios_documents::open_city(window, false);
+pub(super) fn open_scenario_dialog(
+    window: &sdl3::video::Window,
+    _profile: &AssetProfile,
+    _track_win95: bool,
+) -> bool {
+    crate::ios_documents::open_city(window, false, true);
+    false
 }
 
 #[cfg(not(target_os = "ios"))]
-pub(super) fn open_scenario_dialog(window: &sdl3::video::Window, profile: &AssetProfile) {
+pub(super) fn open_scenario_dialog(
+    window: &sdl3::video::Window,
+    profile: &AssetProfile,
+    track_win95: bool,
+) -> bool {
     let filters = [
         DialogFileFilter {
             name: "Scenario (.scn)",
@@ -412,22 +638,38 @@ pub(super) fn open_scenario_dialog(window: &sdl3::video::Window, profile: &Asset
         Some(default_path),
         false,
         window,
-        Box::new(|result, _filter| match result {
+        Box::new(move |result, _filter| match result {
             Ok(paths) => {
-                if let Some(path) = paths.into_iter().next() {
-                    push_command(AppCommand::OpenPath(path));
+                let path = paths.into_iter().next();
+                if track_win95 {
+                    push_command(AppCommand::Win95FileDialogResult(
+                        Win95FileDialog::Scenario,
+                        path,
+                    ));
+                } else if let Some(path) = path {
+                    push_command(AppCommand::OpenScenarioPath(path));
                 }
             }
-            Err(error) => log::error!("scenario dialog error: {error}"),
+            Err(error) => {
+                log::error!("scenario dialog error: {error}");
+                if track_win95 {
+                    push_command(AppCommand::Win95FileDialogResult(
+                        Win95FileDialog::Scenario,
+                        None,
+                    ));
+                }
+            }
         }),
     ) {
         log::error!("failed to open scenario dialog: {error}");
+        return false;
     }
+    true
 }
 
 #[cfg(target_os = "ios")]
 pub(super) fn open_title_scenario_dialog(window: &sdl3::video::Window, _profile: &AssetProfile) {
-    crate::ios_documents::open_city(window, true);
+    crate::ios_documents::open_city(window, true, true);
 }
 
 #[cfg(not(target_os = "ios"))]
@@ -450,7 +692,7 @@ pub(super) fn open_title_scenario_dialog(window: &sdl3::video::Window, profile: 
         Box::new(|result, _filter| match result {
             Ok(paths) => {
                 if let Some(path) = paths.into_iter().next() {
-                    push_command(AppCommand::OpenTitlePath(path));
+                    push_command(AppCommand::OpenTitleScenarioPath(path));
                 }
             }
             Err(error) => log::error!("scenario dialog error: {error}"),
@@ -521,6 +763,16 @@ pub(super) fn initialize_original_new_city_national_misc(city: &mut City) {
     if city.kind == CityFileKind::MacCity {
         return;
     }
+    initialize_pe_charter_national_values(city);
+    // PE new-city @ `0x40e173`: ocean=0, river=1 (BSS `0x4c94c0`/`0x4cb3f8`).
+    city.pe_init_ocean_river_new_city_40e173();
+    city.set_misc_u32_at(MISC_HEAT_OFFSET, DEFAULT_WEATHER_HEAT);
+    city.set_misc_u32_at(MISC_WIND_OFFSET, DEFAULT_WEATHER_WIND);
+    city.set_misc_u32_at(MISC_HUMID_OFFSET, DEFAULT_WEATHER_HUMID);
+    city.set_misc_u32_at(MISC_WEATHER_TREND_OFFSET, DEFAULT_WEATHER_TREND);
+}
+
+pub(super) fn initialize_pe_charter_national_values(city: &mut City) {
     let start_year = city.saved_date().map(|date| date.year).unwrap_or(1900);
     let national_population = match start_year {
         1900 => 10_000,
@@ -541,12 +793,18 @@ pub(super) fn initialize_original_new_city_national_misc(city: &mut City) {
         MISC_NATIONAL_TREND_OFFSET,
         u32::from(city.pe_w_city_difficulty).saturating_sub(1),
     );
-    // PE new-city @ `0x40e173`: ocean=0, river=1 (BSS `0x4c94c0`/`0x4cb3f8`).
-    city.pe_init_ocean_river_new_city_40e173();
-    city.set_misc_u32_at(MISC_HEAT_OFFSET, DEFAULT_WEATHER_HEAT);
-    city.set_misc_u32_at(MISC_WIND_OFFSET, DEFAULT_WEATHER_WIND);
-    city.set_misc_u32_at(MISC_HUMID_OFFSET, DEFAULT_WEATHER_HUMID);
-    city.set_misc_u32_at(MISC_WEATHER_TREND_OFFSET, DEFAULT_WEATHER_TREND);
+}
+
+pub(super) fn initialize_pe_new_city_national_graph(city: &mut City) {
+    // PE new-city setup at 0x42e572/0x42e583 writes the newest graph
+    // samples through rows 13 and 14 after selecting the starting year.
+    let mut history = city.chunk_u32_values(XGRP_CHUNK_NAME, 0, XGRP_VALUES);
+    history.resize(XGRP_VALUES, 0);
+    history[13 * XGRP_SAMPLES_PER_SERIES] = 3;
+    history[14 * XGRP_SAMPLES_PER_SERIES] = city
+        .misc_u32_at(MISC_NATIONAL_POPULATION_OFFSET)
+        .unwrap_or(0);
+    city.set_chunk_u32_values(XGRP_CHUNK_NAME, 0, &history);
 }
 
 pub(super) fn initialize_mac_fidelity_new_city_industry_rows(
@@ -564,8 +822,15 @@ pub(super) fn initialize_mac_fidelity_new_city_industry_rows(
     ensure_industry_misc_defaults_before_extension(city);
 }
 
-pub(super) fn initialize_new_city_microsim_planes(city: &mut City) {
+pub(super) fn initialize_new_city_microsim_planes(city: &mut City, fidelity: EngineFidelity) {
     let empty_map = vec![0; CITY_TILES];
+    if fidelity.uses_win95() {
+        // The PE allocates and clears these planes during new-city setup,
+        // before the first density pass or founding newspaper.
+        city.sync_land_value_from_slice(&empty_map);
+        city.sync_crime_density_from_slice(&empty_map);
+        city.sync_pollution_density_from_slice(&empty_map);
+    }
     city.sync_population_density_from_slice(&empty_map);
     city.sync_police_coverage_from_slice(&empty_map);
     city.sync_fire_coverage_from_slice(&empty_map);
@@ -620,12 +885,11 @@ impl ViewerState {
             pe_rebuild_w_city_developed_tiles_46ab56(&mut city);
             city.hydrate_pe_attitude_scores_from_xgrp();
         } else {
+            set_mac_loaded_city_name(&mut city);
             city.prepare_mac_fidelity_from_saved_city();
             prepare_mac_win_scenario(&mut city)?;
         }
-        city.set_pe_scenario_active(
-            engine_fidelity.uses_win95() && city.kind == CityFileKind::WinScenario,
-        );
+        city.set_pe_scenario_active(false);
         let game_clock = game_clock_from_city(&city);
         let pe_process_crt = process_crt.unwrap_or_else(|| init_pe_process_crt(&city, game_clock));
         let pe_bootstrap_map = startup_newspaper.is_some();
@@ -715,9 +979,24 @@ impl ViewerState {
             traffic: traffic_system_for_city(&city, engine_fidelity),
             win95_overlay_sim,
             pe_process_crt,
+            pe_document_tick_word: None,
+            pe_new_city_reserved_labels: None,
+            pe_registered_mayor_name: "Mayor McSim".into(),
+            pe_newspaper_data: None,
+            pe_newspaper_paint: None,
+            pe_newspaper_paint_attempted: false,
+            pe_newspaper_article: None,
+            mac_newspaper: super::newspaper_state::MacPaperRuntime::default(),
+            mac_system_font: None,
             mac_process_rng: MacToolboxRng::new(MacToolboxRng::QUICKDRAW_INIT_GRAF_SEED),
+            mac_app_lfsr: crate::mac_random::MacAppLfsrRng::new(
+                crate::mac_random::MacAppLfsrRng::startup_seed(
+                    ((sdl3::timer::ticks() as u128 * 60) / 1000) as u32,
+                ),
+            ),
             mac_kind2_sound_deadline: 0,
             mac_game_rng,
+            mac_music: super::title_flow::MacMusicSelector::default(),
             pe_process_game_rand,
             edit_map_height_hold: None,
             pe_raise_xter_ui_byte: 0,
@@ -790,14 +1069,17 @@ impl ViewerState {
             power_plant_dialog: None,
             arcology_dialog: None,
             sign_dialog: None,
+            win95_new_city_setup: None,
             military_base_dialog: None,
             city_info_dialog: None,
+            pending_newspaper_music: None,
             status_panel_origin: None,
             status_panel_grab: None,
             info_panel_origin: None,
             info_panel_scale: 1.0,
             info_panel_drag: None,
             founding_newspaper_pending: false,
+            pe_founding_mode_transition_pending: false,
             graph_series_visible: [true; GRAPH_HISTORY_TOTAL_SERIES],
             graph_scale: GraphScale::Year1,
             query_line: String::new(),
@@ -898,6 +1180,10 @@ impl ViewerState {
         let water_setting = usize::from(slider_values.water.min(ui::EDIT_MAP_SLIDER_MAX));
         let trees_setting = usize::from(slider_values.trees.min(ui::EDIT_MAP_SLIDER_MAX));
         if self.engine_fidelity.uses_win95() {
+            let microsim_backing: Vec<_> = (0..crate::city::MICROSIM_COUNT)
+                .map(|index| self.city.microsim_at(index).unwrap_or_default())
+                .collect();
+            let overlay_backing = self.city.traffic_overlays().unwrap_or_default().to_vec();
             terrain_generation::generate_win95(
                 &mut self.city,
                 slider_values,
@@ -906,6 +1192,8 @@ impl ViewerState {
                 &mut self.pe_process_crt,
                 &mut self.pe_process_game_rand,
             );
+            self.city.restore_pe_microsim_backing(microsim_backing);
+            self.city.restore_pe_overlay_backing(&overlay_backing);
         } else {
             let (terrain, altm, tile_bits, buildings, selected_water_height) =
                 terrain_generation::generate_with_rng(
@@ -946,6 +1234,9 @@ impl ViewerState {
         command: &AppCommand,
     ) -> Option<AppCommandStateEffect> {
         let mut effect = AppCommandStateEffect::default();
+        if self.mac_loop_scheduler.fiscal_notice.is_some() {
+            return Some(effect);
+        }
         match command {
             AppCommand::ToggleGrid => self.show_grid = !self.show_grid,
             AppCommand::ToggleZoneOverlay => {
@@ -970,9 +1261,40 @@ impl ViewerState {
                     // menu. The CityGame newspaper preference controls its UI.
                     self.city
                         .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+                    if !self.city.mac_newspaper_suppressed() {
+                        self.open_city_info_dialog(CityInfoDialog::Newspaper(
+                            NewspaperEdition::MacStandard,
+                        ));
+                    }
+                } else {
+                    self.open_city_info_dialog(*dialog);
                 }
-                self.open_city_info_dialog(*dialog);
                 effect.update_title = true;
+            }
+            AppCommand::OpenMacPaper(page) => {
+                if self.engine_fidelity == EngineFidelity::Mac68k
+                    && self.mode == AppMode::CityView
+                    && !self
+                        .city_info_dialog
+                        .is_some_and(|dialog| dialog.holds_mac_simulation())
+                {
+                    let level = self.city.mac_state_misc_u32_at(0x20).unwrap_or(0) as u16 as i16;
+                    if level >= 0 && usize::from(*page) <= usize::from(level.min(5) as u16) {
+                        self.city.set_mac_state_misc_u32_at(
+                            super::MISC_NEWSPAPER_CHOICE_OFFSET,
+                            u32::from(*page),
+                        );
+                        self.refresh_mac_newspaper_menu();
+                        self.city
+                            .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+                        if !self.city.mac_newspaper_suppressed() {
+                            self.open_city_info_dialog(CityInfoDialog::Newspaper(
+                                NewspaperEdition::MacStandard,
+                            ));
+                        }
+                        effect.update_title = true;
+                    }
+                }
             }
             AppCommand::SetSpeed(speed) => {
                 // The native modal disables the parent speed commands.
@@ -1075,6 +1397,8 @@ impl ViewerState {
         self.menu_checks.sound_effects = self.sound_effects_enabled;
         self.menu_checks.music = self.music_enabled;
         self.menu_checks.no_disasters = self.no_disasters_enabled;
+        self.menu_checks.mac_fidelity = self.engine_fidelity == EngineFidelity::Mac68k;
+        self.menu_checks.mac_city_active = self.mode == AppMode::CityView;
         self.menu_checks.newspaper_subscription = if self.engine_fidelity.uses_win95() {
             newspaper_subscription_enabled_for_city(&self.city)
         } else {
@@ -1087,6 +1411,7 @@ impl ViewerState {
         };
         self.menu_checks.balloon_help = self.balloon_help_enabled;
         self.menu_checks.speed = self.traffic.speed();
+        self.refresh_mac_newspaper_menu();
         mac_menu::set_edit_map_mode(self.menu_checks.edit_map);
         mac_menu::set_data_map_mode(self.menu_checks.data_map_mode);
         mac_menu::set_underground_view(self.menu_checks.show_underground);
@@ -1094,10 +1419,53 @@ impl ViewerState {
         mac_menu::set_auto_goto(self.menu_checks.auto_goto);
         mac_menu::set_sound_effects(self.menu_checks.sound_effects);
         mac_menu::set_music(self.menu_checks.music);
-        mac_menu::set_no_disasters(self.menu_checks.no_disasters);
+        mac_menu::set_no_disasters(
+            self.menu_checks.no_disasters,
+            self.menu_checks
+                .item_enabled(crate::menu_model::CMD_START_FIRE),
+        );
         mac_menu::set_newspaper_subscription(self.menu_checks.newspaper_subscription);
         mac_menu::set_newspaper_extra(self.menu_checks.newspaper_extra);
         mac_menu::set_balloon_help(self.menu_checks.balloon_help);
+    }
+
+    pub(super) fn refresh_mac_newspaper_menu(&mut self) {
+        let is_mac = self.engine_fidelity == EngineFidelity::Mac68k;
+        let level = self.city.mac_state_misc_u32_at(0x20).unwrap_or(0) as u16 as i16;
+        let count = if is_mac && level >= 0 {
+            (level.min(5) + 1) as u8
+        } else {
+            0
+        };
+        let names = if is_mac {
+            std::array::from_fn(|i| {
+                self.city
+                    .mac_state_misc_u32_at(super::MISC_NEWSPAPER_LIST_OFFSET + i * 20)
+                    .unwrap_or(0) as u8
+            })
+        } else {
+            [0; 6]
+        };
+        let selected = if is_mac {
+            self.city
+                .mac_state_misc_u32_at(super::MISC_NEWSPAPER_CHOICE_OFFSET)
+                .unwrap_or(0) as u8
+        } else {
+            0
+        };
+        if (
+            self.menu_checks.mac_newspaper,
+            self.menu_checks.mac_paper_count,
+            self.menu_checks.mac_paper_names,
+            self.menu_checks.mac_paper_selected,
+        ) != (is_mac, count, names, selected)
+        {
+            self.menu_checks.mac_newspaper = is_mac;
+            self.menu_checks.mac_paper_count = count;
+            self.menu_checks.mac_paper_names = names;
+            self.menu_checks.mac_paper_selected = selected;
+            mac_menu::set_newspaper_papers(is_mac, names, count, selected);
+        }
     }
 
     pub(super) fn sync_menu_graphics_preference(&mut self, prefer_replacement: bool) {
@@ -1278,13 +1646,20 @@ impl ViewerState {
         generation_seed: u32,
         start_flow: title_screen::NewCityStartFlow,
     ) -> Result<()> {
+        let editing_win95 = self.engine_fidelity.uses_win95()
+            && start_flow == title_screen::NewCityStartFlow::GenerateAndEdit;
+        let (city_name, starting_funds, starting_year, difficulty) = if editing_win95 {
+            ("New City".to_owned(), 20_000, 1900, 1)
+        } else {
+            (city_name, starting_funds, starting_year, difficulty)
+        };
         self.new_city_with_setup(
             Some(starting_funds),
             Some(starting_year),
             Some(difficulty),
             start_flow == title_screen::NewCityStartFlow::GenerateAndPlay,
         )?;
-        let city_name = normalize_new_city_name(&city_name);
+        let city_name = normalize_new_city_name(&city_name, self.engine_fidelity.uses_win95());
         self.city.name.clone_from(&city_name);
         self.city.path = new_city_path_for_name(&self.city.path, &city_name);
         let pe_generated_city = self.engine_fidelity.uses_win95()
@@ -1294,9 +1669,6 @@ impl ViewerState {
             // map reset, before `FUN_00410950` consumes the terrain CRT stream.
             self.city
                 .pe_initialize_new_city_neighbors_40e250(&mut self.pe_process_crt);
-        } else if self.engine_fidelity.uses_win95() {
-            self.city
-                .pe_reseed_neighbor_fame_ranks_42e585(&mut self.pe_process_crt);
         }
         self.apply_new_city_start_flow(start_flow, generation_seed);
         if pe_generated_city {
@@ -1309,6 +1681,9 @@ impl ViewerState {
     }
 
     fn finish_new_city_start(&mut self) {
+        let pe_founding_transition = self.founding_newspaper_pending
+            && self.mode == AppMode::CityView
+            && self.engine_fidelity.uses_win95();
         if self.founding_newspaper_pending
             && self.mode == AppMode::CityView
             && self.engine_fidelity == EngineFidelity::Mac68k
@@ -1327,6 +1702,21 @@ impl ViewerState {
             }
         }
         self.maybe_show_founding_newspaper();
+        if pe_founding_transition {
+            self.pe_founding_mode_transition_pending = true;
+            if self.city_info_dialog != Some(CityInfoDialog::Newspaper(NewspaperEdition::Founding))
+            {
+                self.finish_pe_founding_mode_transition();
+            }
+        }
+    }
+
+    pub(super) fn finish_pe_founding_mode_transition(&mut self) {
+        if std::mem::take(&mut self.pe_founding_mode_transition_pending) {
+            // PE 0x42e2f0 enters mode 1 after the founding modal returns;
+            // its controller calls the condition/disaster chooser at 0x406be9.
+            self.prepare_pe_disaster_on_city_open(CITY_MODE_GAMEPLAY as u16);
+        }
     }
 
     pub(super) fn apply_new_city_start_flow(
@@ -1335,8 +1725,17 @@ impl ViewerState {
         generation_seed: u32,
     ) {
         ensure_budget_misc_defaults_before_extension(&mut self.city);
-        self.city
-            .set_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET, CITY_OPTION_ENABLED_VALUE);
+        // PE fresh-city defaults at 0x40e160 pass ocean=0, river=1 to the
+        // initial terrain generator. Edit-map and Mac flows keep their own
+        // previously established defaults.
+        let coast = if self.engine_fidelity.uses_win95()
+            && start_flow == title_screen::NewCityStartFlow::GenerateAndPlay
+        {
+            CITY_OPTION_DISABLED_VALUE
+        } else {
+            CITY_OPTION_ENABLED_VALUE
+        };
+        self.city.set_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET, coast);
         self.city
             .set_misc_u32_at(EDIT_MAP_RIVER_MISC_OFFSET, CITY_OPTION_ENABLED_VALUE);
         self.edit_map_generation_seed = generation_seed;
@@ -1344,7 +1743,7 @@ impl ViewerState {
         // Both original engines reset XPOP/XPLC/XFIR to zero and XROG to 0x7f.
         // Replacing the terrain canvas clears optional microsim planes, so restore
         // those native reset values after generation.
-        initialize_new_city_microsim_planes(&mut self.city);
+        initialize_new_city_microsim_planes(&mut self.city, self.engine_fidelity);
         if start_flow == title_screen::NewCityStartFlow::GenerateAndPlay {
             self.mode = AppMode::CityView;
             persist_app_mode_transition(&mut self.city, self.mode, self.engine_fidelity);
@@ -1376,6 +1775,7 @@ impl ViewerState {
         self.cancel_edit_map_level_drag();
         self.cancel_edit_map_height_hold();
         self.close_other_modal_dialogs();
+        self.pe_founding_mode_transition_pending = false;
         self.close_city_info_dialog();
         self.query_is_inspect = false;
         self.query_status_pinned = false;
@@ -1384,6 +1784,47 @@ impl ViewerState {
         city.inherit_mac_newspaper_state(&self.city);
         city.set_pe_mayor_approval(self.city.pe_mayor_approval());
         if self.engine_fidelity.uses_win95() {
+            if self.city.kind.is_win95() {
+                city.inherit_pe_new_city_label_backing(&self.city);
+            }
+            let microsim_backing: Vec<_> = (0..crate::city::MICROSIM_COUNT)
+                .map(|index| self.city.microsim_at(index).unwrap_or_default())
+                .collect();
+            city.restore_pe_microsim_backing(microsim_backing);
+            if let Some(overlays) = self.city.traffic_overlays() {
+                city.reset_pe_new_city_overlay_backing(overlays);
+            }
+            if self.city.kind.is_win95() {
+                // The PE allocates its row book once; new-city reset only
+                // changes five fields per row, retaining the rest in memory.
+                for row in 0..BUDGET_TOTAL_COUNT {
+                    let Some(source) = budget_row_misc_offset_for_city(&self.city, row, 0) else {
+                        continue;
+                    };
+                    let Some(destination) = budget_row_misc_offset_for_city(&city, row, 0) else {
+                        continue;
+                    };
+                    let values = self
+                        .city
+                        .budget_misc_u32_values(source, BUDGET_SERVICE_MISC_STRIDE);
+                    city.set_budget_misc_u32_values(destination, &values);
+                }
+            }
+            // Mode 12 skips the utilization reset and keeps the process value.
+            city.set_pe_power_used_percent(self.city.pe_power_used_percent());
+            // The PE keeps sound and music in the document across new-city
+            // reset; the MISC slots are populated from that live document on save.
+            for (offset, enabled) in [
+                (SOUND_EFFECTS_MISC_OFFSET, self.sound_effects_enabled),
+                (MUSIC_MISC_OFFSET, self.music_enabled),
+            ] {
+                let value = pe_misc_mirror_storage_active(&self.city, self.engine_fidelity)
+                    .then(|| self.city.misc_u32_at(offset))
+                    .flatten()
+                    .filter(|value| (*value != 0) == enabled)
+                    .unwrap_or(u32::from(enabled));
+                city.set_misc_u32_at(offset, value);
+            }
             city.install_pe_newspaper_tables(
                 self.city
                     .pe_newspaper_tables()
@@ -1392,6 +1833,8 @@ impl ViewerState {
         }
         self.city = city;
         self.mac_loop_scheduler.january_budget_review_pending = false;
+        self.mac_loop_scheduler.january_budget_review_started_at = None;
+        self.mac_loop_scheduler.fiscal_notice = None;
         // A new city resets its compass. Reset the camera with it: inheriting the
         // previous city's camera would rotate positions but leave wire art and
         // picking/placement orientation on the new city's zero compass.
@@ -1404,6 +1847,11 @@ impl ViewerState {
         self.founding_newspaper_pending = true;
         if seed_new_city_budget_rows {
             initialize_new_city_budget_rows(&mut self.city, self.engine_fidelity);
+            if self.engine_fidelity.uses_win95() {
+                // PE 0x40e3f3..0x40e43e clears utilization in the normal
+                // new-city reset; the edit-map reset takes the other branch.
+                self.city.set_pe_power_used_percent(0);
+            }
         }
         apply_new_city_title_selections(&mut self.city, starting_funds, starting_year, difficulty);
         if self.engine_fidelity.uses_win95() {
@@ -1412,25 +1860,37 @@ impl ViewerState {
         ensure_default_city_options_for_engine(&mut self.city, self.engine_fidelity);
         initialize_mac_fidelity_new_city_industry_rows(&mut self.city, self.engine_fidelity);
         initialize_original_new_city_national_misc(&mut self.city);
-        initialize_new_city_microsim_planes(&mut self.city);
+        if self.engine_fidelity.uses_win95() {
+            initialize_pe_new_city_national_graph(&mut self.city);
+        }
+        initialize_new_city_microsim_planes(&mut self.city, self.engine_fidelity);
         if self.engine_fidelity.uses_win95() {
             self.city.initialize_pe_new_city_microsims();
+            // PE 0x44cc50 copies the registration profile's MAYOR NAME,
+            // falling back to "Mayor McSim", into the reserved XLAB row 0.
+            self.city
+                .set_label(0, self.pe_registered_mayor_name.clone());
+            if let Some(labels) = &self.pe_new_city_reserved_labels {
+                for (index, label) in labels.iter().enumerate() {
+                    self.city.set_label(251 + index as u8, label.clone());
+                }
+            }
         } else {
             self.game_clock = game_clock_from_city(&self.city);
             self.city.initialize_mac_new_city_microsims();
             self.city
                 .mac_initialize_new_city_neighbors(&mut self.mac_process_rng);
             // CODE 7 export 236 initializes the original newspaper tables.
-            for _ in 0..MAC_NEWSPAPER_SETUP_DRAWS {
-                self.mac_process_rng.random_u16();
-            }
+            shuffle_mac_newspaper_tables(&mut self.mac_process_rng);
         }
-        initialize_hard_start_bond(&mut self.city);
+        initialize_hard_start_bond(&mut self.city, self.engine_fidelity);
         self.auto_goto_enabled = auto_goto_enabled_for_engine(&self.city, self.engine_fidelity);
         self.pending_disaster_auto_goto = None;
         self.pending_disaster_start_sound = None;
         self.pending_disaster_start_siren = false;
         self.pending_disaster_extra_sounds.clear();
+        self.pending_newspaper_music = None;
+        self.mac_loop_scheduler.cancel_mac_earthquake_prelude();
         self.earthquake_shake_remaining = 0;
         self.pe_disaster_duration = 0;
         self.pe_hurricane_wind_remaining = 0;
@@ -1468,8 +1928,17 @@ impl ViewerState {
     }
 
     pub(super) fn toggle_edit_mode(&mut self, video: &sdl3::VideoSubsystem, window_id: u32) {
+        if self.engine_fidelity.uses_win95() && self.mode == AppMode::CityView {
+            if let Err(error) = self.new_win95_edit_map_from_city() {
+                log::error!("Edit New Map failed: {error:#}");
+            } else {
+                self.update_window_title(video, window_id);
+            }
+            return;
+        }
         self.cancel_edit_map_level_drag();
         self.cancel_edit_map_height_hold();
+        self.prepare_founding_edit_map_exit();
         self.mode = match self.mode {
             AppMode::CityView => {
                 self.tool = EditTool::RaiseTerrain;
@@ -1503,9 +1972,70 @@ impl ViewerState {
         log::info!("mode: {:?}", self.mode);
     }
 
+    pub(super) fn new_win95_edit_map_from_city(&mut self) -> Result<()> {
+        // On repeat entry the PE controller's one-shot generation flag is
+        // clear. 0x40e250 retains XTER/ALTM and tree IDs 6..12, clears
+        // structures and underground, and masks XBIT to its water bits.
+        let ocean = self.city.pe_dw_city_has_ocean();
+        let river = self.city.pe_dw_city_has_river();
+        let old_microsims: Vec<_> = (0..crate::city::MICROSIM_COUNT)
+            .map(|index| self.city.microsim_at(index).unwrap_or_default())
+            .collect();
+        let old_overlays = self.city.traffic_overlays().unwrap_or_default().to_vec();
+        let newspaper_extra = pe_misc_mirror_storage_active(&self.city, self.engine_fidelity)
+            .then(|| {
+                self.city
+                    .misc_u32_at(super::city_options::MISC_NEWSPAPER_EXTRA_OFFSET)
+            })
+            .flatten();
+        let mut terrain = Vec::with_capacity(CITY_TILES);
+        let mut altm = Vec::with_capacity(CITY_TILES);
+        let mut buildings = Vec::with_capacity(CITY_TILES);
+        let mut bits = Vec::with_capacity(CITY_TILES);
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                terrain.push(self.city.terrain_at(x, y));
+                altm.push(self.city.altm_at(x, y));
+                let building = self.city.building_at(x, y);
+                buildings.push(if (6..=12).contains(&building) {
+                    building
+                } else {
+                    0
+                });
+                bits.push(self.city.tile_bits_at(x, y).map_or(0, |b| b.raw_bits() & 5));
+            }
+        }
+        self.new_city_with_setup(None, None, None, false)?;
+        self.city.set_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET, ocean);
+        self.city.set_misc_u32_at(EDIT_MAP_RIVER_MISC_OFFSET, river);
+        if let Some(value) = newspaper_extra {
+            self.city
+                .set_misc_u32_at(super::city_options::MISC_NEWSPAPER_EXTRA_OFFSET, value);
+        }
+        self.city
+            .replace_edit_map_canvas_with_buildings(terrain, altm, buildings);
+        for (index, value) in bits.into_iter().enumerate() {
+            self.city.set_tile_bits(
+                index / CITY_HEIGHT,
+                index % CITY_HEIGHT,
+                TileBits::new(value),
+            );
+        }
+        initialize_new_city_microsim_planes(&mut self.city, self.engine_fidelity);
+        self.city.restore_pe_microsim_backing(old_microsims);
+        self.city.reset_pe_new_city_overlay_backing(&old_overlays);
+        self.city.initialize_pe_new_city_microsims();
+        Ok(())
+    }
+
     pub(super) fn finish_edit_map_state(&mut self) {
         self.cancel_edit_map_level_drag();
         self.cancel_edit_map_height_hold();
+        self.prepare_founding_edit_map_exit();
+        self.finish_edit_map_after_charter();
+    }
+
+    pub(super) fn finish_edit_map_after_charter(&mut self) {
         self.mode = AppMode::CityView;
         persist_app_mode_transition(&mut self.city, self.mode, self.engine_fidelity);
         self.tool = EditTool::Query;
@@ -1518,9 +2048,46 @@ impl ViewerState {
         log::info!("City View: buildings visible.");
     }
 
+    pub(super) fn prepare_founding_edit_map_exit(&mut self) {
+        if self.engine_fidelity.uses_win95()
+            && self.mode == AppMode::EditNewMap
+            && self.founding_newspaper_pending
+        {
+            // PE 0x42e250 runs the budget initializer when Done leaves the
+            // new-map editor, before the new-city naming dialog appears.
+            // Mode 0x0b also initializes the four neighbor economies in
+            // 0x40e575..0x40e68f using the shared process CRT stream.
+            self.city
+                .pe_initialize_new_city_neighbors_40e250(&mut self.pe_process_crt);
+            initialize_new_city_budget_rows(&mut self.city, self.engine_fidelity);
+        }
+    }
+
     pub(super) fn finish_edit_map(&mut self, video: &sdl3::VideoSubsystem, window_id: u32) {
         self.finish_edit_map_state();
         self.update_window_title(video, window_id);
+    }
+
+    /// Win95's Save City appends `.sc2` to an opened `.scn` path. Keep
+    /// the loaded scenario and its runtime state intact while adopting the
+    /// new city path only after a successful write.
+    pub(super) fn save_current_city(
+        &mut self,
+        window_size: (u32, u32),
+        pixel_scale: f32,
+    ) -> Result<()> {
+        let mut path = self.city.path.clone();
+        if self.engine_fidelity.uses_win95()
+            && self.city.kind == CityFileKind::WinScenario
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("scn"))
+        {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(".sc2");
+            path = name.into();
+        }
+        self.save_city(&path, window_size, pixel_scale)
     }
 
     pub(super) fn save_city(
@@ -1531,11 +2098,67 @@ impl ViewerState {
     ) -> Result<()> {
         self.city
             .sync_traffic_from_slice(self.traffic.congestion_slice());
-        self.persist_saved_pe_view(window_size, pixel_scale);
         if self.engine_fidelity.uses_win95() {
+            if let Some(value) =
+                speed_misc_value_for_city(&self.city, self.engine_fidelity, self.traffic.speed())
+            {
+                persist_speed_misc_value_to_city(&mut self.city, value);
+            }
             self.pe_growth_aggregate.write_saved(&mut self.city);
         }
-        self.city.save(path)
+        if self.engine_fidelity.uses_win95()
+            && self.city.kind.is_win95()
+            && self.camera_rotation != 0
+        {
+            let view = self.saved_pe_view_for_window(window_size, pixel_scale);
+            let mut snapshot = self.city.clone();
+            snapshot.pe_rotate_save_snapshot(self.camera_rotation);
+            if let Some(view) = view {
+                snapshot.set_saved_view(view);
+            }
+            snapshot.save_pe_city(path)?;
+            self.city.adopt_pe_rotated_save(path.to_path_buf());
+        } else if self.engine_fidelity.uses_win95() {
+            self.persist_saved_pe_view(window_size, pixel_scale);
+            self.city.save_pe_city(path)?;
+        } else {
+            if let Some((target, mode)) = self.saved_mac_view_for_window(window_size, pixel_scale) {
+                self.city.set_mac_state_misc_u32_at(0x1010, target);
+                self.city.set_mac_state_misc_u32_at(0x1014, mode);
+            }
+            self.city.save(path)?;
+        }
+        self.update_mac_name_after_save();
+        Ok(())
+    }
+
+    /// The PE's Save As uses the chosen filename stem as the city name.
+    pub(super) fn save_city_as(
+        &mut self,
+        path: &Path,
+        window_size: (u32, u32),
+        pixel_scale: f32,
+    ) -> Result<()> {
+        let previous_name = self.city.name.clone();
+        if self.engine_fidelity.uses_win95()
+            && let Some(stem) = path.file_stem().and_then(|value| value.to_str())
+        {
+            self.city.name = normalize_new_city_name(stem, true);
+        }
+        if let Err(error) = self.save_city(path, window_size, pixel_scale) {
+            self.city.name = previous_name;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// CODE 4 commits the chosen Mac filename to the active city name only
+    /// after a successful save. Provider-based saves call this on completion.
+    pub(super) fn update_mac_name_after_save(&mut self) {
+        if !self.engine_fidelity.uses_win95() && self.city.kind == CityFileKind::MacCity {
+            set_mac_loaded_city_name(&mut self.city);
+            self.refresh_status_line();
+        }
     }
 
     /// Serialize a snapshot for a provider without changing the active city's
@@ -1544,11 +2167,32 @@ impl ViewerState {
     pub(super) fn city_save_snapshot(&self, window_size: (u32, u32), pixel_scale: f32) -> City {
         let mut snapshot = self.city.clone();
         if self.engine_fidelity.uses_win95() {
+            if let Some(value) =
+                speed_misc_value_for_city(&snapshot, self.engine_fidelity, self.traffic.speed())
+            {
+                persist_speed_misc_value_to_city(&mut snapshot, value);
+            }
             self.pe_growth_aggregate.write_saved(&mut snapshot);
         }
         snapshot.sync_traffic_from_slice(self.traffic.congestion_slice());
-        if let Some(view) = self.saved_pe_view_for_window(window_size, pixel_scale) {
-            snapshot.set_saved_view(view);
+        if self.engine_fidelity.uses_win95()
+            && snapshot.kind.is_win95()
+            && self.camera_rotation != 0
+        {
+            snapshot.pe_rotate_save_snapshot(self.camera_rotation);
+        }
+        if self.engine_fidelity.uses_win95() {
+            snapshot.persist_pe_tile_census_for_save();
+        }
+        if self.engine_fidelity.uses_win95() {
+            if let Some(view) = self.saved_pe_view_for_window(window_size, pixel_scale) {
+                snapshot.set_saved_view(view);
+            }
+        } else if let Some((target, mode)) =
+            self.saved_mac_view_for_window(window_size, pixel_scale)
+        {
+            snapshot.set_mac_state_misc_u32_at(0x1010, target);
+            snapshot.set_mac_state_misc_u32_at(0x1014, mode);
         }
         snapshot
     }
@@ -1560,7 +2204,18 @@ impl ViewerState {
         pixel_scale: f32,
     ) -> Result<()> {
         let city = City::load(path).with_context(|| format!("loading city {}", path.display()))?;
-        self.load_city_session(city, window_size, pixel_scale)
+        self.load_city_session(city, window_size, pixel_scale, false)
+    }
+
+    pub(super) fn load_win_scenario(
+        &mut self,
+        path: &Path,
+        window_size: (u32, u32),
+        pixel_scale: f32,
+    ) -> Result<()> {
+        let city =
+            City::load(path).with_context(|| format!("loading scenario {}", path.display()))?;
+        self.load_city_session(city, window_size, pixel_scale, true)
     }
 
     pub(super) fn load_mac_scenario(
@@ -1585,7 +2240,7 @@ impl ViewerState {
         city.initialize_mac_scenario(scenario.start);
 
         city.path = scenario_save_path(path, "city")?;
-        self.load_city_session(city, window_size, pixel_scale)?;
+        self.load_city_session(city, window_size, pixel_scale, false)?;
         self.mac_loop_scheduler
             .load_scenario_point(scenario.start.action, scenario.start.point);
         Ok(())
@@ -1595,7 +2250,7 @@ impl ViewerState {
         if !self.engine_fidelity.uses_win95() || open_mode != CITY_MODE_GAMEPLAY as u16 {
             return;
         }
-        if self.city.kind == CityFileKind::WinScenario {
+        if self.city.pe_scenario_active() {
             if !self.queue_loaded_pe_scenario_disaster() {
                 return;
             }
@@ -1617,9 +2272,11 @@ impl ViewerState {
         mut city: City,
         window_size: (u32, u32),
         pixel_scale: f32,
+        scenario_open: bool,
     ) -> Result<()> {
         if self.engine_fidelity.uses_win95() {
             city.prepare_pe_fidelity_from_saved_city();
+            city.inherit_pe_graph_calendar_words(&self.city);
             // The Win95 engine owns this count regardless of the saved-city layout.
             pe_rebuild_w_city_developed_tiles_46ab56(&mut city);
             city.hydrate_pe_attitude_scores_from_xgrp();
@@ -1632,22 +2289,22 @@ impl ViewerState {
                 );
             }
         } else {
+            set_mac_loaded_city_name(&mut city);
             city.prepare_mac_fidelity_from_saved_city();
             prepare_mac_win_scenario(&mut city)?;
             city.inherit_mac_newspaper_state(&self.city);
             // The SCDH open clears the previous city through CODE 3 export
             // 143. Its neighbor setup takes 20 QuickDraw words and the CODE 7
             // newspaper reset takes 122. Loaded MISC replaces the reset rows.
-            for _ in 0..MAC_NEIGHBOR_SETUP_DRAWS + MAC_NEWSPAPER_SETUP_DRAWS {
+            for _ in 0..MAC_NEIGHBOR_SETUP_DRAWS {
                 self.mac_process_rng.random_u16();
             }
+            shuffle_mac_newspaper_tables(&mut self.mac_process_rng);
         }
-        city.set_pe_scenario_active(
-            self.engine_fidelity.uses_win95() && city.kind == CityFileKind::WinScenario,
-        );
+        city.set_pe_scenario_active(self.engine_fidelity.uses_win95() && scenario_open);
         let game_clock = game_clock_from_city(&city);
-        // The Win95 CRT `rand()` state is per-thread process state, seeded during
-        // startup before title interaction. Opening a different city does not
+        // The Win95 CRT `rand()` state is per-thread process state, initialized
+        // by the first city view after the title choice. Later city opens do not
         // restart that stream; city-derived initialization here would rewind it.
         let pe_process_crt = if self.engine_fidelity.uses_win95() {
             let mut crt = self.pe_process_crt;
@@ -1706,11 +2363,16 @@ impl ViewerState {
         self.founding_newspaper_pending = mac_map_editor;
         self.mac_loop_scheduler.pending_action_point = None;
         self.mac_loop_scheduler.january_budget_review_pending = false;
+        self.mac_loop_scheduler.january_budget_review_started_at = None;
+        self.mac_loop_scheduler.fiscal_notice = None;
+        self.mac_loop_scheduler.set_viewport_size(window_size);
         self.auto_goto_enabled = auto_goto_enabled_for_engine(&city, self.engine_fidelity);
         self.pending_disaster_auto_goto = None;
         self.pending_disaster_start_sound = None;
         self.pending_disaster_start_siren = false;
         self.pending_disaster_extra_sounds.clear();
+        self.pending_newspaper_music = None;
+        self.mac_loop_scheduler.cancel_mac_earthquake_prelude();
         self.earthquake_shake_remaining = 0;
         self.pe_disaster_duration = 0;
         self.pe_hurricane_wind_remaining = 0;
@@ -1748,8 +2410,17 @@ impl ViewerState {
             self.show_grid = true;
         }
         self.show_underground = false;
-        self.city_info_dialog = loaded_city_info_dialog_for_city(&city);
+        self.city_info_dialog = if self.engine_fidelity.uses_win95() && !city.pe_scenario_active() {
+            None
+        } else {
+            loaded_city_info_dialog_for_city(&city)
+        };
         self.rebuild_services_after_city_open();
+        if self.engine_fidelity == EngineFidelity::Mac68k && self.mode == AppMode::CityView {
+            // CODE 4's document-open path invokes CODE 7 export 231 once
+            // with the restored city's age, difficulty and disaster option.
+            self.run_mac_disaster_chooser();
+        }
         self.prepare_pe_disaster_on_city_open(pe_open_mode);
         self.refresh_status_line();
         self.sync_edit_map_menu();
@@ -1757,7 +2428,7 @@ impl ViewerState {
         self.invalidate_sprite_cache();
         self.city.mark_all_dirty();
         self.fit_map(window_size, pixel_scale);
-        self.restore_saved_pe_view(window_size, pixel_scale);
+        self.restore_saved_city_view(window_size, pixel_scale);
         Ok(())
     }
 }

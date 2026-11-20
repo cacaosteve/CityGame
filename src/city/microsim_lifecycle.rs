@@ -780,7 +780,12 @@ impl City {
         let Some(microsims) = self.microsims.as_mut() else {
             return;
         };
-        microsims.fill(MicrosimRecord::default());
+        // PE 0x44cc9a clears only byte zero in all 150 records. The
+        // statistics reset at 0x44cd1c applies to slots 1..=9 only.
+        for record in microsims.iter_mut() {
+            record.tile_id = 0;
+        }
+        microsims[1..10].fill(MicrosimRecord::default());
         // Native slots 0..=9: slot 0 is a sentinel bus tag; slots 1..=9
         // are the fixed system rows selected by yearly XMIC dispatch.
         for (index, tile_id) in [236, 236, 237, 233, 200, 198, 213, 212, 245, 248]
@@ -789,16 +794,33 @@ impl City {
         {
             microsims[index].tile_id = tile_id;
         }
-        for (index, tile_id) in [236, 237, 233, 200, 198, 213, 212, 245, 248]
+        // These are the system-wide labels seeded by the new-city reset;
+        // individual building labels use `pe_provision_xlabel` instead.
+        for (index, label) in [
+            "SimBus System",
+            "SimRail System",
+            "SimSubway",
+            "Wind Power",
+            "Hydro Power",
+            "SimPark System",
+            "Museum",
+            "Library System",
+            "Marina",
+        ]
             .into_iter()
             .enumerate()
         {
             let text_id = MIN_SIM_TEXT_ENTRIES.saturating_add((index + 1) as u8);
-            if let Some(label) = pe_provision_xlabel(tile_id) {
-                self.set_label(text_id, label);
-            }
+            self.clear_pe_label_backing_row(text_id);
+            self.set_label(text_id, label);
         }
         self.modified = true;
+    }
+
+    pub(crate) fn restore_pe_microsim_backing(&mut self, records: Vec<MicrosimRecord>) {
+        if records.len() == MICROSIM_COUNT {
+            self.microsims = Some(records);
+        }
     }
 
     /// Backward-compatible alias used by arco-focused call sites.

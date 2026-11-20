@@ -443,7 +443,7 @@ pub(in crate::app) fn mac_budget_service_funding_word_for_city(
     city: &City,
     budget_index: usize,
 ) -> u16 {
-    budget_service_funding_raw_for_city(city, budget_index) as u16
+    mac_budget_service_funding_raw_for_city(city, budget_index) as u16
 }
 
 pub(in crate::app) fn mac_bridge_span_edge(

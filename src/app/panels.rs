@@ -3,6 +3,191 @@
 use super::dialogs::*;
 use super::*;
 
+fn draw_mac_fiscal_notice(
+    solids: &mut Vec<UiSolid>,
+    window_size: (u32, u32),
+    font: Option<&crate::mac_font_metrics::MacBitmapFontMetrics>,
+    output_is_srgb: bool,
+    depth: f32,
+) {
+    let w = 226.0_f32.min(window_size.0 as f32);
+    let h = 82.0_f32.min(window_size.1 as f32);
+    let rect = FloatRect {
+        x: ((window_size.0 as f32 - w) * 0.5).floor(),
+        y: ((window_size.1 as f32 - h) * 0.5).floor(),
+        w,
+        h,
+    };
+    let color = |v: u8| {
+        let encoded = f32::from(v) / 255.0;
+        let linear = if output_is_srgb {
+            if encoded <= 0.04045 {
+                encoded / 12.92
+            } else {
+                ((encoded + 0.055) / 1.055).powf(2.4)
+            }
+        } else {
+            encoded
+        };
+        [linear, linear, linear, 1.0]
+    };
+    push_ui_rect(solids, rect, color(0), depth);
+    if w < 16.0 || h < 16.0 {
+        return;
+    }
+    let inner = FloatRect {
+        x: rect.x + 1.0,
+        y: rect.y + 1.0,
+        w: w - 2.0,
+        h: h - 2.0,
+    };
+    push_ui_rect(solids, inner, color(205), depth + 1.0);
+    for (i, (top, bottom)) in [(235, 121), (184, 184), (121, 235)].into_iter().enumerate() {
+        let inset = 1.0 + 2.0 * i as f32;
+        let r = FloatRect {
+            x: rect.x + inset,
+            y: rect.y + inset,
+            w: w - 2.0 * inset,
+            h: h - 2.0 * inset,
+        };
+        let z = depth + 2.0 + i as f32 * 2.0;
+        push_ui_rect(
+            solids,
+            FloatRect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: 2.0,
+            },
+            color(top),
+            z,
+        );
+        push_ui_rect(
+            solids,
+            FloatRect {
+                x: r.x,
+                y: r.y,
+                w: 2.0,
+                h: r.h,
+            },
+            color(top),
+            z,
+        );
+        push_ui_rect(
+            solids,
+            FloatRect {
+                x: r.x,
+                y: r.y + r.h - 2.0,
+                w: r.w,
+                h: 2.0,
+            },
+            color(bottom),
+            z,
+        );
+        push_ui_rect(
+            solids,
+            FloatRect {
+                x: r.x + r.w - 2.0,
+                y: r.y,
+                w: 2.0,
+                h: r.h,
+            },
+            color(bottom),
+            z,
+        );
+        if top != bottom {
+            for (x, y) in [(r.x + r.w - 2.0, r.y), (r.x, r.y + r.h - 2.0)] {
+                push_ui_rect(
+                    solids,
+                    FloatRect {
+                        x,
+                        y,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    color(top),
+                    z + 1.0,
+                );
+                push_ui_rect(
+                    solids,
+                    FloatRect {
+                        x: x + 1.0,
+                        y,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    color(161),
+                    z + 1.0,
+                );
+                push_ui_rect(
+                    solids,
+                    FloatRect {
+                        x,
+                        y: y + 1.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    color(161),
+                    z + 1.0,
+                );
+            }
+        }
+    }
+    for (index, line) in [
+        "Due to the current fiscal crisis,",
+        "the city council urges you to",
+        "cut back drastically on city",
+        "expenditures.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let y = rect.y + 11.0 + index as f32 * 15.0;
+        let glyphs = font.and_then(|font| {
+            let glyphs: Vec<_> = line
+                .bytes()
+                .map(|ch| font.glyph(ch))
+                .collect::<Result<_, _>>()
+                .ok()?;
+            Some((font.width(line.as_bytes())?, glyphs))
+        });
+        if let Some((width, glyphs)) = glyphs {
+            let mut x = (rect.x + (rect.w - width as f32) * 0.5).floor();
+            for glyph in glyphs {
+                for row in 0..glyph.height {
+                    for col in 0..glyph.width {
+                        if glyph.pixels[row * glyph.width + col] != 0 {
+                            push_ui_rect(
+                                solids,
+                                FloatRect {
+                                    x: x + f32::from(glyph.left_bearing) + col as f32,
+                                    y: y + row as f32,
+                                    w: 1.0,
+                                    h: 1.0,
+                                },
+                                color(0),
+                                depth + 9.0,
+                            );
+                        }
+                    }
+                }
+                x += f32::from(glyph.advance);
+            }
+        } else {
+            let scale = 1.75;
+            ui::push_pixel_text_preserving_case(
+                solids,
+                line,
+                rect.x + (rect.w - ui::pixel_text_width(line, scale)) * 0.5,
+                y,
+                scale,
+                color(0),
+                depth + 9.0,
+            );
+        }
+    }
+}
+
 impl ViewerState {
     pub(super) fn push_city_info_dialog(
         &self,
@@ -15,8 +200,19 @@ impl ViewerState {
         let Some(dialog) = self.city_info_dialog else {
             return;
         };
-        let rect = city_info_dialog_rect_for(dialog, window_size);
+        let rect = city_info_dialog_rect_for_engine(dialog, window_size, self.engine_fidelity);
         let depth = ui::UI_DEPTH + 300.0;
+        if dialog == CityInfoDialog::FiscalCrisis && self.mac_loop_scheduler.fiscal_notice.is_some()
+        {
+            draw_mac_fiscal_notice(
+                solids,
+                window_size,
+                self.mac_system_font.as_deref(),
+                renderer.is_some_and(Renderer::output_is_srgb),
+                depth,
+            );
+            return;
+        }
         if let CityInfoDialog::Newspaper(edition) = dialog {
             self.push_newspaper_panel(renderer, rect, solids, images, depth, edition);
             return;
@@ -950,7 +1146,12 @@ impl ViewerState {
                 .unwrap_or(u32::MAX)
                 .min(6) as u16
         };
-        let entries = budget_window::entries_for_city(&self.city, self.engine_fidelity);
+        let entries = budget_window::entries_for_city_for_month(
+            &self.city,
+            self.engine_fidelity,
+            self.game_clock.month(),
+            self.mac_loop_scheduler.january_budget_review_pending,
+        );
         let date = self.game_clock.status_line();
         budget_window::draw(
             rect,
@@ -967,6 +1168,7 @@ impl ViewerState {
                 font_atlas: renderer
                     .and_then(|r| r.atlas_for_sprite(crate::newspaper_font::ATLAS_ID)),
                 dark_appearance: renderer.is_some_and(|r| r.dark_appearance()),
+                mac_layout: !self.engine_fidelity.uses_win95(),
             },
             solids,
             images,
@@ -1199,7 +1401,12 @@ impl ViewerState {
             ServiceStatus::for_city_with_entry_seed(&self.city, self.pe_process_crt.seed());
         let active_disaster_tiles = active_disaster_tiles_for_city(&self.city).len();
         let available_rewards = self.active_reward_mask();
-        let pe_story = if edition == NewspaperEdition::Founding {
+        let pe_story = if matches!(
+            edition,
+            NewspaperEdition::Founding
+                | NewspaperEdition::MacDisaster
+                | NewspaperEdition::MacStandard
+        ) {
             None
         } else {
             pe_top_newspaper_story_for_city(&self.city)
@@ -1220,6 +1427,24 @@ impl ViewerState {
                 pe_health_amenities_newspaper_headline(edition, story_id)
             }
             _ => edition.headline(&services, active_disaster_tiles, available_rewards),
+        };
+        let headline = self
+            .pe_newspaper_paint
+            .as_ref()
+            .map(|paint| crate::win95_oem::decode_oem(&paint.lead.headline))
+            .unwrap_or(headline);
+        let headline = if edition.is_mac() {
+            self.mac_newspaper.headline.clone().unwrap_or_else(|| {
+                if edition == NewspaperEdition::MacDisaster
+                    && self.city.mac_state_misc_u32_at(0x1044) == Some(1)
+                {
+                    format!("Fire in {}", self.city.name)
+                } else {
+                    headline
+                }
+            })
+        } else {
+            headline
         };
         let story = match pe_story {
             Some((PE_NEWSPAPER_STORY_POWER_PLANT_AGING, param)) => {
@@ -1248,7 +1473,38 @@ impl ViewerState {
             ),
         };
 
-        let masthead = if edition == NewspaperEdition::Founding {
+        let story = if edition.is_mac() {
+            self.mac_newspaper.article.clone().unwrap_or(story)
+        } else {
+            story
+        };
+
+        let masthead = if edition.is_mac() {
+            let page = if edition == NewspaperEdition::MacStandard {
+                self.city
+                    .mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET)
+                    .unwrap_or(0) as u16 as usize
+            } else {
+                0
+            };
+            // CODE 7 indexes this name table through the saved paper row.
+            let row = self
+                .city
+                .mac_state_misc_u32_at(0x0e50 + page.saturating_mul(20))
+                .unwrap_or(0) as u8 as usize;
+            crate::menu_model::MAC_PAPER_NAMES.get(row).map_or_else(
+                || edition.masthead(&self.city.name, 0),
+                |name| format!("{} {name}", self.city.name),
+            )
+        } else if self.pe_newspaper_paint.is_some() {
+            let paper = if edition == NewspaperEdition::Founding {
+                0
+            } else {
+                newspaper_choice_for_city(&self.city) as usize
+            };
+            pe_newspaper_masthead(&self.city, paper)
+                .unwrap_or_else(|| edition.masthead(&self.city.name, paper as u32))
+        } else if edition == NewspaperEdition::Founding {
             edition.masthead(&self.city.name, 0)
         } else {
             NewspaperEdition::Courier
@@ -1280,8 +1536,26 @@ impl ViewerState {
             ),
         ];
         let weather = super::weather::weather_status_label(&self.city);
-        let picture_id =
-            crate::assets::NEWSPAPER_PICTURE_BASE + newspaper::picture_for_headline(&headline).0;
+        let picture_base = if !edition.is_mac() && self.pe_newspaper_paint.is_some() {
+            crate::assets::WIN95_NEWSPAPER_PICTURE_BASE
+        } else {
+            crate::assets::NEWSPAPER_PICTURE_BASE
+        };
+        let picture_id = picture_base
+            + self
+                .mac_newspaper
+                .paint
+                .as_ref()
+                .filter(|_| edition.is_mac())
+                .map_or_else(
+                    || {
+                        self.pe_newspaper_paint.as_ref().map_or_else(
+                            || newspaper::picture_for_headline(&headline).0,
+                            |paint| u32::from(paint.lead.picture),
+                        )
+                    },
+                    |paint| u32::from(paint.lead.picture_id),
+                );
         let picture = renderer.and_then(|renderer| {
             renderer.atlas_for_sprite(picture_id).and_then(|atlas| {
                 renderer
@@ -1295,26 +1569,141 @@ impl ViewerState {
             NewspaperEdition::Extra => "SPECIAL EXTRA EDITION",
             NewspaperEdition::Subscription => "DELIVERED TO YOUR CITY",
             NewspaperEdition::Courier => "THE DAILY EDITION",
+            NewspaperEdition::MacStandard => "THE DAILY EDITION",
+            NewspaperEdition::MacDisaster => "DISASTER REPORT",
         };
-        newspaper::draw(
-            rect,
-            &newspaper::Content {
-                masthead: &masthead,
-                headline: &headline,
-                story: &story,
-                date: &date,
-                edition: edition_label,
-                weather,
-                statistics: &statistics,
+        if let Some(paint) = self
+            .mac_newspaper
+            .paint
+            .as_ref()
+            .filter(|_| edition.is_mac())
+        {
+            newspaper::draw_mac_paper(
+                rect,
+                paint,
+                &masthead,
+                &date,
                 picture,
-                font_atlas: renderer.and_then(|renderer| {
+                renderer.and_then(|renderer| {
                     renderer.atlas_for_sprite(crate::newspaper_font::ATLAS_ID)
                 }),
-            },
-            solids,
-            images,
-            depth,
-        );
+                solids,
+                images,
+                depth,
+            );
+        } else if let Some(paint) = self
+            .pe_newspaper_paint
+            .as_ref()
+            .filter(|_| !edition.is_mac())
+        {
+            let paper = if edition == NewspaperEdition::Founding {
+                0
+            } else {
+                newspaper_choice_for_city(&self.city) as usize
+            };
+            let header = self.city.pe_newspaper_tables().and_then(|tables| {
+                let wording = *tables.papers.get(paper.checked_mul(5)?.checked_add(2)?)? as u8;
+                crate::win95_newspaper::pe_newspaper_header(
+                    pe_city_founded_year(&self.city, self.game_clock),
+                    self.city.city_age_days()?,
+                    wording,
+                )
+            });
+            let paper_date = header
+                .as_ref()
+                .map_or(date.as_str(), |value| value.0.as_str());
+            let price = header
+                .as_ref()
+                .and_then(|value| crate::win95_newspaper::pe_newspaper_price(value.1));
+            let tail_text = self.city.pe_newspaper_tables().and_then(|tables| {
+                let offset = paper.checked_mul(5)?;
+                let (weather_label, opinion_label) =
+                    crate::win95_newspaper::pe_newspaper_tail_labels(
+                        *tables.papers.get(offset + 4)? as u8,
+                        *tables.papers.get(offset + 3)? as u8,
+                    )?;
+                let kind = *tables.papers.get(offset + 3)? as u8;
+                let (counts, order) = self.city.pe_opinion_poll_results();
+                Some(newspaper::PeTailText {
+                    weather_label,
+                    opinion_label,
+                    weather_line: crate::win95_newspaper::pe_newspaper_weather_line(
+                        self.city.pe_b_weather_heat,
+                        self.city.pe_b_weather_wind,
+                        self.city.pe_b_weather_humid,
+                    ),
+                    opinion_lines: crate::win95_newspaper::pe_newspaper_opinion_lines(
+                        kind,
+                        self.city.pe_mayor_approval(),
+                        counts,
+                        order,
+                    ),
+                })
+            });
+            newspaper::draw_pe_paper(
+                rect,
+                paint,
+                &masthead,
+                paper_date,
+                price,
+                tail_text.as_ref(),
+                picture,
+                renderer.and_then(|renderer| {
+                    renderer.atlas_for_sprite(crate::newspaper_font::ATLAS_ID)
+                }),
+                solids,
+                images,
+                depth,
+            );
+        } else {
+            newspaper::draw(
+                rect,
+                &newspaper::Content {
+                    masthead: &masthead,
+                    headline: &headline,
+                    story: &story,
+                    date: &date,
+                    edition: edition_label,
+                    weather,
+                    statistics: &statistics,
+                    picture,
+                    font_atlas: renderer.and_then(|renderer| {
+                        renderer.atlas_for_sprite(crate::newspaper_font::ATLAS_ID)
+                    }),
+                },
+                solids,
+                images,
+                depth,
+            );
+        }
+        if let Some(article) = self
+            .pe_newspaper_article
+            .as_ref()
+            .filter(|_| !edition.is_mac())
+        {
+            newspaper::draw_pe_detail(
+                rect,
+                &article.headline,
+                &article.body,
+                article.scroll,
+                renderer.and_then(|r| r.atlas_for_sprite(crate::newspaper_font::ATLAS_ID)),
+                solids,
+                images,
+                depth + 1.0,
+            );
+        }
+        if edition.is_mac() && self.mac_newspaper.detail_open {
+            newspaper::draw_mac_detail(
+                rect,
+                &headline,
+                &story,
+                self.mac_newspaper.detail_scroll,
+                renderer.and_then(|r| r.atlas_for_sprite(crate::newspaper_font::ATLAS_ID)),
+                solids,
+                images,
+                depth + 1.0,
+            );
+        }
     }
 
     pub(super) fn city_info_dialog_action_enabled(&self, action: CityInfoDialogAction) -> bool {
@@ -1346,5 +1735,87 @@ impl ViewerState {
             }
             _ => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod fiscal_notice_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the user's Chicago font and private Quadra screenshot"]
+    fn mac_fiscal_notice_matches_quadras_pixels() {
+        let bytes = std::fs::read(std::env::var_os("CITYGAME_MAC_CHICAGO_FONT").unwrap()).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("citygame-mac-notice-font-{}", std::process::id()));
+        let pack = root.join("pack");
+        std::fs::create_dir_all(pack.join("catalog/mac-system")).unwrap();
+        std::fs::write(pack.join("catalog/mac-system/chicago.bin"), bytes).unwrap();
+        let settings = root.join("settings.json");
+        std::fs::write(
+            &settings,
+            serde_json::json!({"schema_version": 1, "original_graphics": pack}).to_string(),
+        )
+        .unwrap();
+        let profile = crate::asset_profile::AssetProfile::load_from(settings).unwrap();
+        let mut state = super::super::tests::test_state(
+            crate::city::City::new_blank("/tmp/mac-notice.sc2", "City").unwrap(),
+        );
+        state.engine_fidelity = crate::engine_fidelity::EngineFidelity::Mac68k;
+        state.configure_original_newspaper_data(&profile);
+        assert!(state.mac_system_font.is_some());
+        state.open_mac_fiscal_crisis_notice();
+        let image = std::fs::read(std::env::var_os("CITYGAME_MAC_FISCAL_PPM").unwrap()).unwrap();
+        let parts: Vec<_> = image.splitn(4, |&b| b == b'\n').collect();
+        assert_eq!(parts[0], b"P6");
+        assert_eq!(parts[1], b"640 480");
+        let mut solids = Vec::new();
+        state.push_city_info_dialog(None, (640, 480), 1.0, &mut solids, &mut Vec::new());
+        let mut srgb_solids = Vec::new();
+        draw_mac_fiscal_notice(
+            &mut srgb_solids,
+            (640, 480),
+            state.mac_system_font.as_deref(),
+            true,
+            0.0,
+        );
+        for (solids, srgb) in [(solids, false), (srgb_solids, true)] {
+            let mut actual = vec![0u8; 226 * 82];
+            for solid in solids {
+                let linear = solid.color[0];
+                let encoded = if !srgb {
+                    linear
+                } else if linear <= 0.0031308 {
+                    12.92 * linear
+                } else {
+                    1.055 * linear.powf(1.0 / 2.4) - 0.055
+                };
+                let shade = (encoded * 255.0).round() as u8;
+                for y in (solid.y as i32)..((solid.y + solid.h) as i32) {
+                    for x in (solid.x as i32)..((solid.x + solid.w) as i32) {
+                        if (207..433).contains(&x) && (199..281).contains(&y) {
+                            actual[(y as usize - 199) * 226 + (x as usize - 207)] = shade;
+                        }
+                    }
+                }
+            }
+            let native = parts[3];
+            let mut mismatch = 0;
+            let mut first = Vec::new();
+            for y in 199..281 {
+                for x in 207..433 {
+                    let expected = native[(y * 640 + x) * 3];
+                    let got = actual[(y - 199) * 226 + x - 207];
+                    if got != expected {
+                        mismatch += 1;
+                        if first.len() < 20 {
+                            first.push((x, y, got, expected));
+                        }
+                    }
+                }
+            }
+            assert_eq!(mismatch, 0, "srgb={srgb}, first mismatch {first:?}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

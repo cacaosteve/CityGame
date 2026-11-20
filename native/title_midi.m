@@ -41,3 +41,19 @@ void citygame_stop_title_midi(void) {
         citygameTitlePlayer = nil;
     }
 }
+
+bool citygame_midi_position_is_active(bool playing, double position, double duration) {
+    return playing && (duration <= 0 || position < duration);
+}
+
+bool citygame_title_midi_is_playing(void) {
+    @autoreleasepool {
+        if (citygameTitlePlayer == nil || !citygameTitlePlayer.isPlaying) return false;
+        if (!citygame_midi_position_is_active(true, citygameTitlePlayer.currentPosition,
+                                               citygameTitlePlayer.duration)) {
+            [citygameTitlePlayer stop];
+            return false;
+        }
+        return true;
+    }
+}

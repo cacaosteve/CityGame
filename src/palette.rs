@@ -48,6 +48,11 @@ pub struct AnimatedPalette {
 }
 
 impl AnimatedPalette {
+    /// Unanimated palette entry from the imported asset pack.
+    pub(crate) fn base_color_for_index(&self, index: u8) -> Color {
+        self.primary[index as usize]
+    }
+
     pub fn load(asset_root: impl AsRef<Path>) -> Result<Self> {
         let palette_root = asset_root.as_ref().join("palettes");
         let csv_path = palette_root.join("pltt_00000_Default_Palette.csv");

@@ -2,24 +2,26 @@
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use super::seed_bundled_assets_if_needed;
+use super::title_flow::{MacTitleStartup, mac_tick_count};
 use super::{
-    AppCommand, AssetFolderPurpose, GameCursors, PlacementSound, ViewerState, WINDOW_HEIGHT,
+    AppCommand, Win95CloseAction, Win95FileDialog, AssetFolderPurpose, DisasterEffectPlayback, GameCursors, PlacementSound, ViewerState, WINDOW_HEIGHT,
     WINDOW_WIDTH, app_command_for_menu_command, apply_map_touch_action, arcology_dialog_hit_test,
-    auto_budget_enabled_for_engine, bootstrap_window, city_info_dialog_rect_for,
-    configure_linux_video_driver, ensure_first_run_assets, fit_window_to_usable_display,
+    auto_budget_enabled_for_engine, bootstrap_window,
+    configure_linux_video_driver, disaster_effect_playback, ensure_first_run_assets, fit_window_to_usable_display,
     handle_modal_pointer_down, handle_modal_pointer_up, hide_window, input_pixel_scale,
     load_profile_sound, menu_callback, military_base_dialog_hit_test, open_asset_folder_dialog,
     open_city_dialog, open_scenario_dialog, open_tile_set_dialog, pixel_scale,
     play_placement_sound, point_in_float_rect, pop_command, power_plant_dialog_hit_test,
-    push_command, raise_window, reload_asset_profile, run_title_screen, save_city_dialog,
+    push_command, raise_window, reload_asset_profile, run_title_screen, save_city_dialog, save_city_dialog_before_close,
     show_asset_error, show_window, sync_renderer_to_window, sync_sign_text_input, sync_window,
     tool_allows_touch_paint_stroke, viewport_center, wait_for_window_pixels, wheel_zoom_factor,
-    windows_menu_shortcut,
+    win95_file_menu_shortcut, windows_menu_shortcut,
 };
 use crate::asset_profile::{AssetProfile, OriginalMedia, TitleMusicPreference};
 use crate::city::AppMode;
 use crate::docked_palette::DockedPalette;
 use crate::engine_fidelity::EngineFidelity;
+use crate::game_clock::GameClockAdvance;
 use crate::mac_menu;
 use crate::menubar::{MenubarClick, MenubarUi};
 use crate::mobile_lifecycle::AppLifecycle;
@@ -39,7 +41,7 @@ use std::time::{Duration, Instant};
 
 /// Seed the two Win95 view-constructor process streams from independent tick
 /// reads, in PE order: Game_Random LFSR first, game LCG second.
-fn win95_view_randoms_from_tick_source(
+pub(super) fn win95_view_randoms_from_tick_source(
     mut tick: impl FnMut() -> u64,
 ) -> (Win95Lfsr, Win95GameRand) {
     let lfsr = Win95Lfsr::from_u32_seed(tick() as u32 | 1);
@@ -47,7 +49,19 @@ fn win95_view_randoms_from_tick_source(
     (lfsr, game_rand)
 }
 
+/// The first city view initializes the CRT and newspaper after the title
+/// choice. Later city opens continue the resulting process stream.
+pub(super) fn win95_document_randoms_from_tick_source(
+    tick: impl FnOnce() -> u64,
+) -> (i16, Win95CrtRand, crate::city::PeNewspaperTables) {
+    let tick_word = tick() as i16;
+    let mut crt = Win95CrtRand::new(i32::from(tick_word) as u32);
+    let tables = super::newspaper_state::initialize_pe_newspaper_tables(&mut crt);
+    (tick_word, crt, tables)
+}
+
 mod commands;
+pub(super) use commands::show_win95_city_open_errors;
 mod input;
 mod presentation;
 
@@ -86,18 +100,14 @@ pub fn run() -> Result<()> {
         log::warn!("could not enable mouse input on the first window-focus click");
     }
     let sdl = sdl3::init().map_err(|err| anyhow::anyhow!(err))?;
-    // PE startup at 0x479653 sign-extends the low word of GetTickCount.
-    // SDL ticks supply the portable time source before the title UI.
-    let mut startup_process_crt = EngineFidelity::from_env()
-        .uses_win95()
-        .then(|| Win95CrtRand::new(i32::from(sdl3::timer::ticks() as i16) as u32));
-    let startup_newspaper = startup_process_crt
-        .as_mut()
-        .map(super::newspaper_state::initialize_pe_newspaper_tables);
     let video = sdl.video().map_err(|err| anyhow::anyhow!(err))?;
     let audio = sdl.audio().map_err(|err| anyhow::anyhow!(err)).ok();
 
-    mac_menu::install(menu_callback, super::document_open_callback);
+    mac_menu::install(
+        menu_callback,
+        super::document_open_callback,
+        EngineFidelity::from_env().uses_win95(),
+    );
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let mut window = video
@@ -174,6 +184,16 @@ pub fn run() -> Result<()> {
         "assets ready in {:.1}s",
         load_started.elapsed().as_secs_f32()
     );
+    // The PE view seeds these streams before the title menu appears.
+    let (view_process_lfsr, view_process_game_rand) = if EngineFidelity::from_env().uses_win95() {
+        let (lfsr, game_rand) = win95_view_randoms_from_tick_source(sdl3::timer::ticks);
+        (Some(lfsr), Some(game_rand))
+    } else {
+        (None, None)
+    };
+    let mut mac_startup =
+        (!EngineFidelity::from_env().uses_win95()).then(|| MacTitleStartup::new(mac_tick_count));
+    let mut continued_title_music = None;
     if !run_title_screen(
         &video,
         &window,
@@ -181,9 +201,23 @@ pub fn run() -> Result<()> {
         &mut renderer,
         &mut asset_profile,
         audio.as_ref(),
+        EngineFidelity::from_env(),
+        mac_startup.as_mut(),
+        None,
+        &mut continued_title_music,
     )? {
         return Ok(());
     }
+    // The native view's initial update seeds the CRT only after a title
+    // choice. SDL ticks are the portable input for the PE's GetTickCount.
+    let (startup_tick_word, startup_process_crt, startup_newspaper) = if EngineFidelity::from_env()
+        .uses_win95()
+    {
+        let (tick_word, crt, tables) = win95_document_randoms_from_tick_source(sdl3::timer::ticks);
+        (Some(tick_word), Some(crt), Some(tables))
+    } else {
+        (None, None, None)
+    };
     let mut sound = load_profile_sound(audio.as_ref(), &asset_profile);
     asset_root = asset_profile
         .original_root()
@@ -198,9 +232,7 @@ pub fn run() -> Result<()> {
     let palette_window =
         palette_window::build_palette_window(&video, &window, palette_logical, single_window)?;
     if single_window {
-        log::info!(
-            "single-window UI: movable in-game Tools palette"
-        );
+        log::info!("single-window UI: movable in-game Tools palette");
     }
     let mut palette_renderer = if let Some(palette_window) = &palette_window {
         palette_window.sync();
@@ -224,12 +256,6 @@ pub fn run() -> Result<()> {
     let mut cursors = GameCursors::for_assets(&asset_root);
     let mut palette_logical_size = palette_logical;
     let palette_id = palette_window.as_ref().map(|w| w.id()).unwrap_or(u32::MAX);
-    let (view_process_lfsr, view_process_game_rand) = if EngineFidelity::from_env().uses_win95() {
-        let (lfsr, game_rand) = win95_view_randoms_from_tick_source(sdl3::timer::ticks);
-        (Some(lfsr), Some(game_rand))
-    } else {
-        (None, None)
-    };
     let mut state = ViewerState::load_default_from_path_with_process_rng(
         asset_profile.default_city_path()?,
         startup_process_crt,
@@ -237,11 +263,18 @@ pub fn run() -> Result<()> {
         view_process_lfsr,
         startup_newspaper,
     )?;
+    state.pe_document_tick_word = startup_tick_word;
+    state.configure_original_newspaper_data(&asset_profile);
+    if let Some(startup) = mac_startup {
+        startup.install(&mut state);
+    }
     let mut city_music = crate::title_music::CityMusic::new(
         audio.as_ref(),
         &asset_profile,
         state.music_enabled,
         asset_profile.citygame_city_music_enabled(),
+        !state.engine_fidelity.uses_win95(),
+        continued_title_music.take(),
     );
     let mut city_music_enabled = state.music_enabled;
     state.sync_menu_graphics_preference(prefer_replacement);
@@ -289,15 +322,49 @@ pub fn run() -> Result<()> {
             renderer.animation_frame_count(atlas, 1270),
         );
     }
+    // Apply the title choice before the first actor prefix can run on the
+    // bootstrap city. The title hands its process RNGs to the chosen city.
+    if !state.engine_fidelity.uses_win95() {
+        commands::drain_commands(
+            RuntimeWindows {
+                video: &video,
+                window: &window,
+                renderer: &mut renderer,
+                palette_window: palette_window.as_ref(),
+                palette_renderer: palette_renderer.as_mut(),
+                palette_id,
+                palette_logical_size: &mut palette_logical_size,
+                single_window,
+            },
+            RuntimeAssets {
+                profile: &mut asset_profile,
+                root: &mut asset_root,
+                cursors: &mut cursors,
+                sound: &mut sound,
+                city_music: &mut city_music,
+                audio: audio.as_ref(),
+            },
+            &mut state,
+            &mut input,
+        )?;
+    }
     let mut last_frame = Instant::now();
+    if !state.engine_fidelity.uses_win95() {
+        state.mac_loop_scheduler.start_live_clock(mac_tick_count());
+    }
     let mut occluded_frames = 0u32;
 
     loop {
+        mac_menu::set_city_runtime_active(true);
         input.running = true;
         let keyboard = sdl.keyboard();
         state.modifiers = keyboard.mod_state();
         input.return_to_title = false;
         while input.running {
+            if let Some(player) = &sound {
+                player.set_mac_voice_mode(state.engine_fidelity == EngineFidelity::Mac68k);
+            }
+            state.mac_loop_scheduler.set_viewport_size(renderer.size());
             let run_mac_actor_prefix =
                 !state.engine_fidelity.uses_win95() && !input.lifecycle.is_suspended();
             #[cfg(target_os = "ios")]
@@ -335,6 +402,7 @@ pub fn run() -> Result<()> {
                     &mut input,
                     &mut sound,
                     &mut city_music,
+                    &asset_profile,
                 )?;
             }
 
@@ -391,10 +459,17 @@ pub fn run() -> Result<()> {
                     &asset_profile,
                     city_music_enabled,
                     asset_profile.citygame_city_music_enabled(),
+                    !state.engine_fidelity.uses_win95(),
+                    None,
                 );
             }
             if let Some(player) = city_music.as_mut() {
+                if let Some(id) = state.pending_newspaper_music.take() {
+                    player.request_original_song(&asset_profile, id);
+                }
                 player.update();
+            } else {
+                state.pending_newspaper_music = None;
             }
             // The sampled editor tools repeat while held, including on a
             // stationary pointer. A frame supplies one native worker sample.
@@ -412,7 +487,7 @@ pub fn run() -> Result<()> {
             sync_sign_text_input(
                 &video,
                 &window,
-                state.sign_dialog.is_some(),
+                state.sign_dialog.is_some() || state.win95_new_city_setup.is_some(),
                 renderer.size(),
             );
 
@@ -429,12 +504,16 @@ pub fn run() -> Result<()> {
                 last_frame = frame_start;
                 e
             };
-            if state.traffic.speed() != GameSpeed::Paused {
+            if !input.blocking_file_dialog() && state.traffic.speed() != GameSpeed::Paused {
                 state.advance_ambient_animation(elapsed.as_secs_f32());
             }
             let mac_budget_review_was_pending =
                 state.mac_loop_scheduler.january_budget_review_pending;
-            let clock_advance = if let Some((sampled_at, waits)) = mac_actor_prefix {
+            let mac_fiscal_notice_was_pending = state.mac_loop_scheduler.fiscal_notice.is_some();
+            let clock_advance = if input.holds_pe_idle_for_common_dialog() {
+                state.advance_pe_common_dialog_timers(elapsed);
+                GameClockAdvance::default()
+            } else if let Some((sampled_at, waits)) = mac_actor_prefix {
                 let event_elapsed = if input.lifecycle.is_suspended() {
                     Duration::ZERO
                 } else {
@@ -448,9 +527,19 @@ pub fn run() -> Result<()> {
             } else {
                 state.advance_frame_simulation(elapsed)
             };
+            if !mac_fiscal_notice_was_pending
+                && let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut()
+            {
+                // The native helper polls _Button even when the press happened
+                // before the notice began; it must wait for that release too.
+                input.fiscal_notice_mouse_down = event_pump.mouse_state().left();
+                notice.button_down = input.fiscal_notice_mouse_down || input.touch.finger_count() > 0;
+            }
             if clock_advance.days > 0
                 || (!mac_budget_review_was_pending
                     && state.mac_loop_scheduler.january_budget_review_pending)
+                || (!mac_fiscal_notice_was_pending
+                    && state.mac_loop_scheduler.fiscal_notice.is_some())
             {
                 state.update_window_title(&video, window.id());
             }
@@ -463,6 +552,7 @@ pub fn run() -> Result<()> {
                     pixel_scale(&window, renderer.size()),
                 );
             }
+            let mac_effect_reset = state.take_mac_disaster_effect_reset();
             if let Some(effect) = state.take_pending_disaster_start_sound() {
                 play_placement_sound(state.sound_effects_player(sound.as_ref()), effect);
             }
@@ -472,13 +562,20 @@ pub fn run() -> Result<()> {
                     PlacementSound::Disaster,
                 );
             }
-            for extra in state.take_pending_disaster_extra_sounds() {
-                play_placement_sound(state.sound_effects_player(sound.as_ref()), extra);
+            for event in disaster_effect_playback(mac_effect_reset, state.take_pending_disaster_extra_sounds()) {
+                match event {
+                    DisasterEffectPlayback::StopEffects => {
+                        if let Some(player) = &sound { player.stop_effects(); }
+                    }
+                    DisasterEffectPlayback::Play(effect) => {
+                        play_placement_sound(state.sound_effects_player(sound.as_ref()), effect);
+                    }
+                }
             }
             if !state.query_is_inspect {
                 state.refresh_status_line();
             }
-            if state.mode == AppMode::CityView {
+            if state.mode == AppMode::CityView && !input.blocking_file_dialog() {
                 state
                     .traffic
                     .tick_traffic(&mut state.city, elapsed.as_secs_f32());
@@ -518,6 +615,12 @@ pub fn run() -> Result<()> {
                 &input.docked_palette,
                 &mut occluded_frames,
             );
+            if state.take_pending_mac_earthquake_sound() && state.sound_effects_enabled {
+                play_placement_sound(
+                    state.sound_effects_player(sound.as_ref()),
+                    PlacementSound::Explode,
+                );
+            }
             state.tick_earthquake_shake();
             sync_window(&video, window.id());
 
@@ -529,6 +632,7 @@ pub fn run() -> Result<()> {
             }
         }
 
+        mac_menu::set_city_runtime_active(false);
         if !input.return_to_title {
             break;
         }
@@ -540,6 +644,9 @@ pub fn run() -> Result<()> {
             palette_window::set_app_active(&video, palette_window, false);
             hide_window(&video, palette_id);
         }
+        let title_fidelity = state.engine_fidelity;
+        let resumed_mac_scheduler =
+            (!state.engine_fidelity.uses_win95()).then_some(&mut state.mac_loop_scheduler);
         if !run_title_screen(
             &video,
             &window,
@@ -547,6 +654,10 @@ pub fn run() -> Result<()> {
             &mut renderer,
             &mut asset_profile,
             audio.as_ref(),
+            title_fidelity,
+            None,
+            resumed_mac_scheduler,
+            &mut continued_title_music,
         )? {
             break;
         }
@@ -559,6 +670,7 @@ pub fn run() -> Result<()> {
             palette_renderer.as_mut(),
             &mut cursors,
         )?;
+        state.configure_original_newspaper_data(&asset_profile);
         let citygame_palette = asset_profile
             .toolbar_palette_preference()
             .uses_citygame_palette();
@@ -589,6 +701,8 @@ pub fn run() -> Result<()> {
             &asset_profile,
             city_music_enabled,
             asset_profile.citygame_city_music_enabled(),
+            !state.engine_fidelity.uses_win95(),
+            continued_title_music.take(),
         );
 
         input = InputState::new();
@@ -639,4 +753,28 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_random_tests {
+    use super::{win95_document_randoms_from_tick_source, win95_view_randoms_from_tick_source};
+
+    #[test]
+    fn win95_view_and_first_document_use_separate_clock_reads() {
+        let mut view_ticks = [0x10987_u64, 0x10988].into_iter();
+        let (lfsr, game_rand) = win95_view_randoms_from_tick_source(|| {
+            view_ticks.next().expect("unexpected view clock read")
+        });
+        assert_eq!(lfsr.state(), 0x0987);
+        assert_eq!(game_rand.state(), 0x10989);
+        assert_eq!(view_ticks.next(), None);
+
+        // The low WORD is signed before srand; the initializer then consumes
+        // the native newspaper shuffle's 122 CRT draws.
+        let (tick_word, crt, _) = win95_document_randoms_from_tick_source(|| 0x1bb7d);
+        assert_eq!(tick_word, -17539);
+        assert_eq!(crt.seed(), 1_467_602_999);
+        assert_eq!(lfsr.state(), 0x0987);
+        assert_eq!(game_rand.state(), 0x10989);
+    }
 }

@@ -7,8 +7,9 @@
 
 use super::{
     CityServiceOutcomes, ViewerState, ZONE_AIRPORT, ZONE_INDUSTRIAL_DENSE, ZONE_SEAPORT,
-    church_tile_count_for_city, mac_budget_accumulate_monthly_rci_scan_partition_with_game_rng,
-    pe_b_place_church, pe_choose_and_place_corner_bits, pe_class0_growth_aggregate_inputs,
+    church_tile_count_for_city,
+    mac_budget_accumulate_monthly_rci_scan_partition_with_rngs_and_palette, pe_b_place_church,
+    pe_choose_and_place_corner_bits, pe_class0_growth_aggregate_inputs,
     pe_class2_growth_aggregate_inputs, pe_growth_level_for_xbld,
     power_service_maps_with_entry_seed, power_water, rci_development_services_for_city_with_power,
     sim_calendar_growth_phase_tiles, sim_calendar_growth_phases,
@@ -118,13 +119,18 @@ impl ViewerState {
         if phase >= 16 {
             return;
         }
-        mac_budget_accumulate_monthly_rci_scan_partition_with_game_rng(
+        let (_, speed) = self.mac_scheduler_inputs();
+        let scheduler = &mut self.mac_loop_scheduler;
+        let now = scheduler.current_tick();
+        mac_budget_accumulate_monthly_rci_scan_partition_with_rngs_and_palette(
             &mut self.city,
             phase / 4,
             phase % 4,
             &mut self.mac_process_rng,
             &mut self.mac_game_rng,
+            &mut self.mac_app_lfsr,
             &mut self.mac_kind2_sound_deadline,
+            &mut |_| scheduler.advance_palette(speed, now),
         );
     }
 

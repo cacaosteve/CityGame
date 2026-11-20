@@ -51,7 +51,12 @@ impl ViewerState {
                 };
                 push_ui_rect(solids, rect, [0.68, 0.68, 0.68, 1.0], depth);
                 push_ui_bevel(solids, rect, scale, false, depth + 0.1);
-                ui::push_pixel_text(
+                let draw_text = if self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k {
+                    ui::push_pixel_text_preserving_case
+                } else {
+                    ui::push_pixel_text
+                };
+                draw_text(
                     solids,
                     label,
                     label_x + padding_x,
@@ -89,16 +94,29 @@ impl ViewerState {
 
         push_ui_rect(solids, field, [0.88, 0.88, 0.88, 1.0], depth + 0.2);
         push_ui_bevel(solids, field, 2.0, true, depth + 0.3);
-        let text = format!("{}_", dialog.text);
-        ui::push_pixel_text(
+        let is_mac = self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k;
+        let text = if dialog.select_all || is_mac { dialog.text.clone() } else { format!("{}_", dialog.text) };
+        if dialog.select_all {
+            push_ui_rect(solids, FloatRect { x: field.x + 8.0, y: field.y + 8.0, w: ui::pixel_text_width(&text, scale), h: 8.0 * scale }, [0.0, 0.0, 0.0, 1.0], depth + 0.35);
+        }
+        let draw_text = if self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k {
+            ui::push_pixel_text_preserving_case
+        } else {
+            ui::push_pixel_text
+        };
+        draw_text(
             solids,
             &text,
             field.x + 8.0,
             field.y + 8.0,
             scale,
-            [0.0, 0.0, 0.0, 1.0],
+            if dialog.select_all { [1.0, 1.0, 1.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] },
             depth + 0.4,
         );
+        if is_mac && !dialog.select_all {
+            let prefix: String = dialog.text.chars().take(dialog.caret).collect();
+            push_ui_rect(solids, FloatRect { x: field.x + 8.0 + ui::pixel_text_width(&prefix, scale), y: field.y + 8.0, w: 1.0, h: 8.0 * scale }, [0.0, 0.0, 0.0, 1.0], depth + 0.45);
+        }
 
         push_dialog_button(solids, ok, "OK", false, depth + 0.5);
         push_dialog_button(solids, cancel, "Cancel", false, depth + 0.5);

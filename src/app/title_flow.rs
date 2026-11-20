@@ -5,7 +5,7 @@
 
 use super::startup_assets::{choose_folder_blocking, reload_title_assets};
 use super::{
-    AppCommand, command_queue, input_pixel_scale, open_title_city_dialog,
+    AppCommand, ViewerState, command_queue, input_pixel_scale, open_title_city_dialog,
     open_title_scenario_dialog, push_command, raise_window, set_window_title, show_window,
     sync_renderer_to_window, title_screen, wait_for_window_pixels,
 };
@@ -13,15 +13,189 @@ use crate::asset_profile::{
     AssetProfile, GraphicsPreference, OriginalMedia, TitleMusicPreference, ToolbarPalettePreference,
 };
 use crate::city::City;
+use crate::engine_fidelity::EngineFidelity;
 use crate::mac_menu;
+use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
 use crate::renderer::Renderer;
 use anyhow::Result;
 use glam::Vec2;
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
 use sdl3::mouse::{MouseButton, MouseWheelDirection};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+const MAC_STARTUP_SONGS: [u16; 5] = [10001, 10004, 10008, 10012, 10018];
+
+pub(super) fn mac_tick_count() -> u32 {
+    (u128::from(sdl3::timer::ticks()) * 60 / 1000) as u32
+}
+
+pub(super) struct MacTitleStartup {
+    app_lfsr: MacAppLfsrRng,
+    game: MacGameLcgRng,
+    quickdraw: MacToolboxRng,
+    pub(super) song: u16,
+    paper_tick: Option<i16>,
+    palette: Option<super::mac_loop_scheduler::palette::MacPaletteSchedule>,
+}
+
+impl MacTitleStartup {
+    pub(super) fn new(mut tick: impl FnMut() -> u32) -> Self {
+        let app_lfsr = MacAppLfsrRng::new(MacAppLfsrRng::startup_seed(tick()));
+        let mut game = MacGameLcgRng::new(tick() | 1);
+        let quickdraw = MacToolboxRng::new(tick());
+        let song = MAC_STARTUP_SONGS[usize::from(game.bounded(5))];
+        Self {
+            app_lfsr,
+            game,
+            quickdraw,
+            song,
+            paper_tick: None,
+            palette: None,
+        }
+    }
+
+    pub(super) fn initialize_palette(&mut self, tick: impl FnMut() -> u32) {
+        self.palette =
+            Some(super::mac_loop_scheduler::palette::MacPaletteSchedule::initialize(tick));
+    }
+
+    fn advance_palette(&mut self, tick: impl FnMut() -> u32) {
+        if let Some(palette) = &mut self.palette {
+            // The native title loop uses speed 3 and has a front window.
+            palette.update(3, tick, || true);
+        }
+    }
+
+    pub(super) fn initialize_newspaper(&mut self, tick: u32) {
+        super::session::initialize_mac_title_newspaper(&mut self.quickdraw, tick);
+        self.paper_tick = Some(tick as i16);
+    }
+
+    pub(super) fn install(self, state: &mut ViewerState) {
+        state.mac_app_lfsr = self.app_lfsr;
+        state.mac_game_rng = self.game;
+        state.mac_process_rng = self.quickdraw;
+        state.mac_newspaper.tick_word = self.paper_tick;
+        if let Some(palette) = self.palette {
+            state.mac_loop_scheduler.install_live_palette(palette);
+        }
+    }
+}
+
+pub(super) struct MacMusicSelector {
+    deadline: u32,
+    recent: [u16; 4],
+    // The pinned Quadra's caller frames live in the 0x0076xxxx region.
+    // Other Mac memory layouts can yield a different signed high word.
+    caller_frame_high: i16,
+}
+
+impl Default for MacMusicSelector {
+    fn default() -> Self {
+        Self {
+            deadline: 0,
+            recent: [0; 4],
+            caller_frame_high: 0x76,
+        }
+    }
+}
+
+impl MacMusicSelector {
+    fn select_with_playback<C>(
+        &mut self,
+        game: &mut MacGameLcgRng,
+        music_enabled: bool,
+        now: u32,
+        playback: &mut C,
+        song_active: impl FnOnce(&mut C) -> bool,
+        request_and_tick: impl FnOnce(&mut C, u16) -> u32,
+    ) -> Option<u16> {
+        const SONG_OFFSETS: [u16; 9] = [0, 3, 4, 7, 8, 11, 12, 13, 18];
+        if !music_enabled || now < self.deadline {
+            return None;
+        }
+        // CODE 5 draws before querying playback and recent-song history.
+        let index = usize::from(game.bounded(9));
+        let offset = SONG_OFFSETS[index];
+        if song_active(playback) || self.recent.contains(&offset) {
+            return None;
+        }
+        self.recent.rotate_left(1);
+        self.recent[3] = offset;
+        // Sparse offsets 11..13 read the adjacent song-choice table; offset
+        // 18 reads the signed high word of the caller's saved frame pointer.
+        const SONG_DELAYS: [i16; 8] = [9_000, 11_000, 13_000, 9_000, 9_000, 4, 7, 8];
+        let delay = SONG_DELAYS
+            .get(index)
+            .copied()
+            .unwrap_or(self.caller_frame_high);
+        let song = 10_000 + offset;
+        self.deadline = request_and_tick(playback, song).wrapping_add_signed(i32::from(delay));
+        Some(song)
+    }
+
+    #[cfg(test)]
+    fn select(
+        &mut self,
+        game: &mut MacGameLcgRng,
+        music_enabled: bool,
+        now: u32,
+        mut active: bool,
+        request_and_tick: impl FnOnce(u16) -> u32,
+    ) -> Option<u16> {
+        self.select_with_playback(
+            game,
+            music_enabled,
+            now,
+            &mut active,
+            |active| *active,
+            |_, song| request_and_tick(song),
+        )
+    }
+}
+
+impl ViewerState {
+    pub(super) fn mac_music_callback_with_playback<C>(
+        &mut self,
+        now: u32,
+        playback: &mut C,
+        song_active: impl FnOnce(&mut C) -> bool,
+        request_and_tick: impl FnOnce(&mut C, u16) -> u32,
+    ) -> Option<u16> {
+        if self.engine_fidelity.uses_win95() {
+            return None;
+        }
+        self.mac_music.select_with_playback(
+            &mut self.mac_game_rng,
+            self.music_enabled,
+            now,
+            playback,
+            song_active,
+            request_and_tick,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn mac_music_callback_with_request(
+        &mut self,
+        now: u32,
+        mut active: bool,
+        request_and_tick: impl FnOnce(u16) -> u32,
+    ) -> Option<u16> {
+        self.mac_music_callback_with_playback(
+            now,
+            &mut active,
+            |active| *active,
+            |_, song| request_and_tick(song),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn mac_music_callback(&mut self, now: u32, song_active: bool) -> Option<u16> {
+        self.mac_music_callback_with_request(now, song_active, |_| now)
+    }
+}
 
 pub(super) fn run_title_screen(
     video: &sdl3::VideoSubsystem,
@@ -30,6 +204,10 @@ pub(super) fn run_title_screen(
     renderer: &mut Renderer<'_>,
     profile: &mut AssetProfile,
     audio: Option<&sdl3::AudioSubsystem>,
+    fidelity: EngineFidelity,
+    mut startup: Option<&mut MacTitleStartup>,
+    mut resumed_mac_scheduler: Option<&mut super::mac_loop_scheduler::MacLoopScheduler>,
+    continued_music: &mut Option<crate::title_music::TitleMusic>,
 ) -> Result<bool> {
     use title_screen::{Choice, Page, TitleScreen};
 
@@ -48,7 +226,23 @@ pub(super) fn run_title_screen(
         profile.citygame_city_music_enabled(),
         profile.toolbar_palette_preference().uses_citygame_palette(),
     );
-    let mut music = crate::title_music::TitleMusic::new(audio, profile);
+    let startup_song = startup.as_ref().map(|startup| startup.song);
+    let start_music = |profile: &AssetProfile| {
+        let original_mac = !fidelity.uses_win95()
+            && profile.title_music_preference() == TitleMusicPreference::Original;
+        crate::title_music::TitleMusic::new(
+            audio,
+            profile,
+            startup_song,
+            !original_mac,
+            original_mac,
+        )
+    };
+    let mut music = start_music(profile);
+    if let Some(startup) = startup.as_mut() {
+        startup.initialize_newspaper(mac_tick_count());
+        startup.initialize_palette(mac_tick_count);
+    }
     log::info!(
         "CityGame title screen shown (music: {:?})",
         profile.title_music_preference()
@@ -60,6 +254,12 @@ pub(super) fn run_title_screen(
 
     while running && !enter_game {
         let frame_start = Instant::now();
+        if let Some(startup) = startup.as_mut() {
+            startup.advance_palette(mac_tick_count);
+        }
+        if let Some(scheduler) = resumed_mac_scheduler.as_mut() {
+            scheduler.advance_palette(3, scheduler.current_tick());
+        }
         mac_menu::pump_events();
         event_pump.pump_events();
         let appearance = {
@@ -173,7 +373,7 @@ pub(super) fn run_title_screen(
                     match choice {
                         Choice::Continue => {
                             if let Some(path) = profile.recent_city() {
-                                push_command(AppCommand::OpenPath(path));
+                                push_command(AppCommand::OpenTitleDialogPath(path));
                                 enter_game = true;
                             }
                         }
@@ -204,7 +404,7 @@ pub(super) fn run_title_screen(
                             let preference = profile.title_music_preference().next();
                             match profile.set_title_music_preference(preference) {
                                 Ok(()) => {
-                                    music = crate::title_music::TitleMusic::new(audio, profile);
+                                    music = start_music(profile);
                                     mac_menu::set_citygame_overrides(
                                         profile.citygame_effects_enabled(),
                                         profile.title_music_preference()
@@ -263,7 +463,9 @@ pub(super) fn run_title_screen(
                                         screen.status = Some("This Mac scenario's opening event is not implemented yet.".into());
                                     }
                                     None => {
-                                        push_command(AppCommand::OpenPath(entry.path.clone()));
+                                        push_command(AppCommand::OpenTitleScenarioPath(
+                                            entry.path.clone(),
+                                        ));
                                         enter_game = true;
                                     }
                                 }
@@ -302,8 +504,7 @@ pub(super) fn run_title_screen(
                                         reload_title_assets(profile, renderer).map(|_| ())
                                     }) {
                                         Ok(()) => {
-                                            music =
-                                                crate::title_music::TitleMusic::new(audio, profile);
+                                            music = start_music(profile);
                                             if choice == Choice::ImportOriginal {
                                                 screen.refresh_scenarios(profile);
                                             }
@@ -350,7 +551,7 @@ pub(super) fn run_title_screen(
                             match result {
                                 Ok(Some(path)) => {
                                     if media == OriginalMedia::Music {
-                                        music = crate::title_music::TitleMusic::new(audio, profile);
+                                        music = start_music(profile);
                                     }
                                     screen.status = Some(format!(
                                         "Selected {}",
@@ -399,7 +600,7 @@ pub(super) fn run_title_screen(
                             };
                             match profile.set_title_music_preference(next) {
                                 Ok(()) => {
-                                    music = crate::title_music::TitleMusic::new(audio, profile);
+                                    music = start_music(profile);
                                     mac_menu::set_citygame_overrides(
                                         profile.citygame_effects_enabled(),
                                         profile.title_music_preference()
@@ -531,14 +732,29 @@ pub(super) fn run_title_screen(
             city_name_keyboard = false;
         }
 
-        if let Some(path) = take_title_open_path() {
+        if let Some(command) = take_title_open_path() {
+            let path = match &command {
+                AppCommand::OpenTitlePath(path)
+                | AppCommand::OpenTitleDialogPath(path)
+                | AppCommand::OpenTitleScenarioPath(path) => path,
+                _ => unreachable!(),
+            };
             match City::load(&path) {
                 Ok(_) => {
-                    push_command(AppCommand::OpenPath(path));
+                    // The title has no city to replace; the runtime must not
+                    // ask to save the placeholder city for a Finder open.
+                    push_command(approve_title_open(command));
                     enter_game = true;
                 }
                 Err(error) => {
-                    screen.status = Some(format!("Could not open city: {error:#}"));
+                    if fidelity.uses_win95() {
+                        crate::win95_file_error::record_city_io_error(path, &error);
+                    }
+                    if is_win95_title_format_error(fidelity, &command, &error) {
+                        super::runtime::show_win95_city_open_errors(window, profile, &error, true);
+                    } else {
+                        screen.status = Some(format!("Could not open city: {error:#}"));
+                    }
                 }
             }
         }
@@ -567,18 +783,228 @@ pub(super) fn run_title_screen(
     if text_input.is_active(window) {
         text_input.stop(window);
     }
+    if running
+        && enter_game
+        && !fidelity.uses_win95()
+        && profile.title_music_preference() == TitleMusicPreference::Original
+        && !profile.citygame_city_music_enabled()
+    {
+        *continued_music = music.take();
+    }
     drop(music);
     log::info!("CityGame title screen finished (enter_game={enter_game})");
     Ok(running && enter_game)
 }
 
-pub(super) fn take_title_open_path() -> Option<PathBuf> {
+fn is_win95_title_format_error(
+    fidelity: EngineFidelity,
+    command: &AppCommand,
+    error: &anyhow::Error,
+) -> bool {
+    cfg!(not(any(target_os = "android", target_os = "ios")))
+        && fidelity.uses_win95()
+        && matches!(command, AppCommand::OpenTitleDialogPath(_))
+        && (error
+            .downcast_ref::<crate::city::NotIffCityFile>()
+            .is_some()
+            || error
+                .downcast_ref::<crate::city::WrongIffCityType>()
+                .is_some()
+            || error.downcast_ref::<crate::city::CityReadEof>().is_some())
+}
+
+pub(super) fn take_title_open_path() -> Option<AppCommand> {
     let mut queue = command_queue().lock().expect("command queue");
-    let index = queue
-        .iter()
-        .position(|command| matches!(command, AppCommand::OpenTitlePath(_)))?;
-    match queue.remove(index)? {
-        AppCommand::OpenTitlePath(path) => Some(path),
-        _ => None,
+    take_title_open_command(&mut queue)
+}
+
+fn approve_title_open(command: AppCommand) -> AppCommand {
+    match command {
+        AppCommand::OpenTitlePath(path) => AppCommand::OpenConfirmedCityPath(path),
+        other => other,
+    }
+}
+
+fn take_title_open_command(
+    queue: &mut std::collections::VecDeque<AppCommand>,
+) -> Option<AppCommand> {
+    let index = queue.iter().position(|command| {
+        matches!(
+            command,
+            AppCommand::OpenTitlePath(_)
+                | AppCommand::OpenTitleDialogPath(_)
+                | AppCommand::OpenTitleScenarioPath(_)
+        )
+    })?;
+    queue.remove(index)
+}
+
+#[cfg(test)]
+mod title_open_tests {
+    use super::*;
+
+    #[test]
+    fn mac_music_queries_playback_only_after_deadline_and_rng() {
+        #[derive(Default)]
+        struct Playback {
+            queries: usize,
+            requests: usize,
+        }
+        let mut playback = Playback::default();
+        let mut selector = MacMusicSelector::default();
+        let mut rng = MacGameLcgRng::new(1);
+        let before = rng.state();
+        let query = |playback: &mut Playback| {
+            playback.queries += 1;
+            false
+        };
+        let request = |playback: &mut Playback, _: u16| {
+            playback.requests += 1;
+            1000
+        };
+        assert_eq!(
+            selector.select_with_playback(&mut rng, false, 1000, &mut playback, query, request),
+            None
+        );
+        selector.deadline = 1001;
+        assert_eq!(
+            selector.select_with_playback(&mut rng, true, 1000, &mut playback, query, request),
+            None
+        );
+        assert_eq!(
+            (playback.queries, playback.requests, rng.state()),
+            (0, 0, before)
+        );
+
+        // Choice zero is already in the recent list; CODE 5 still queries
+        // playback after drawing and before rejecting the recent song.
+        let seed = (1..100_000)
+            .find(|&seed| MacGameLcgRng::new(seed).bounded(9) == 0)
+            .unwrap();
+        rng = MacGameLcgRng::new(seed);
+        let mut expected = MacGameLcgRng::new(seed);
+        expected.bounded(9);
+        assert_eq!(
+            selector.select_with_playback(&mut rng, true, 1001, &mut playback, query, request),
+            None
+        );
+        assert_eq!(
+            (playback.queries, playback.requests, rng.state()),
+            (1, 0, expected.state())
+        );
+    }
+
+    #[test]
+    fn mac_music_uses_adjacent_choice_words_and_post_request_tick() {
+        for (index, song, delay) in [(5, 10011, 4), (6, 10012, 7), (7, 10013, 8)] {
+            let seed = (1..100_000)
+                .find(|&seed| usize::from(MacGameLcgRng::new(seed).bounded(9)) == index)
+                .expect("a seed for the song choice");
+            let mut rng = MacGameLcgRng::new(seed);
+            let mut selector = MacMusicSelector::default();
+            let mut requested = None;
+            assert_eq!(
+                selector.select(&mut rng, true, 1000, false, |selected| {
+                    requested = Some(selected);
+                    1004
+                }),
+                Some(song)
+            );
+            assert_eq!(requested, Some(song));
+            assert_eq!(selector.deadline, 1004 + delay);
+            let mut called = false;
+            assert_eq!(
+                selector.select(&mut rng, true, selector.deadline - 1, false, |_| {
+                    called = true;
+                    0
+                }),
+                None
+            );
+            assert!(!called);
+        }
+    }
+
+    #[test]
+    fn mac_music_last_delay_reads_signed_caller_frame_word() {
+        let seed = (1..100_000)
+            .find(|&seed| MacGameLcgRng::new(seed).bounded(9) == 8)
+            .expect("a seed for song 10018");
+        for high_word in [0x76, 0x56, 0x8123u16 as i16] {
+            let mut selector = MacMusicSelector {
+                caller_frame_high: high_word,
+                ..Default::default()
+            };
+            let mut rng = MacGameLcgRng::new(seed);
+            assert_eq!(
+                selector.select(&mut rng, true, 1000, false, |_| 1004),
+                Some(10018)
+            );
+            assert_eq!(
+                selector.deadline,
+                1004u32.wrapping_add_signed(i32::from(high_word))
+            );
+        }
+    }
+
+    #[test]
+    fn win95_title_chooser_recognizes_both_format_errors() {
+        let path = std::path::Path::new("fixture.sc2");
+        let dialog = AppCommand::OpenTitleDialogPath(path.into());
+        let external = AppCommand::OpenTitlePath(path.into());
+        let scenario = AppCommand::OpenTitleScenarioPath(path.into());
+        for bytes in [&b"not an IFF"[..], &b"FORM\0\0\0\x04ILBM"[..], &b""[..], &b"FORM"[..], &b"FORM\0\0\0\x04"[..]] {
+            let error = crate::city::detect_city_kind(path, bytes).unwrap_err();
+            assert_eq!(
+                is_win95_title_format_error(EngineFidelity::Win95, &dialog, &error),
+                cfg!(not(any(target_os = "android", target_os = "ios")))
+            );
+            assert!(!is_win95_title_format_error(
+                EngineFidelity::Mac68k,
+                &dialog,
+                &error
+            ));
+            assert!(!is_win95_title_format_error(
+                EngineFidelity::Win95,
+                &external,
+                &error
+            ));
+            assert!(!is_win95_title_format_error(
+                EngineFidelity::Win95,
+                &scenario,
+                &error
+            ));
+        }
+        let truncated = crate::city::detect_city_kind(path, b"FOR").unwrap_err();
+        assert!(!is_win95_title_format_error(
+            EngineFidelity::Win95,
+            &dialog,
+            &truncated
+        ));
+    }
+
+    #[test]
+    fn title_open_queue_preserves_dialog_and_external_origins() {
+        let ordinary = AppCommand::OpenPath("ordinary.sc2".into());
+        let external = AppCommand::OpenTitlePath("external.sc2".into());
+        let external_next = AppCommand::OpenTitlePath("external-next.sc2".into());
+        assert_eq!(
+            approve_title_open(external.clone()),
+            AppCommand::OpenConfirmedCityPath("external.sc2".into())
+        );
+        let dialog = AppCommand::OpenTitleDialogPath("dialog.sc2".into());
+        let scenario = AppCommand::OpenTitleScenarioPath("flint.scn".into());
+        let mut queue = std::collections::VecDeque::from([
+            ordinary.clone(),
+            external.clone(),
+            external_next.clone(),
+            dialog.clone(),
+            scenario.clone(),
+        ]);
+        assert_eq!(take_title_open_command(&mut queue), Some(external));
+        assert_eq!(take_title_open_command(&mut queue), Some(external_next));
+        assert_eq!(take_title_open_command(&mut queue), Some(dialog));
+        assert_eq!(take_title_open_command(&mut queue), Some(scenario));
+        assert_eq!(queue.pop_front(), Some(ordinary));
+        assert_eq!(take_title_open_command(&mut queue), None);
     }
 }

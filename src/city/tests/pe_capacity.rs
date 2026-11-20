@@ -6,7 +6,7 @@ use super::{
     pe_occupancy_div16_count, pe_occupancy_divisor, pe_occupancy_tile_words, pe_park_attendance,
     pe_transit_depot_count,
 };
-use crate::mac_random::{MacGameLcgRng, MacToolboxRng};
+use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
 
 #[test]
 fn arco_tile_bonus_zero_at_or_below_threshold() {
@@ -3890,13 +3890,21 @@ fn mac_police_arrest_subtotal_saturates_before_row_word_truncation() {
 
     let mut actual_rng = MacToolboxRng::new(MacToolboxRng::QUICKDRAW_INIT_GRAF_SEED);
     let mut expected_rng = actual_rng;
-    let _police_jitter = expected_rng.random_u16() & 0x0f;
+    let _first_police_jitter = expected_rng.random_u16() & 0x0f;
+    let _second_police_jitter = expected_rng.random_u16() & 0x0f;
     let expected_candidate = 10_000 + (expected_rng.random_u16() & 0x03ff);
     let expected_per_hundred = expected_candidate / 100;
     let expected_random_divisor = expected_per_hundred - 90;
     let expected_overcrowding = (expected_rng.random_u16() % expected_random_divisor) as u8;
     let expected_next = expected_rng.random_u16();
 
+    city.refresh_mac_monthly_random_xmic_rows(100, 0, 0, 0, 0, false, &mut actual_rng);
+    assert_eq!(city.mac_monthly_arrest_total(), u16::MAX);
+    assert_eq!(
+        city.microsim_at(prison_slot).unwrap().stat1,
+        0,
+        "the prison reads the incoming carry before this pass publishes its subtotal"
+    );
     city.refresh_mac_monthly_random_xmic_rows(100, 0, 0, 0, 0, false, &mut actual_rng);
 
     let prison = city
@@ -4544,7 +4552,8 @@ fn mac_monthly_random_xmic_dispatch_follows_interleaved_record_slots() {
     assert_eq!(city.microsim_at(slots[4]).unwrap().stat3, expected_fire);
     assert_eq!(
         city.microsim_at(slots[5]).unwrap().stat1,
-        expected_arrests / 2
+        0,
+        "prison reads the incoming carry, not this sweep's police subtotal"
     );
     assert_eq!(city.microsim_at(slots[5]).unwrap().stat3, 0);
     assert_eq!(
@@ -4595,7 +4604,8 @@ fn mac_monthly_random_xmic_dispatch_follows_interleaved_record_slots() {
             expected_llama_stat3,
         )
     );
-    assert_eq!(city.mac_monthly_arrest_total(), 0);
+    assert_eq!(city.mac_monthly_arrest_total(), expected_arrests);
+    assert_eq!(city.mac_state_misc_u32_at(1038 * 4), Some(u32::from(expected_arrests)));
     assert_eq!(city.mac_state_misc_u32_at(91 * 4), Some(2));
     assert_eq!(city.mac_state_misc_u32_at(1039 * 4), Some(1));
     assert_eq!(actual_rng.random_u16(), next_expected);
@@ -4670,7 +4680,7 @@ fn mac_monthly_zoo_uses_four_app_lcg_draws_per_active_row() {
 }
 
 #[test]
-fn mac_monthly_arcologies_use_saved_counts_tax_rates_and_water_result() {
+fn mac_monthly_arcologies_use_saved_counts_tax_rates_and_random_input() {
     let mut city =
         City::new_blank("/tmp/sc2000-mac-arco-monthly.sc2", "MacArco").expect("blank city");
     city.kind = CityFileKind::MacCity;
@@ -4691,7 +4701,7 @@ fn mac_monthly_arcologies_use_saved_counts_tax_rates_and_water_result() {
     city.set_microsim_stat2(second_index, 200);
 
     // Saved counts sum to 64; arithmetic shift by four gives the helper's
-    // divisor 80, so 8,000/80 caps the target at 100 before water is added.
+    // divisor 80, so 8,000/80 caps the target at 100 before the draw is added.
     city.refresh_mac_monthly_arcology_microsims([7, 7, 7], 50);
 
     assert_eq!(city.microsim_at(first_index).unwrap().stat2, 252);
@@ -4835,6 +4845,52 @@ fn mac_monthly_marina_uses_zero_initialized_app_lfsr_and_preserves_other_fields(
     let row = city.microsim_at(index).expect("marina row");
     assert_eq!(row.stat1, 48, "min(7200/150, zero-LFSR + 6*8)");
     assert_eq!((row.stat0, row.stat2, row.stat3), (0x5a, 0x1234, 0xabcd));
+}
+
+#[test]
+fn mac_annual_marina_xmic_matches_quadras_2015_to_2017_lfsr_captures() {
+    for (year, initial_stat1, lfsr_seed, expected_stat1, expected_lfsr) in [
+        (2015, 1, 0xd597, 15, 0xb0db),
+        (2016, 15, 0xacf9, 3, 0x4207),
+        (2017, 3, 0x331b, 6, 0x6636),
+    ] {
+        let mut city = City::new_blank(
+            format!("/tmp/sc2000-mac-marina-{year}-capture.sc2"),
+            format!("Marina{year}"),
+        )
+        .expect("blank city");
+        city.kind = CityFileKind::MacCity;
+        city.set_mac_state_misc_u32_at(0x102c, 5_200);
+        city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xf8 * 4, 0);
+        city.microsims.as_mut().unwrap()[9] = super::MicrosimRecord {
+            tile_id: 0xf8,
+            stat1: initial_stat1,
+            ..super::MicrosimRecord::default()
+        };
+
+        let mut quickdraw = MacToolboxRng::new(0);
+        let mut app_lfsr = MacAppLfsrRng::new(lfsr_seed);
+        city.refresh_mac_monthly_random_xmic_rows_with_external_slots(
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            &mut quickdraw,
+            &mut app_lfsr,
+            |_, _, _| {},
+        );
+
+        // CODE 13 export 203 advances the captured annual entry seed once,
+        // then stores the new LFSR state modulo 20 in the marina's stat1.
+        assert_eq!(
+            city.microsim_at(9).map(|row| row.stat1),
+            Some(expected_stat1),
+            "Quadra {year} marina stat1"
+        );
+        assert_eq!(app_lfsr.state(), expected_lfsr, "Quadra {year} LFSR");
+    }
 }
 
 #[test]

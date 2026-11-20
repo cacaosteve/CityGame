@@ -157,7 +157,7 @@ pub(super) fn bootstrap_window(
         sync_renderer_to_window(renderer, window);
         if attempt == 0 {
             state.fit_map(renderer.size(), pixel_scale(window, renderer.size()));
-            state.restore_saved_pe_view(renderer.size(), pixel_scale(window, renderer.size()));
+            state.restore_saved_city_view(renderer.size(), pixel_scale(window, renderer.size()));
         }
 
         let dirty = state.city.take_dirty_tiles();

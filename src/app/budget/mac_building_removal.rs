@@ -17,7 +17,41 @@ pub(in crate::app) fn mac_destroy_building_export80(
     rng: &mut MacToolboxRng,
     render: bool,
 ) -> u32 {
-    mac_destroy_building_export80_impl(city, x, y, rng, render, false)
+    mac_destroy_building_export80_impl(city, x, y, rng, render, false, true, None)
+}
+
+/// CODE 10 FUN_0003dc90's Earthquake branch uses export 80 to clear a
+/// candidate, but its live-map return does not include export-138 terrain
+/// classification for the single-cell road cases. Keep that caller-specific
+/// behavior separate from ordinary export-80 callers.
+pub(in crate::app) fn mac_destroy_building_export80_for_earthquake(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    rng: &mut MacToolboxRng,
+) -> u32 {
+    let building = city.building_at(x, y);
+    let waits = mac_destroy_building_export80_impl(city, x, y, rng, false, false, false, None);
+    // The earthquake's zero-fill helper leaves generic extent-1 replacements
+    // as bare ground in XBLD. Export 138 is not part of this caller's map
+    // write sequence, so clear the temporary rubble and retain the native
+    // PlaceTile census update without classifying it.
+    if (0x06..0x70).contains(&building) {
+        city.set_building(x, y, 0);
+    }
+    waits
+}
+
+/// Report the generic destruction animation's selected frames to its caller.
+/// The caller can then flush export 80's accumulated dirty rectangle.
+pub(in crate::app) fn mac_destroy_building_export80_with_animation(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    rng: &mut MacToolboxRng,
+    animation: &mut dyn FnMut(usize, usize, usize, u8),
+) -> u32 {
+    mac_destroy_building_export80_impl(city, x, y, rng, true, false, true, Some(animation))
 }
 
 /// CODE 6 kind-5 status-one call to export 80. Native replays show that its
@@ -29,7 +63,7 @@ pub(in crate::app) fn mac_destroy_building_export80_for_kind5_actor(
     y: usize,
     rng: &mut MacToolboxRng,
 ) -> u32 {
-    mac_destroy_building_export80_impl(city, x, y, rng, true, true)
+    mac_destroy_building_export80_impl(city, x, y, rng, true, true, true, None)
 }
 
 fn mac_destroy_building_export80_impl(
@@ -39,6 +73,8 @@ fn mac_destroy_building_export80_impl(
     rng: &mut MacToolboxRng,
     render: bool,
     kind5_actor: bool,
+    classify_generic_extent1: bool,
+    mut animation: Option<&mut dyn FnMut(usize, usize, usize, u8)>,
 ) -> u32 {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return 0;
@@ -74,8 +110,16 @@ fn mac_destroy_building_export80_impl(
         };
         if render {
             // Three nested extent loops precede all generic map writes.
-            for _ in 0..(2 * extent * extent * extent) {
-                rng.random_u16();
+            for frame in 0..extent {
+                for column in 0..extent {
+                    for row in 0..extent {
+                        let variant = (rng.random_u16() & 3) as u8;
+                        rng.random_u16();
+                        if let Some(callback) = animation.as_mut() {
+                            callback(frame, column, row, variant);
+                        }
+                    }
+                }
             }
         }
         mac_export80_update_special_civic_latch(city, building);
@@ -87,7 +131,7 @@ fn mac_destroy_building_export80_impl(
                 anchor_y,
                 building,
                 rng,
-                building < 0x70,
+                classify_generic_extent1 && building < 0x70,
             )
         } else {
             mac_export80_remove_generic_rectangle(city, anchor_x, anchor_y, extent, building, rng);

@@ -14,6 +14,12 @@ pub(super) fn handle_modal_pointer_down(
     window: &sdl3::video::Window,
     sound: Option<&crate::audio::SoundPlayer>,
 ) -> bool {
+    if state.win95_new_city_setup.is_some() {
+        if state.win95_setup_pointer(screen, window_size) {
+            push_command(AppCommand::FinishWin95Charter);
+        }
+        return true;
+    }
     if state.sign_dialog.is_some() {
         match sign_dialog_hit_test(screen, window_size) {
             Some(SignDialogAction::Commit) => state.commit_sign_dialog(),
@@ -54,7 +60,23 @@ pub(super) fn handle_modal_pointer_down(
     }
     if let Some(dialog) = state.city_info_dialog {
         let screen = state.info_panel_input_point(screen, window_size);
-        if let Some(action) = city_info_dialog_hit_test(screen, window_size, dialog) {
+        if matches!(dialog, CityInfoDialog::Newspaper(edition) if !edition.is_mac())
+            && state.engine_fidelity.uses_win95()
+            && handle_pe_paper_pointer(state, screen, city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity))
+        {
+            return true;
+        }
+        if matches!(dialog, CityInfoDialog::Newspaper(edition) if edition.is_mac())
+            && handle_mac_paper_pointer(state, screen, city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity))
+        {
+            return true;
+        }
+        if let Some(action) = city_info_dialog_hit_test_for_engine(
+            screen,
+            window_size,
+            dialog,
+            state.engine_fidelity,
+        ) {
             if !state.city_info_dialog_action_enabled(action) {
                 return true;
             }
@@ -71,10 +93,80 @@ pub(super) fn handle_modal_pointer_down(
         }
         if state.mac_loop_scheduler.january_budget_review_pending
             || (!state.engine_fidelity.uses_win95() && dialog.holds_mac_simulation())
-            || point_in_float_rect(screen, city_info_dialog_rect_for(dialog, window_size))
+            || point_in_float_rect(screen, city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity))
         {
             return true;
         }
+    }
+    false
+}
+
+/// Dispatch Win95 clicks in the same viewport used by the recovered layout.
+pub(super) fn handle_pe_paper_pointer(state: &mut ViewerState, screen: Vec2, page: FloatRect) -> bool {
+    if let Some(article) = state.pe_newspaper_article.as_ref() {
+        if point_in_float_rect(screen, newspaper::pe_detail_close_rect(page, &article.body)) {
+            state.pe_newspaper_article = None;
+        } else if newspaper::pe_detail_scroll_max(&article.body) > 0 && point_in_float_rect(screen, newspaper::pe_detail_scroll_rect(page, &article.body, false)) {
+            state.scroll_pe_newspaper_article(-3);
+        } else if newspaper::pe_detail_scroll_max(&article.body) > 0 && point_in_float_rect(screen, newspaper::pe_detail_scroll_rect(page, &article.body, true)) {
+            state.scroll_pe_newspaper_article(3);
+        }
+        return true;
+    }
+    if let Some(paint) = state.pe_newspaper_paint.as_ref() {
+        if point_in_float_rect(screen, newspaper::pe_close_rect(page)) {
+            state.close_city_info_dialog();
+            return true;
+        }
+        let hits = newspaper::pe_hit_positions(page, paint.style, screen);
+        for position in hits {
+            // Native visits overlapping regions in order. Its article guard
+            // prevents opening another dialog after the first successful hit.
+            if state.open_pe_newspaper_article(position) { break; }
+        }
+        return point_in_float_rect(screen, page);
+    }
+    if point_in_float_rect(screen, newspaper::lead_hit_rect(page)) {
+        let _ = state.open_pe_newspaper_article(4);
+        return true;
+    }
+    false
+}
+
+/// Handle the lead article and its modal detail before ordinary paper clicks.
+pub(super) fn handle_mac_paper_pointer(state: &mut ViewerState, screen: Vec2, page: FloatRect) -> bool {
+    if state.mac_newspaper.detail_open {
+        if point_in_float_rect(screen, newspaper::detail_scroll_rect(page, false)) {
+            state.scroll_mac_paper_detail(-3);
+        } else if point_in_float_rect(screen, newspaper::detail_scroll_rect(page, true)) {
+            state.scroll_mac_paper_detail(3);
+        } else if point_in_float_rect(screen, newspaper::detail_close_rect(page))
+            || !point_in_float_rect(screen, newspaper::detail_rect(page))
+        {
+            state.close_mac_paper_detail();
+        }
+        return true;
+    }
+    if state.mac_newspaper.paint.is_some() {
+        if point_in_float_rect(screen, newspaper::mac_close_rect(page)) {
+            state.close_city_info_dialog();
+            return true;
+        }
+        let family = state.mac_newspaper.paint.as_ref().unwrap().family;
+        for position in 4..=10 {
+            if newspaper::mac_story_hit_rect(page, family, position).is_some_and(|rect| point_in_float_rect(screen, rect)) {
+                // The original leaves the weather and survey boxes inert in layout 2.
+                if family != 2 || (position != 5 && position != 6) {
+                    state.open_mac_paper_detail_at(position);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+    if point_in_float_rect(screen, newspaper::lead_hit_rect(page)) {
+        state.open_mac_paper_detail();
+        return true;
     }
     false
 }
@@ -146,7 +238,12 @@ pub(super) fn apply_city_info_dialog_action(
             }
         }
         CityInfoDialogAction::AdjustBudgetTax { tax_index, delta } => {
-            if state.adjust_budget_tax_rate(tax_index, delta) {
+            let changed = if state.engine_fidelity.uses_win95() {
+                state.adjust_budget_tax_rate(tax_index, delta)
+            } else {
+                state.adjust_mac_budget_property_tax(delta)
+            };
+            if changed {
                 state.play_click_sound(sound);
                 state.update_window_title(video, window.id());
             }
@@ -155,7 +252,7 @@ pub(super) fn apply_city_info_dialog_action(
             service_index,
             delta,
         } => {
-            if state.adjust_budget_service_funding(service_index, delta) {
+            if state.adjust_budget_service_funding_from_dialog(service_index, delta) {
                 state.play_click_sound(sound);
                 state.update_window_title(video, window.id());
             }
@@ -298,7 +395,21 @@ pub(super) fn city_info_dialog_hit_test(
     window_size: (u32, u32),
     active_dialog: CityInfoDialog,
 ) -> Option<CityInfoDialogAction> {
-    let dialog = city_info_dialog_rect_for(active_dialog, window_size);
+    city_info_dialog_hit_test_for_engine(
+        screen,
+        window_size,
+        active_dialog,
+        EngineFidelity::Win95,
+    )
+}
+
+pub(super) fn city_info_dialog_hit_test_for_engine(
+    screen: Vec2,
+    window_size: (u32, u32),
+    active_dialog: CityInfoDialog,
+    fidelity: EngineFidelity,
+) -> Option<CityInfoDialogAction> {
+    let dialog = city_info_dialog_rect_for_engine(active_dialog, window_size, fidelity);
     if let CityInfoDialog::StadiumTeam { available, .. } = active_dialog {
         return (0..5)
             .find(|&team| {
@@ -310,7 +421,11 @@ pub(super) fn city_info_dialog_hit_test(
     let close = if matches!(active_dialog, CityInfoDialog::Newspaper(_)) {
         newspaper::close_rect(dialog)
     } else if active_dialog == CityInfoDialog::Budget {
-        budget_window::close_rect(dialog)
+        if fidelity.uses_win95() {
+            budget_window::close_rect(dialog)
+        } else {
+            budget_window::mac_close_rect(dialog)
+        }
     } else {
         city_info_close_rect(dialog)
     };
@@ -369,6 +484,30 @@ pub(super) fn city_info_dialog_hit_test(
         }
     }
     if active_dialog == CityInfoDialog::Budget {
+        if !fidelity.uses_win95() {
+            for increase in [false, true] {
+                if point_in_float_rect(screen, budget_window::mac_tax_adjust_rect(dialog, increase)) {
+                    return Some(CityInfoDialogAction::AdjustBudgetTax {
+                        tax_index: 0,
+                        delta: if increase { BUDGET_TAX_STEP } else { -BUDGET_TAX_STEP },
+                    });
+                }
+            }
+            for service_index in [0, 1, 2, 3, 5] {
+                for increase in [false, true] {
+                    if point_in_float_rect(
+                        screen,
+                        budget_window::mac_service_adjust_rect(dialog, service_index, increase)?,
+                    ) {
+                        return Some(CityInfoDialogAction::AdjustBudgetFunding {
+                            service_index,
+                            delta: if increase { BUDGET_FUNDING_STEP } else { -BUDGET_FUNDING_STEP },
+                        });
+                    }
+                }
+            }
+            return None;
+        }
         if point_in_float_rect(screen, budget_auto_budget_rect(dialog)) {
             return Some(CityInfoDialogAction::ToggleAutoBudget);
         }
@@ -443,4 +582,21 @@ pub(super) fn city_info_dialog_hit_test(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_budget_done_point_maps_to_close_action() {
+        let action = city_info_dialog_hit_test_for_engine(
+            Vec2::new(464.0, 126.0),
+            (640, 480),
+            CityInfoDialog::Budget,
+            EngineFidelity::Mac68k,
+        );
+
+        assert_eq!(action, Some(CityInfoDialogAction::Close));
+    }
 }

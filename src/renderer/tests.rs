@@ -192,6 +192,35 @@ fn smoke_sprite_body_stays_off_water_blue() {
 }
 
 #[test]
+#[ignore = "requires original Mac sprite pack"]
+fn animated_atlas_retains_distinct_indices_for_identical_water_colors() {
+    let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
+    let source =
+        crate::assets::AtlasSource::load(root.join("sprites/SPRT_00129_ShapeData")).unwrap();
+    let palette = AnimatedPalette::load(&root).unwrap();
+    let atlas = build_animation_atlas(&[source], &palette).unwrap().unwrap();
+    let frame = atlas.frames.get(&animated_sprite_id(1270, 5)).unwrap();
+    let indices = atlas.source_indices.as_ref().unwrap();
+    let mut counts = [0usize; 2];
+    for y in frame.y..frame.y + frame.h {
+        for x in frame.x..frame.x + frame.w {
+            let rgba = atlas.rgba.get_pixel(x, y).0;
+            let source = indices.get_pixel(x, y).0;
+            if rgba == [35, 39, 255, 255] && source[1] == 255 {
+                if source[0] == 79 {
+                    counts[0] += 1;
+                }
+                if source[0] == 195 {
+                    counts[1] += 1;
+                }
+            }
+            assert_eq!(source[3], if rgba[3] >= 128 { 255 } else { 0 });
+        }
+    }
+    assert!(counts.into_iter().all(|count| count > 0), "{counts:?}");
+}
+
+#[test]
 fn water_sprite_baked_frames_differ_in_animation_atlas() {
     use crate::assets::AtlasSource;
     use crate::palette::{AnimatedPalette, animated_sprite_id};

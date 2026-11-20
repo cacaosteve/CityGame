@@ -24,6 +24,59 @@ pub fn lookup(sprite_id: u32) -> Option<MacShapeRecord> {
     mac_shape_table_data::lookup_generated(sprite_id)
 }
 
+/// Dimensions from the player's imported Mac SPRT atlases. Native shape
+/// construction overwrites earlier records when a resource repeats an ID.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MacShapeDimensions {
+    by_id: std::collections::HashMap<u32, (u32, u32)>,
+    terrain_shapes: Option<Vec<u16>>,
+}
+
+impl MacShapeDimensions {
+    pub(crate) fn from_pack(root: &std::path::Path) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let mut result = Self::default();
+        for group in ["SPRT_00128_ShapeData", "SPRT_00129_ShapeData", "SPRT_00130_ShapeData"] {
+            let path = root.join("sprites").join(group).join("atlas.json");
+            let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let manifest: crate::assets::AtlasManifest = serde_json::from_slice(&data)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            for frame in manifest.frames {
+                if frame.w != 0 && frame.h != 0 {
+                    result.by_id.insert(frame.id, (frame.w, frame.h));
+                }
+            }
+        }
+        let path = root.join("catalog/mac-terrain-shapes.json");
+        if path.exists() {
+            let map: Vec<u16> = serde_json::from_slice(&std::fs::read(&path)?)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            anyhow::ensure!(map.len() == 128, "invalid Mac terrain shape map length");
+            result.terrain_shapes = Some(map);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn set_terrain_shapes(&mut self, shapes: Vec<u16>) {
+        self.terrain_shapes = Some(shapes);
+    }
+
+    pub(crate) fn terrain_dimensions(&self, terrain: u8, zoom: u32) -> Option<(u32, u32)> {
+        if zoom > 2 { return None; }
+        let id = u32::from(*self.terrain_shapes.as_ref()?.get(usize::from(terrain))?);
+        self.dimensions(id + 500 * zoom)
+    }
+
+    pub(crate) fn building_dimensions(&self, building: u8, zoom: u32) -> Option<(u32, u32)> {
+        if zoom > 2 || building == 0 { return None; }
+        self.dimensions(u32::from(building) + 500 * zoom)
+    }
+
+    pub(crate) fn dimensions(&self, id: u32) -> Option<(u32, u32)> {
+        self.by_id.get(&id).copied()
+    }
+}
+
 /// Mac kind-1's CODE 6 redirect reads the base-zoom SPRT height at
 /// `ffffb302 + 8*XBLD + 4` and compares record `+5` with `height / 3`.
 /// Keep this simulation input embedded: the original runtime builds the table
@@ -74,5 +127,24 @@ mod tests {
         assert_eq!(kind1_redirect_height_threshold(0x81), Some(4));
         assert_eq!(kind1_redirect_height_threshold(0xfa), Some(5));
         assert_eq!(kind1_redirect_height_threshold(0xfb), None);
+    }
+
+    #[test]
+    #[ignore = "requires original Mac pack and same-session RAM snapshot"]
+    fn imported_dimensions_match_live_mac_shape_table() {
+        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
+        let ram = std::fs::read(std::env::var_os("CITYGAME_MAC_SHAPE_RAM").unwrap()).unwrap();
+        let read_u16 = |address: usize| u16::from_be_bytes(ram[address..address + 2].try_into().unwrap());
+        let table = u32::from_be_bytes(ram[0x76ea5a..0x76ea5e].try_into().unwrap()) as usize;
+        let metrics = MacShapeDimensions::from_pack(&root).unwrap();
+        let mut compared = 0;
+        for id in 0..1500 {
+            let height = read_u16(table + id * 8 + 4);
+            let width = read_u16(table + id * 8 + 6);
+            if width == 0 || height == 0 { continue; }
+            assert_eq!(metrics.dimensions(id as u32), Some((u32::from(width), u32::from(height))), "shape {id}");
+            compared += 1;
+        }
+        assert_eq!(compared, 1448);
     }
 }

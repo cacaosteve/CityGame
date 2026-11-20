@@ -1,8 +1,145 @@
 use super::*;
 
+#[test]
+fn mac_label_edits_preserve_inactive_pascal_record_bytes_across_save() {
+    let path = std::env::temp_dir().join(format!(
+        "citygame-mac-label-backing-{}.city",
+        std::process::id()
+    ));
+    let mut city = City::new_blank(&path, "Labels").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_label(3, "The Citadel");
+    city.set_label(3, "Café");
+    city.save(&path).unwrap();
+    let mut loaded = City::load(&path).unwrap();
+    let raw = decode_expected_chunk_for_kind(
+        &loaded.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+        CityFileKind::MacCity,
+    )
+    .unwrap();
+    let row = &raw[3 * CITY_LABEL_RECORD_LEN..4 * CITY_LABEL_RECORD_LEN];
+    assert_eq!(&row[..12], b"\x04Caf\x8eCitadel");
+    loaded.set_label(3, "Hi");
+    loaded.save(&path).unwrap();
+    let reloaded = City::load(&path).unwrap();
+    let raw = decode_expected_chunk_for_kind(
+        &reloaded.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+        CityFileKind::MacCity,
+    )
+    .unwrap();
+    assert_eq!(
+        &raw[3 * CITY_LABEL_RECORD_LEN..3 * CITY_LABEL_RECORD_LEN + 12],
+        b"\x02Hif\x8eCitadel"
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn mac_newspaper_poll_retains_ranked_counts_and_resets_empty_city() {
+    let mut city = City::new_blank("/tmp/mac-opinion-test.sc2", "Poll").unwrap();
+    city.mac_opinion_counts = [9; 7];
+    city.mac_opinion_order = [6, 5, 4, 3, 2, 1, 0];
+    city.mac_mayor_approval = 31;
+    city.set_mac_state_misc_u32_at(0x102c, 99);
+    city.mac_poll_for_newspaper(|| panic!("small city must not draw"));
+    assert_eq!(
+        city.mac_opinion_poll_results(),
+        (31, [0; 7], [0, 1, 2, 3, 4, 5, 6])
+    );
+    city.set_mac_state_misc_u32_at(0x102c, 100);
+    let mut calls = 0;
+    city.mac_poll_for_newspaper(|| {
+        calls += 1;
+        0
+    });
+    let (approval, counts, order) = city.mac_opinion_poll_results();
+    assert_eq!(calls, 100);
+    assert_eq!(
+        u32::from(approval) + counts.iter().map(|&n| u32::from(n)).sum::<u32>(),
+        100
+    );
+    assert!(counts.windows(2).all(|pair| pair[0] >= pair[1]));
+    assert!(
+        order
+            .windows(2)
+            .zip(counts.windows(2))
+            .all(|(a, c)| c[0] != c[1] || a[0] < a[1])
+    );
+    city.set_mac_newspaper_suppressed(true);
+    city.mac_poll_for_newspaper(|| panic!("inactive app must not poll"));
+    assert_eq!(city.mac_opinion_poll_results(), (approval, counts, order));
+}
+
+#[test]
+fn mac_newspaper_open_updates_auxiliary_stories_and_retains_choices() {
+    let mut city = City::new_blank("/tmp/mac-open-stories.sc2", "Paper").unwrap();
+    city.set_mac_state_misc_u32_at(0x0e50 + 20 + 12, 4);
+    city.set_mac_state_misc_u32_at(0x006c, 0x1234_0008);
+    city.mac_opinion_order[0] = 3;
+    city.set_mac_story_choices(7, [11, 12, 13]);
+    city.set_mac_story_choices(8, [21, 22, 23]);
+    city.prepare_mac_newspaper_open_rows(1).unwrap();
+    assert_eq!(city.mac_story_record(7)[0], 0);
+    assert_eq!(city.mac_story_record(7)[2..], [8, 11, 12, 13]);
+    assert_eq!(city.mac_story_record(8)[0], 44);
+    assert_eq!(city.mac_story_record(8)[2..], [3, 21, 22, 23]);
+}
+
 use crate::mac_random::MacToolboxRng;
 use crate::paths::{self, test_mac_city, test_win_city, test_win_populated_city};
 use crate::win95_random::Win95CrtRand;
+
+#[test]
+#[ignore = "requires private native newspaper-open fixture"]
+fn pe_newspaper_open_rows_match_native_x86() {
+    let cases: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("CITYGAME_PE_NEWSPAPER_OPEN_ROWS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut city = City::new_blank("/tmp/citygame-pe-paper-rows.sc2", "Paper").unwrap();
+    for case in cases.as_array().unwrap() {
+        let paper = case["paper"].as_u64().unwrap() as usize;
+        let mut tables = PeNewspaperTables {
+            papers: [0; 30],
+            stories: [0; 54],
+        };
+        tables.papers[paper * 5 + 3] = case["kind"].as_u64().unwrap() as u32;
+        tables.stories[42..48].copy_from_slice(&[0x3130, 0x3332, 0x34, 0x35, 0x36, 0x37]);
+        tables.stories[48..54].copy_from_slice(&[0x3938, 0x3b3a, 0x3c, 0x3d, 0x3e, 0x3f]);
+        city.install_pe_newspaper_tables(tables);
+        city.pe_b_weather_trend = case["weather"].as_u64().unwrap() as u8;
+        city.pe_opinion_order[0] = case["issue"].as_u64().unwrap() as u16;
+        city.prepare_pe_newspaper_open_rows(paper).unwrap();
+        let actual = city.pe_newspaper_tables().unwrap().stories;
+        let expected: Vec<u8> = case["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect();
+        for row in 0..2 {
+            let bytes = &expected[row * 8..row * 8 + 8];
+            let expected_fields = [
+                u32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
+                u32::from(u16::from_le_bytes([bytes[2], bytes[3]])),
+                u32::from(bytes[4]),
+                u32::from(bytes[5]),
+                u32::from(bytes[6]),
+                u32::from(bytes[7]),
+            ];
+            assert_eq!(
+                &actual[(7 + row) * 6..(8 + row) * 6],
+                &expected_fields,
+                "{case}"
+            );
+        }
+    }
+    assert_eq!(cases.as_array().unwrap().len(), 108);
+}
 
 #[test]
 fn mac_phase22_scenario_comparisons_match_native_threshold_matrix() {
@@ -1287,6 +1424,166 @@ fn win_xlab_save_uses_length_prefixed_23_byte_rows() {
     let loaded = City::load(&path).expect("reload city");
     assert_eq!(loaded.label_at(7), Some("abcdefghijklmnopqrstuvw"));
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn win_xlab_preserves_native_windows_1252_and_legacy_citygame_utf8() {
+    let root = std::env::temp_dir().join(format!("citygame-win-xlab-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut city = City::new_blank(root.join("blank.sc2"), "test").unwrap();
+    city.update_chunks_from_layers();
+
+    let write_fixture = |city: &mut City, path: &std::path::Path, text: &[u8], legacy: bool| {
+        let mut raw = vec![0; CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN];
+        let row = 7 * CITY_LABEL_RECORD_LEN;
+        raw[row] = text.len() as u8;
+        raw[row + 1..row + 1 + text.len()].copy_from_slice(text);
+        upsert_chunk_for_kind(
+            &mut city.chunks,
+            &mut city.chunk_index,
+            "XLAB",
+            &raw,
+            city.kind,
+        );
+        city.chunks.retain(|chunk| {
+            chunk.name != crate::city::layer_codec::CITYGAME_WIN_LABELS_CHUNK
+                && (legacy || !matches!(chunk.name.as_str(), "CGMP" | "CGEX" | "CGFC"))
+        });
+        std::fs::write(
+            path,
+            encode_scdh_file_for_kind(&city.chunks, city.kind).unwrap(),
+        )
+        .unwrap();
+    };
+
+    let native_path = root.join("native.sc2");
+    write_fixture(&mut city, &native_path, b"Caf\xe9 \x96 \x80", false);
+    let mut native = City::load(&native_path).unwrap();
+    assert_eq!(native.label_at(7), Some("Café – €"));
+    let resaved = root.join("resaved.sc2");
+    native.save(&resaved).unwrap();
+    assert!(native.chunks.iter().any(|chunk| chunk.name == "CGLB"
+        && chunk.data == crate::city::layer_codec::CITYGAME_WIN_LABELS_VERSION));
+    let raw = decode_expected_chunk(
+        &native.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+    )
+    .unwrap();
+    let row = 7 * CITY_LABEL_RECORD_LEN;
+    assert_eq!(&raw[row..row + 9], b"\x08Caf\xe9 \x96 \x80");
+    assert_eq!(City::load(&resaved).unwrap().label_at(7), Some("Café – €"));
+
+    // Old CityGame saves carry CGMP but no CGLB and wrote UTF-8 bytes.
+    let legacy_path = root.join("legacy.sc2");
+    let mut old_city = City::new_blank(root.join("old.sc2"), "test").unwrap();
+    old_city.update_chunks_from_layers();
+    write_fixture(&mut old_city, &legacy_path, "Café – €".as_bytes(), true);
+    let mut legacy = City::load(&legacy_path).unwrap();
+    assert_eq!(legacy.label_at(7), Some("Café – €"));
+    legacy.save(&legacy_path).unwrap();
+    assert_eq!(
+        City::load(&legacy_path).unwrap().label_at(7),
+        Some("Café – €")
+    );
+
+    let unicode_path = root.join("unicode.sc2");
+    let mut old_unicode = City::new_blank(root.join("old_unicode.sc2"), "test").unwrap();
+    old_unicode.update_chunks_from_layers();
+    write_fixture(&mut old_unicode, &unicode_path, "City 🏙".as_bytes(), true);
+    let mut unicode = City::load(&unicode_path).unwrap();
+    assert_eq!(unicode.label_at(7), Some("City 🏙"));
+    unicode.save(&unicode_path).unwrap();
+    assert!(unicode.chunks.iter().any(|chunk| chunk.name == "CGLB"
+        && chunk.data == crate::city::layer_codec::CITYGAME_WIN_LABELS_UTF8_VERSION));
+    assert_eq!(
+        City::load(&unicode_path).unwrap().label_at(7),
+        Some("City 🏙")
+    );
+    unicode.set_label(7, "abcdefghijklmnopqrstuv🏙");
+    unicode.save(&unicode_path).unwrap();
+    assert_eq!(
+        City::load(&unicode_path).unwrap().label_at(7),
+        Some("abcdefghijklmnopqrstuv")
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mac_xlab_preserves_full_24_byte_label() {
+    let path = std::env::temp_dir().join(format!("sc2000-mac-xlab-{}.city", std::process::id()));
+    let mut city = City::new_blank(&path, "test").unwrap();
+    city.kind = CityFileKind::MacCity;
+    let label = "abcdefghijklmnopqrstuvwx";
+    city.set_label(7, label);
+    city.save(&path).unwrap();
+    let loaded = City::load(&path).unwrap();
+    assert_eq!(loaded.label_at(7), Some(label));
+    let raw = decode_expected_chunk_for_kind(
+        &city.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+        CityFileKind::MacCity,
+    )
+    .unwrap();
+    let row = 7 * CITY_LABEL_RECORD_LEN;
+    assert_eq!(raw[row], 24);
+    assert_eq!(&raw[row + 1..row + 25], label.as_bytes());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn win95_shortened_label_preserves_inactive_buffer_bytes_through_reload() {
+    let path =
+        std::env::temp_dir().join(format!("citygame-label-backing-{}.sc2", std::process::id()));
+    let mut city = City::new_blank(&path, "Labels").unwrap();
+    city.set_label(7, "LongLabel");
+    city.set_label(7, "No");
+    city.save(&path).unwrap();
+    let mut loaded = City::load(&path).unwrap();
+    assert_eq!(loaded.label_at(7), Some("No"));
+    let raw = decode_expected_chunk_for_kind(
+        &loaded.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+        loaded.kind,
+    )
+    .unwrap();
+    let offset = 7 * CITY_LABEL_RECORD_LEN;
+    assert_eq!(&raw[offset..offset + 10], b"\x02NogLabel\0");
+    loaded.set_label(7, "");
+    loaded.save(&path).unwrap();
+    let saved = City::load(&path).unwrap();
+    let raw = decode_expected_chunk_for_kind(
+        &saved.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+        saved.kind,
+    )
+    .unwrap();
+    assert_eq!(&raw[offset..offset + 10], b"\0o\0gLabel\0");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+#[ignore = "requires a private native Mac non-ASCII label capture"]
+fn mac_native_non_ascii_label_survives_save() {
+    let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_LABEL_CAPTURE").unwrap());
+    let mut city = City::load(root.join("labeltest.city")).unwrap();
+    assert_eq!(city.label_at(3), Some("Café"));
+    let path = root.join("citygame-labeltest.city");
+    city.save(&path).unwrap();
+    let reloaded = City::load(&path).unwrap();
+    assert_eq!(reloaded.label_at(3), Some("Café"));
+    let raw = decode_expected_chunk_for_kind(
+        &reloaded.chunks,
+        "XLAB",
+        CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN,
+        CityFileKind::MacCity,
+    )
+    .unwrap();
+    let row = 3 * CITY_LABEL_RECORD_LEN;
+    assert_eq!(&raw[row..row + 5], b"\x04Caf\x8e");
 }
 
 #[test]
@@ -3676,6 +3973,44 @@ fn pe_progression_survives_mac_layout_save_reload_without_replacing_mac_misc() {
 }
 
 #[test]
+fn first_mac_open_of_win_city_uses_saved_police_arrest_carry() {
+    let path = std::env::temp_dir().join(format!("mac-arrests-win-{}.sc2", std::process::id()));
+    let mut city = City::new_blank(&path, "Arrests").unwrap();
+    city.kind = CityFileKind::WinSc2;
+    city.set_misc_u32_at(0x1038, 0x0c01);
+    city.save(&path).unwrap();
+    let mut loaded = City::load(&path).unwrap();
+    loaded.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(loaded.mac_monthly_arrest_total(), 0x0c01);
+    assert_eq!(loaded.misc_u32_at(0x1038), Some(0x0c01));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn mac_annual_flag_on_win_layout_loads_raw_and_round_trips_without_changing_pe() {
+    let path = std::env::temp_dir().join(format!("mac-annual-win-{}.sc2", std::process::id()));
+    let mut city = City::new_blank(&path, "Annual Flag").expect("blank city");
+    city.kind = CityFileKind::WinSc2;
+    city.set_misc_u32_at(0xe3c, 0x1234_5600);
+    city.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(city.mac_state_misc_u32_at(0xe3c), Some(0));
+    city.set_mac_state_misc_low_byte_at(0xe3c, 0xff);
+    assert_eq!(city.misc_u32_at(0xe3c), Some(0x1234_5600));
+    city.save(&path).expect("save Mac flag");
+    let mut reopened = City::load(&path).expect("reopen city");
+    assert_eq!(reopened.misc_u32_at(0xe3c), Some(0x1234_5600));
+    reopened.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(reopened.mac_state_misc_u32_at(0xe3c), Some(0xff));
+    reopened.set_mac_state_misc_low_byte_at(0xe3c, 0);
+    reopened.save(&path).expect("save cleared flag");
+    let mut cleared = City::load(&path).expect("reopen cleared city");
+    cleared.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(cleared.mac_state_misc_u32_at(0xe3c), Some(0));
+    assert_eq!(cleared.misc_u32_at(0xe3c), Some(0x1234_5600));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn cross_layout_pe_rewards_and_mac_civic_latch_round_trip_independently() {
     let mac_path = std::env::temp_dir().join(format!(
         "sc2000-pe-rewards-mac-layout-{}.city",
@@ -4229,6 +4564,95 @@ fn pe_publish_graph_calendar_words_from_city_age_41354e() {
     assert_eq!(city.pe_w_calendar_month_mod(), 2);
     assert_eq!(city.pe_w_season(), 1);
     assert_eq!(city.pe_w_local_fame_base(), 1);
+}
+
+#[test]
+fn win95_signed_misc_words_round_trip_with_native_save_widths() {
+    let path = std::env::temp_dir().join(format!(
+        "citygame-pe-signed-words-{}.sc2",
+        std::process::id()
+    ));
+    let mut city = City::new_blank(&path, "Signed words").unwrap();
+    city.set_pe_w_prison_bonus(0x8000);
+    city.set_pe_w_monster_xthg_index(0xffff);
+    city.set_pe_w_current_disaster_type(0x8001);
+    city.set_pe_w_sewer_bonus(0x7fff);
+    city.save(&path).unwrap();
+    assert_eq!(
+        [
+            city.pe_w_prison_bonus(),
+            city.pe_w_monster_xthg_index(),
+            city.pe_w_current_disaster_type(),
+            city.pe_w_sewer_bonus()
+        ],
+        [0x8000, 0xffff, 0x8001, 0x7fff]
+    );
+    let loaded = City::load(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        loaded.misc_u32_at(MISC_PRISON_BONUS_OFFSET),
+        Some(0xffff8000)
+    );
+    assert_eq!(
+        loaded.misc_u32_at(MISC_MONSTER_XTHG_INDEX_OFFSET),
+        Some(u32::MAX)
+    );
+    assert_eq!(
+        loaded.misc_u32_at(MISC_CURRENT_DISASTER_TYPE_OFFSET),
+        Some(0xffff8001)
+    );
+    assert_eq!(loaded.misc_u32_at(MISC_SEWER_BONUS_OFFSET), Some(0x7fff));
+    assert_eq!(loaded.pe_w_prison_bonus(), 0x8000);
+    assert_eq!(loaded.pe_w_monster_xthg_index(), 0xffff);
+    assert_eq!(loaded.pe_w_current_disaster_type(), 0x8001);
+    assert_eq!(loaded.pe_w_sewer_bonus(), 0x7fff);
+}
+
+#[test]
+#[ignore = "requires private original Win95 MISC save fixture"]
+fn win95_signed_misc_words_match_original_save_tail() {
+    let input = std::env::var_os("CITYGAME_WIN95_MISC_SIGNED").unwrap();
+    let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "citygame-pe-signed-fixture-{}.sc2",
+        std::process::id()
+    ));
+    for row in cases.as_array().unwrap() {
+        let word = row["word"].as_u64().unwrap() as u16;
+        let mut city = City::new_blank(&path, "Signed fixture").unwrap();
+        city.set_pe_w_prison_bonus(word);
+        city.set_pe_w_monster_xthg_index(word);
+        city.set_pe_w_current_disaster_type(word);
+        city.pe_dw_disaster_active = 0x89abcdef;
+        city.set_pe_w_sewer_bonus(word);
+        city.save(&path).unwrap();
+        let loaded = City::load(&path).unwrap();
+        let values = [
+            MISC_PRISON_BONUS_OFFSET,
+            MISC_MONSTER_XTHG_INDEX_OFFSET,
+            MISC_CURRENT_DISASTER_TYPE_OFFSET,
+            MISC_DISASTER_ACTIVE_OFFSET,
+            MISC_SEWER_BONUS_OFFSET,
+        ]
+        .map(|offset| loaded.misc_u32_at(offset).unwrap());
+        let expected: Vec<_> = row["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect();
+        assert_eq!(values.as_slice(), expected, "word {word:#06x}");
+        assert_eq!(
+            [
+                loaded.pe_w_prison_bonus(),
+                loaded.pe_w_monster_xthg_index(),
+                loaded.pe_w_current_disaster_type(),
+                loaded.pe_w_sewer_bonus()
+            ],
+            [word; 4]
+        );
+    }
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -6064,6 +6488,12 @@ fn win95_saved_camera_uses_original_no_target_sentinel() {
             y: 128
         }
     );
+    let path = std::env::temp_dir().join("sc2000_saved_camera_no_target.sc2");
+    let mut city = City::new_blank(&path, "camera sentinel").unwrap();
+    assert!(city.set_saved_view(view));
+    city.save(&path).unwrap();
+    assert_eq!(City::load(&path).unwrap().saved_view(), Some(view));
+    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -6570,6 +7000,42 @@ fn mac_rle_encoder_round_trips_literals_and_repeats() {
 }
 
 #[test]
+fn mac_city_save_uses_native_packets_raw_altm_and_unpadded_chunks() {
+    let mut chunks = Vec::new();
+    let mut index = std::collections::HashMap::new();
+    upsert_chunk_for_kind(
+        &mut chunks,
+        &mut index,
+        "ALTM",
+        &[0x12, 0x34],
+        CityFileKind::MacCity,
+    );
+    upsert_chunk_for_kind(
+        &mut chunks,
+        &mut index,
+        "XTER",
+        &[0x41, 0x42],
+        CityFileKind::MacCity,
+    );
+    upsert_chunk_for_kind(
+        &mut chunks,
+        &mut index,
+        "XBLD",
+        &[0x77; 8],
+        CityFileKind::MacCity,
+    );
+    let bytes = encode_scdh_file_for_kind(&chunks, CityFileKind::MacCity).unwrap();
+    let parsed = parse_scdh_chunks(&bytes).unwrap();
+    assert_eq!(parsed[0].data, [0x12, 0x34]);
+    assert_eq!(parsed[1].data, [2, 0x41, 0x42]);
+    assert_eq!(
+        parsed[2].offset,
+        parsed[1].offset + 8 + parsed[1].data.len()
+    );
+    assert_eq!(sc2_rle_decode(&parsed[2].data).unwrap(), [0x77; 8]);
+}
+
+#[test]
 fn decodes_altm_land_water_and_tunnel_levels() {
     let raw = u16::from_be_bytes([0x7d, 0x42]);
     let sample = AltmSample {
@@ -6869,7 +7335,10 @@ fn mac_xtrf_accepts_win95_rle_encoded_64_square_payload() {
     let (decoded, format) =
         decode_xtrf(&[chunk], CityFileKind::MacCity).expect("decode Mac saved XTRF");
     assert_eq!(format, XtrfStorageFormat::Microsim64);
-    assert_eq!(decoded, resize_map_64_to_128(&compact, MicrosimOrder::Native));
+    assert_eq!(
+        decoded,
+        resize_map_64_to_128(&compact, MicrosimOrder::Native)
+    );
 }
 
 #[test]
@@ -6912,7 +7381,10 @@ fn mac_xplt_accepts_win95_rle_encoded_64_square_payload() {
 
     let decoded = decode_microsim64_chunk(&[chunk], "XPLT", CityFileKind::MacCity)
         .expect("decode Mac saved XPLT");
-    assert_eq!(decoded, resize_map_64_to_128(&compact, MicrosimOrder::Native));
+    assert_eq!(
+        decoded,
+        resize_map_64_to_128(&compact, MicrosimOrder::Native)
+    );
 }
 
 #[test]
@@ -7137,6 +7609,115 @@ fn cnam_reads_nul_terminated_text_after_metadata_byte() {
         "MacTown.city"
     );
     assert_eq!(city_name_from_chunks(path, &[], CityFileKind::WinSc2), "");
+}
+
+#[test]
+fn win95_cnam_native_and_legacy_encodings_survive_save_reload() {
+    let root = std::env::temp_dir().join(format!("citygame-cnam-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let make_fixture = |path: &Path, text: &[u8], legacy: bool| {
+        let mut city = City::new_blank(path, "test").unwrap();
+        city.update_chunks_from_layers();
+        let mut cnam = vec![text.len() as u8];
+        cnam.extend_from_slice(text);
+        upsert_chunk(&mut city.chunks, &mut city.chunk_index, "CNAM", &cnam);
+        city.chunks.retain(|chunk| {
+            chunk.name != "CGCN"
+                && (legacy || !matches!(chunk.name.as_str(), "CGMP" | "CGEX" | "CGFC" | "CGLB"))
+        });
+        std::fs::write(
+            path,
+            encode_scdh_file_for_kind(&city.chunks, city.kind).unwrap(),
+        )
+        .unwrap();
+    };
+    let native_path = root.join("native.sc2");
+    make_fixture(&native_path, b"Caf\xe9 \x96 \x80", false);
+    let mut native = City::load(&native_path).unwrap();
+    assert_eq!(native.name, "Café – €");
+    native.save(&native_path).unwrap();
+    let cnam = &native.chunk("CNAM").unwrap().data;
+    assert_eq!(cnam.len(), 32);
+    assert_eq!(&cnam[..10], b"\x1fCaf\xe9 \x96 \x80\0");
+    assert_eq!(City::load(&native_path).unwrap().name, "Café – €");
+
+    let legacy_path = root.join("legacy.sc2");
+    make_fixture(&legacy_path, "Café – €".as_bytes(), true);
+    let mut legacy = City::load(&legacy_path).unwrap();
+    assert_eq!(legacy.name, "Café – €");
+    legacy.save(&legacy_path).unwrap();
+    assert_eq!(
+        &legacy.chunk("CNAM").unwrap().data[..10],
+        b"\x1fCaf\xe9 \x96 \x80\0"
+    );
+    assert_eq!(City::load(&legacy_path).unwrap().name, "Café – €");
+
+    legacy.name = "City 🏙".to_owned();
+    legacy.save(&legacy_path).unwrap();
+    assert_eq!(City::load(&legacy_path).unwrap().name, "City 🏙");
+    legacy.name = format!("{}é", "A".repeat(30));
+    legacy.save(&legacy_path).unwrap();
+    assert_eq!(legacy.chunk("CNAM").unwrap().data.len(), 32);
+    assert_eq!(City::load(&legacy_path).unwrap().name, legacy.name);
+    legacy.name = format!("{}🏙", "A".repeat(30));
+    legacy.save(&legacy_path).unwrap();
+    assert_eq!(City::load(&legacy_path).unwrap().name, "A".repeat(30));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn win95_cnam_matches_optional_native_accented_resave() {
+    let Some(root) = std::env::var_os("CITYGAME_WIN95_CNAM_CAPTURE") else {
+        return;
+    };
+    let root = Path::new(&root);
+    let mut input = City::load(root.join("cafe-input.sc2")).unwrap();
+    let original = City::load(root.join("cafe-resaved.sc2")).unwrap();
+    assert_eq!(input.name, "Café – €");
+    assert_eq!(original.name, input.name);
+    let temp =
+        std::env::temp_dir().join(format!("citygame-native-cnam-{}.sc2", std::process::id()));
+    input.save(&temp).unwrap();
+    let reloaded = City::load(&temp).unwrap();
+    assert_eq!(reloaded.name, original.name);
+    let ours = &reloaded.chunk("CNAM").unwrap().data;
+    let native = &original.chunk("CNAM").unwrap().data;
+    assert_eq!(ours.len(), 32);
+    assert_eq!(native.len(), 32);
+    let end = native[1..].iter().position(|&byte| byte == 0).unwrap() + 2;
+    assert_eq!(&ours[..end], &native[..end]);
+    std::fs::remove_file(temp).unwrap();
+}
+
+#[test]
+fn win95_chunk_writer_does_not_pad_odd_payloads() {
+    let chunks = vec![
+        CityChunk {
+            name: "MISC".into(),
+            offset: 0,
+            raw_len: 3,
+            data: vec![1, 2, 3],
+        },
+        CityChunk {
+            name: "ALTM".into(),
+            offset: 0,
+            raw_len: 2,
+            data: vec![4, 5],
+        },
+    ];
+    let file = encode_scdh_file_for_kind(&chunks, CityFileKind::WinSc2).unwrap();
+    assert_eq!(&file[23..27], b"ALTM");
+    let parsed = parse_scdh_chunks(&file).unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[1].data, [4, 5]);
+    // Earlier CityGame versions padded odd Win95 chunks; keep those readable.
+    let mut old_file = file.clone();
+    old_file.insert(23, 0);
+    let form_len = (old_file.len() as u32 - 8).to_be_bytes();
+    old_file[4..8].copy_from_slice(&form_len);
+    let old_parsed = parse_scdh_chunks(&old_file).unwrap();
+    assert_eq!(old_parsed.len(), 2);
+    assert_eq!(old_parsed[1].data, [4, 5]);
 }
 
 #[test]
@@ -7454,6 +8035,9 @@ fn win95_resave_roundtrip_loads_without_error() {
         .collect();
     city.save(&temp).expect("save");
     let reloaded = City::load(&temp).expect("reload resave");
+    if city.name.len() <= 31 && !city.name.contains('\0') {
+        assert_eq!(reloaded.name, city.name, "city name round trip");
+    }
     assert_eq!(
         reloaded.xtrf_storage_format(),
         XtrfStorageFormat::Microsim64
@@ -7856,7 +8440,7 @@ fn mac_scenario_cgex_preserves_goals_actions_and_native_pe_fields() {
 
     let mut reloaded = City::load(&path).unwrap();
     let extension = decode_citygame_extension(&reloaded.chunks).unwrap();
-    assert_eq!(extension.version, 20);
+    assert_eq!(extension.version, 21);
     assert_eq!(
         reloaded.misc_u32_values(MISC_MONSTER_XTHG_INDEX_OFFSET, 3),
         pe_action
@@ -7924,4 +8508,153 @@ fn mac_road_link_tally_preserves_win95_sewer_bonus_through_save_and_reload() {
     assert_eq!(reloaded.pe_w_sewer_bonus(), 4);
 
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn mac_industry_live_lfsr_matches_quadra_demand_rows() {
+    let mut city = City::new_blank("/tmp/mac-industry-lfsr.sc2", "Industry").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(MISC_YEAR_FOUNDED_OFFSET, 1900);
+    let prior = [17, 21, 17, 10, 16, 13, 4, 22, 11, 27, 8];
+    for (row, value) in prior.into_iter().enumerate() {
+        city.set_mac_state_misc_u32_at(0x16c + 12 * row, value);
+    }
+    let mut quickdraw = MacToolboxRng::new(0x3ae87c9e);
+    let mut lfsr = crate::mac_random::MacAppLfsrRng::new(0x6d7e);
+    city.advance_mac_industry_mix_month(&mut quickdraw, &mut lfsr, 1993);
+    let actual: [u32; 11] =
+        std::array::from_fn(|row| city.mac_state_misc_u32_at(0x16c + 12 * row).unwrap());
+    assert_eq!(actual, [24, 19, 19, 10, 18, 17, 6, 22, 12, 36, 9]);
+    assert_eq!(lfsr.state(), 0x7516);
+}
+
+#[test]
+fn mac_xthg_accepts_legacy_rle_packets() {
+    let mut raw = vec![0; 40 * 12];
+    raw[..12].copy_from_slice(&[4, 0xff, 0, 81, 43, 0, 0, 0, 0, 0, 0, 20]);
+    let data = sc2_rle_encode(&raw);
+    let chunk = CityChunk {
+        name: "XTHG".into(),
+        offset: 0,
+        raw_len: data.len(),
+        data,
+    };
+    let records = super::layer_codec::decode_xthg(&[chunk], CityFileKind::MacCity).unwrap();
+    assert_eq!(
+        crate::win95_overlay::encode_xthg_records(&records).unwrap(),
+        raw
+    );
+}
+
+#[test]
+fn mac_fire_story_queue_matches_quadras_priority_insertions() {
+    let mut city = City::new_blank("/tmp/mac-fire-paper-queue.sc2", "Queue").unwrap();
+    city.kind = CityFileKind::MacCity;
+    let before = [
+        [50, 500, 0, 255, 255, 255],
+        [50, 500, 0, 255, 255, 255],
+        [6, 220, 0, 255, 255, 255],
+        [66, 200, 0, 255, 255, 255],
+        [16, 200, 0, 255, 255, 255],
+        [18, 200, 0, 255, 255, 255],
+        [12, 200, 0, 255, 255, 255],
+    ];
+    for (i, row) in before.into_iter().enumerate() {
+        for (j, value) in row.into_iter().enumerate() {
+            city.set_mac_state_misc_u32_at(0xec8 + (i * 6 + j) * 4, value);
+        }
+    }
+    city.queue_mac_newspaper_story(49, 0);
+    city.queue_mac_newspaper_story(22, 22);
+    let expected = [
+        [22, 1000, 22, 255, 255, 255],
+        [49, 500, 0, 255, 255, 255],
+        [50, 500, 0, 255, 255, 255],
+        [50, 500, 0, 255, 255, 255],
+        [6, 220, 0, 255, 255, 255],
+        [66, 200, 0, 255, 255, 255],
+        [16, 200, 0, 255, 255, 255],
+    ];
+    for (i, row) in expected.into_iter().enumerate() {
+        for (j, value) in row.into_iter().enumerate() {
+            assert_eq!(
+                city.mac_state_misc_u32_at(0xec8 + (i * 6 + j) * 4),
+                Some(value),
+                "row {i} field {j}"
+            );
+        }
+    }
+    city.age_mac_newspaper_story_queue();
+    let aged = [
+        [22, 750, 22, 255, 255, 255],
+        [6, 210, 0, 255, 255, 255],
+        [66, 150, 0, 255, 255, 255],
+        [16, 150, 0, 255, 255, 255],
+        [49, 0, 0, 255, 255, 255],
+        [50, 0, 0, 255, 255, 255],
+        [50, 0, 0, 255, 255, 255],
+    ];
+    for (i, row) in aged.into_iter().enumerate() {
+        for (j, value) in row.into_iter().enumerate() {
+            assert_eq!(
+                city.mac_state_misc_u32_at(0xec8 + (i * 6 + j) * 4),
+                Some(value),
+                "aged row {i} field {j}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mac_disaster_class_tracks_highest_priority_and_resets_after_story() {
+    let mut city = City::new_blank("/tmp/mac-disaster-class.sc2", "Class").unwrap();
+    city.set_building(10, 10, 0xd3); // class 22, priority 4
+    city.set_building(11, 10, 0xd2); // class 21, equal priority
+    city.set_building(12, 10, 0xdd); // class 32, priority 8
+    city.record_mac_disaster_damage_class_at(10, 10);
+    city.record_mac_disaster_damage_class_at(11, 10);
+    assert_eq!(city.mac_disaster_damage_class, 22);
+    city.record_mac_disaster_damage_class_at(12, 10);
+    assert_eq!(city.take_mac_disaster_damage_class(), 32);
+    assert_eq!(city.take_mac_disaster_damage_class(), 0);
+}
+
+#[test]
+fn mac_story_queue_on_win_layout_keeps_pe_save_slots_untouched() {
+    let mut city = City::new_blank("/tmp/mac-story-cross-layout.sc2", "Queue").unwrap();
+    city.set_misc_u32_at(0xec8, 50);
+    city.set_misc_u32_at(0xecc, 500);
+    city.queue_mac_newspaper_story(22, 7);
+    assert_eq!(city.misc_u32_at(0xec8), Some(50));
+    assert_eq!(city.misc_u32_at(0xecc), Some(500));
+    assert_eq!(
+        &city.mac_story_runtime.as_ref().unwrap()[..6],
+        &[22, 1000, 7, 255, 255, 255]
+    );
+}
+
+#[test]
+fn blank_city_does_not_adopt_a_backing_file_until_successful_save() {
+    let directory = std::env::temp_dir().join(format!(
+        "citygame-backing-file-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let proposed = directory.join("Untitled.sc2");
+    let saved = directory.join("chosen.sc2");
+    std::fs::write(&proposed, b"existing unrelated file").unwrap();
+
+    let mut city = City::new_blank(&proposed, "Untitled").unwrap();
+    assert!(!city.has_backing_file());
+    assert!(!city.clone().has_backing_file());
+    assert!(city.save(&directory).is_err());
+    assert!(!city.has_backing_file());
+    assert_eq!(city.path, proposed);
+    assert_eq!(std::fs::read(&proposed).unwrap(), b"existing unrelated file");
+
+    city.save(&saved).unwrap();
+    assert!(city.has_backing_file());
+    assert_eq!(city.path, saved);
+    assert!(City::load(&saved).unwrap().has_backing_file());
+    std::fs::remove_dir_all(directory).unwrap();
 }

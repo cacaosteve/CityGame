@@ -68,7 +68,7 @@ impl ViewerState {
         if self.engine_fidelity.uses_win95() {
             self.run_pe_phase24_disaster_chooser();
         } else {
-            self.run_mac_phase24_disaster_chooser();
+            self.run_mac_disaster_chooser();
         }
     }
 
@@ -159,7 +159,7 @@ impl ViewerState {
                 if self.engine_fidelity.uses_win95() {
                     self.run_pe_phase24_disaster_chooser();
                 } else {
-                    self.run_mac_phase24_disaster_chooser();
+                    self.run_mac_disaster_chooser();
                 }
             }
             _ => {}

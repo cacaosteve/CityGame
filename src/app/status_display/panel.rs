@@ -5,6 +5,136 @@ use crate::renderer::{Renderer, UiImage, UiSolid};
 use crate::ui;
 use glam::Vec2;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacStatusOverride {
+    Paused,
+    Action(u16),
+}
+
+fn mac_status_override(speed: crate::traffic::GameSpeed, city: &crate::city::City) -> Option<MacStatusOverride> {
+    if speed == crate::traffic::GameSpeed::Paused {
+        Some(MacStatusOverride::Paused)
+    } else if city.mac_state_misc_u32_at(0x1048).unwrap_or(0) as u8 != 0 {
+        Some(MacStatusOverride::Action(city.mac_state_misc_u32_at(0x1044).unwrap_or(0) as u16))
+    } else {
+        None
+    }
+}
+
+fn mac_status_picture(city: &crate::city::City) -> u16 {
+    if city.mac_state_misc_u32_at(0x1048).unwrap_or(0) as u8 != 0 {
+        712
+    } else {
+        700 + (city.mac_state_misc_u32_at(super::super::MISC_WEATHER_TREND_OFFSET).unwrap_or(0) as u8) as u16
+    }
+}
+
+fn mac_action_status_label(selector: u16) -> &'static str {
+    use super::super::DisasterKind as D;
+    match selector {
+        0 => "None",
+        1 => D::Fire.label(), 2 => D::Flood.label(), 3 => D::Rioters.label(),
+        4 => D::PollutionAccident.label(), 5 => D::AirCrash.label(),
+        6 => D::Earthquake.label(), 7 => D::Tornado.label(), 8 => D::Monster.label(),
+        9 => D::Meltdown.label(), 10 => D::Microwave.label(), 11 => D::Volcano.label(),
+        12 => D::Firestorm.label(), 13 => D::MassRiot.label(), 14 => D::BlizzardFlood.label(),
+        15 => D::ToxicSpill.label(), 16 => D::Hurricane.label(),
+        _ => "",
+    }
+}
+
+#[cfg(test)]
+mod mac_status_tests {
+    use super::*;
+    use crate::app::tests::{blank_city_layout_fixture, test_state};
+    use crate::engine_fidelity::EngineFidelity;
+    use crate::traffic::GameSpeed;
+
+    #[test]
+    fn pause_and_active_action_override_the_mac_city_notice() {
+        for path in ["status-override.city", "status-override.sc2"] {
+            let mut state = test_state(blank_city_layout_fixture(path, "Status"));
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            state.mac_loop_scheduler.status_message = Some(super::super::super::mac_loop_scheduler::MacStatusMessage::Story(54));
+            state.set_sim_status_announcement("Older notice");
+            state.city.set_mac_state_misc_u32_at(0x1044, 1);
+            state.city.set_mac_state_misc_u32_at(0x1048, 1);
+            state.traffic.set_speed(GameSpeed::Paused);
+            assert_eq!(state.status_panel_notice(), "*PAUSED*");
+            assert_eq!(mac_status_picture(&state.city), 712);
+            state.traffic.set_speed(GameSpeed::Turtle);
+            assert_eq!(state.status_panel_notice(), super::super::super::DisasterKind::Fire.label());
+            state.city.set_mac_state_misc_u32_at(0x1044, 17);
+            assert_eq!(state.status_panel_notice(), "");
+            state.city.set_mac_state_misc_u32_at(0x1048, 0);
+            state.city.set_mac_state_misc_u32_at(super::super::super::MISC_WEATHER_TREND_OFFSET, 7);
+            assert_eq!(mac_status_picture(&state.city), 707);
+            assert_eq!(state.status_panel_notice(), super::super::super::newspaper_stories::pe_health_amenities_newspaper_label(54).unwrap());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private original-Mac status override fixture"]
+    fn status_override_matches_native_pointer_choice() {
+        let path = std::env::var_os("CITYGAME_MAC_STATUS_OVERRIDE").unwrap();
+        let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for path in ["status-override-native.city", "status-override-native.sc2"] {
+            let mut city = blank_city_layout_fixture(path, "Status");
+            for row in cases.as_array().unwrap() {
+                let selector = row["selector"].as_u64().unwrap() as u16;
+                let speed = match row["speed"].as_u64().unwrap() {
+                    1 => GameSpeed::Paused, 2 => GameSpeed::Turtle,
+                    3 => GameSpeed::Llama, 4 => GameSpeed::Cheetah, _ => unreachable!(),
+                };
+                city.set_mac_state_misc_u32_at(0x1044, u32::from(selector));
+                city.set_mac_state_misc_u32_at(0x1048, row["active"].as_u64().unwrap() as u32);
+                city.set_mac_state_misc_u32_at(super::super::super::MISC_WEATHER_TREND_OFFSET, 7);
+                let selected = match mac_status_override(speed, &city) {
+                    Some(MacStatusOverride::Paused) => "pause",
+                    Some(MacStatusOverride::Action(index)) if mac_action_status_label(index).is_empty() => "empty",
+                    Some(MacStatusOverride::Action(_)) => "action",
+                    None if row["status"].as_bool().unwrap() => "status",
+                    None => "empty",
+                };
+                assert_eq!(selected, row["selected"].as_str().unwrap(), "{path} {row}");
+                assert_eq!(u64::from(mac_status_picture(&city)), row["picture"].as_u64().unwrap(), "{path} {row}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the user's original Mac STRS resource"]
+    fn status_panel_uses_imported_mac_strings() {
+        let bytes = std::fs::read(std::env::var_os("CITYGAME_MAC_STRS").unwrap()).unwrap();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("citygame-status-strings-{}-{nonce}", std::process::id()));
+        let pack = root.join("pack");
+        std::fs::create_dir_all(pack.join("catalog/mac-newspaper")).unwrap();
+        std::fs::write(pack.join("catalog/mac-newspaper/strs-0.bin"), bytes).unwrap();
+        let settings = root.join("settings.json");
+        std::fs::write(&settings, serde_json::json!({"schema_version": 1, "original_graphics": pack}).to_string()).unwrap();
+        let profile = crate::asset_profile::AssetProfile::load_from(settings).unwrap();
+        let mut state = test_state(blank_city_layout_fixture("mac-native-status.city", "Status"));
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_loop_scheduler.status_message = Some(super::super::super::mac_loop_scheduler::MacStatusMessage::Story(47));
+        state.configure_original_newspaper_data(&profile);
+        let status = state.mac_newspaper.strings.as_ref().unwrap().status.as_ref().unwrap();
+        let (paused, action, story, weather) = (&status.paused, &status.actions[12], &status.stories[1], &status.weather[0]);
+        let expected = [paused, action, story, weather].map(|value| crate::city::mac_roman::decode(value));
+        state.traffic.set_speed(GameSpeed::Paused);
+        assert_eq!(state.status_panel_notice(), expected[0]);
+        state.traffic.set_speed(GameSpeed::Turtle);
+        state.city.set_mac_state_misc_u32_at(0x1044, 12);
+        state.city.set_mac_state_misc_u32_at(0x1048, 1);
+        assert_eq!(state.status_panel_notice(), expected[1]);
+        state.city.set_mac_state_misc_u32_at(0x1048, 0);
+        assert_eq!(state.status_panel_notice(), expected[2]);
+        state.mac_loop_scheduler.status_message = Some(super::super::super::mac_loop_scheduler::MacStatusMessage::Weather(9));
+        assert_eq!(state.status_panel_notice(), expected[3]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 pub(in crate::app) fn status_panel_rect(size: (u32, u32), pixel_scale: f32) -> FloatRect {
     let s = pixel_scale
         .max(1.0)
@@ -74,11 +204,48 @@ impl ViewerState {
         if let Some(help) = self.balloon_help_line {
             return help.to_owned();
         }
-        if self.query_is_inspect || self.query_status_pinned {
+        if self.query_is_inspect {
             return self.query_line.clone();
         }
         if self.mode == AppMode::EditNewMap {
             return "Shape the terrain, then choose Done to start your city.".into();
+        }
+        if self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k {
+            use super::super::mac_loop_scheduler::MacStatusMessage;
+            let strings = self.mac_newspaper.strings.as_ref().and_then(|strings| strings.status.as_ref());
+            if let Some(status) = mac_status_override(self.traffic.speed(), &self.city) {
+                let native = strings.and_then(|strings| match status {
+                    MacStatusOverride::Paused => Some(strings.paused.as_slice()),
+                    MacStatusOverride::Action(selector) => strings.actions.get(usize::from(selector)).map(Vec::as_slice),
+                });
+                if let Some(native) = native {
+                    return crate::city::mac_roman::decode(native);
+                }
+                return match status {
+                    MacStatusOverride::Paused => "*PAUSED*",
+                    MacStatusOverride::Action(selector) => mac_action_status_label(selector),
+                }.to_owned();
+            }
+            let native = strings.and_then(|strings| match self.mac_loop_scheduler.status_message {
+                Some(MacStatusMessage::Story(selector)) => selector.checked_sub(46)
+                    .and_then(|index| strings.stories.get(usize::from(index))).map(Vec::as_slice),
+                Some(MacStatusMessage::Weather(trend)) => trend.checked_sub(9)
+                    .and_then(|index| strings.weather.get(usize::from(index))).map(Vec::as_slice),
+                None => None,
+            });
+            if let Some(native) = native {
+                return crate::city::mac_roman::decode(native);
+            }
+            return match self.mac_loop_scheduler.status_message {
+                Some(MacStatusMessage::Story(selector)) => super::super::newspaper_stories::pe_health_amenities_newspaper_label(selector).unwrap_or(""),
+                Some(MacStatusMessage::Weather(9)) => "Blizzard conditions",
+                Some(MacStatusMessage::Weather(10)) => "Hurricane conditions",
+                Some(MacStatusMessage::Weather(11)) => "Tornado conditions",
+                _ => "",
+            }.to_owned();
+        }
+        if self.query_status_pinned {
+            return self.query_line.clone();
         }
         if self.city.pe_dw_tile_count[198..=207]
             .iter()
@@ -225,10 +392,13 @@ impl ViewerState {
             muted,
             depth + 1.0,
         );
-        // Mac PICT 700..711 follow the twelve weather states in order.
-        let picture = crate::assets::NEWSPAPER_PICTURE_BASE
-            + 700
-            + u32::from(super::super::weather::pe_weather_trend(&self.city));
+        // Mac uses PICT 712 during an action and 700 + weather otherwise.
+        let picture_id = if self.engine_fidelity == crate::engine_fidelity::EngineFidelity::Mac68k {
+            mac_status_picture(&self.city)
+        } else {
+            700 + u16::from(super::super::weather::pe_weather_trend(&self.city))
+        };
+        let picture = crate::assets::NEWSPAPER_PICTURE_BASE + u32::from(picture_id);
         if let Some((atlas, [src_x, src_y, src_w, src_h])) = renderer.and_then(|r| {
             let atlas = r.atlas_for_sprite(picture)?;
             Some((atlas, r.sprite_frame_rect(atlas, picture)?))

@@ -495,19 +495,18 @@ impl City {
     }
 
     /// Mac CODE 3 arcology rows (`0xfb..=0xfe`) run in the annual January
-    /// XMIC sweep. Use the saved XBLD census and water-worker result from that
-    /// phase-0 pass.
+    /// XMIC sweep. The final per-row input is the shared app LFSR low six bits.
     pub fn refresh_mac_monthly_arcology_microsims(
         &mut self,
         tax_rates: [u32; 3],
-        water_percent: u32,
+        random_value: u32,
     ) {
         let count_snapshot = self.mac_arcology_count_snapshot();
         for index in 1..MICROSIM_COUNT {
             self.refresh_mac_monthly_arcology_microsim_at(
                 index,
                 tax_rates,
-                water_percent,
+                random_value,
                 count_snapshot,
             );
         }
@@ -530,7 +529,7 @@ impl City {
         &mut self,
         index: usize,
         tax_rates: [u32; 3],
-        water_percent: u32,
+        random_value: u32,
         count_snapshot: u16,
     ) {
         if index == 0 {
@@ -567,7 +566,7 @@ impl City {
             .wrapping_add(residents / 50)
             .wrapping_add(residents)
             .min((cap_param * 1_000) as i32);
-        self.set_microsim_stat2(index, candidate.wrapping_add(water_percent as i32) as u16);
+        self.set_microsim_stat2(index, candidate.wrapping_add(random_value as i32) as u16);
     }
 
     pub fn has_mac_monthly_arcology_microsims(&self) -> bool {
@@ -667,11 +666,7 @@ impl City {
         }
     }
 
-    /// Mac CODE 3 `export_162` marina (`0xf8`) XMIC case. Its relocated
-    /// CODE 13 export 203 draw is `MacAppLfsrRng`, whose verified Mac 1.2
-    /// initial A5-2 state is zero and has no application-side writer; therefore
-    /// the native `random_mod_20` contribution remains zero. Only `stat1`
-    /// (`+2`) is written for active marina rows.
+    /// Isolated marina row fixture using the zero-state LFSR.
     pub fn refresh_mac_monthly_marina_microsims(&mut self) {
         let marina_tiles = self.mac_xbld_tile_count(0xf8);
         let population_scalar = self.mac_state_misc_u32_at(0x102c).unwrap_or(0);
@@ -679,8 +674,9 @@ impl City {
             return;
         };
         let mut changed = false;
+        let mut lfsr = MacAppLfsrRng::new(0);
         for record in microsims.iter_mut().filter(|record| record.tile_id == 0xf8) {
-            mac_update_marina_record(record, marina_tiles, population_scalar);
+            mac_update_marina_record(record, marina_tiles, population_scalar, &mut lfsr);
             changed = true;
         }
         if changed {

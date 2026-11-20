@@ -159,10 +159,9 @@ impl MacGameLcgRng {
 }
 
 /// SimCity 2000 Mac CODE 13 exports 203–208 share this app-owned 16-bit LFSR
-/// at A5-2. The reconstructed Mac 1.2 A5 world initializes it to zero, and
-/// the loaded CODE census finds only these exports reading or writing it, so
-/// the original stream remains at zero. Keep this type separate from the PE
-/// LFSR and QuickDraw `_Random` state.
+/// at A5-2. The reconstructed A5 image starts at zero, but a live Quadra
+/// session reached these helpers with nonzero state. CODE 15 seeds it
+/// through CODE 13 export 202 using the low WORD of TickCount OR 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacAppLfsrRng {
     state: u16,
@@ -171,6 +170,10 @@ pub struct MacAppLfsrRng {
 impl MacAppLfsrRng {
     pub const INITIAL_STATE: u16 = 0;
     const POLY: u16 = 0x1bf5;
+
+    pub const fn startup_seed(tick_count: u32) -> u16 {
+        tick_count as u16 | 1
+    }
 
     pub const fn new(state: u16) -> Self {
         Self { state }
@@ -191,6 +194,12 @@ impl MacAppLfsrRng {
     pub fn low_two_bits(&mut self) -> u16 {
         self.advance();
         self.state & 3
+    }
+
+    /// CODE 13 export 207: advance, then return the low six bits.
+    pub fn low_six_bits(&mut self) -> u16 {
+        self.advance();
+        self.state & 0x3f
     }
 
     /// CODE 13 export 208: advance, then return the low seven bits.
@@ -245,8 +254,7 @@ mod tests {
         assert_eq!(export_208_from_high_bit.low_seven_bits(), 0x1bf5 & 0x7f);
         assert_eq!(export_208_from_high_bit.state(), 0x1bf5);
 
-        // DATA/ZERO + DREL + CREL reconstruction gives A5-2 = 0. No loaded
-        // CODE writer seeds it, so every native LFSR helper result is zero.
+        // The zero fixture is a fixed point before the native startup setter.
         let mut original_initial_state = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
         for _ in 0..16 {
             assert_eq!(original_initial_state.bounded(20), 0);

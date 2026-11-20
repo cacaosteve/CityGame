@@ -30,7 +30,8 @@ impl City {
             college_funding,
             no_disasters,
             rng,
-            |_, _| {},
+            &mut MacAppLfsrRng::new(0),
+            |_, _, _| {},
         );
     }
 
@@ -43,7 +44,8 @@ impl City {
         college_funding: u32,
         no_disasters: bool,
         rng: &mut MacToolboxRng,
-        mut external_slot: impl FnMut(&mut City, usize),
+        app_lfsr: &mut MacAppLfsrRng,
+        mut external_slot: impl FnMut(&mut City, usize, &mut MacAppLfsrRng),
     ) {
         let plant_power = self.mac_power_service_summary() as u16;
         let hospital_tiles = self.mac_xbld_tile_count(0xd1);
@@ -355,11 +357,11 @@ impl City {
                 }
                 0xf8 => {
                     let count = self.mac_xbld_tile_count(0xf8);
-                    mac_update_marina_record(&mut record, count, growth_scalar);
+                    mac_update_marina_record(&mut record, count, growth_scalar, app_lfsr);
                     changed = true;
                 }
                 0xda | 0xfb..=0xfe => {
-                    external_slot(self, slot);
+                    external_slot(self, slot, app_lfsr);
                     continue;
                 }
                 0xff => {
@@ -536,9 +538,13 @@ pub(super) fn mac_update_park_record(
     record.stat3 = ((growth / 120) as i16).min((record.stat2 / 9) as i16) as u16;
 }
 
-/// Mac 1.2's app LFSR starts at zero, its fixed point, so this draw is zero.
-pub(super) fn mac_update_marina_record(record: &mut MicrosimRecord, tiles: u16, growth: u32) {
-    let mut rng = MacAppLfsrRng::new(MacAppLfsrRng::INITIAL_STATE);
+/// CODE 3 marina row consumes one CODE 13 export 203 draw.
+pub(super) fn mac_update_marina_record(
+    record: &mut MicrosimRecord,
+    tiles: u16,
+    growth: u32,
+    rng: &mut MacAppLfsrRng,
+) {
     let candidate = (rng.bounded(20) as i16).wrapping_add((tiles as i16).wrapping_mul(8));
     record.stat1 = ((growth / 150) as i16).min(candidate) as u16;
 }

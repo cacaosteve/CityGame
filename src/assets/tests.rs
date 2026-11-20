@@ -90,16 +90,15 @@ mod tests {
                 .save(windows.join(format!("bitmaps_png/{id}.png")))
                 .unwrap();
         }
-        for (roots, expected) in [
-            (vec![mac.clone(), windows.clone()], mac_ink),
-            (vec![windows.clone(), mac.clone()], windows_ink),
-        ] {
+        for roots in [vec![mac.clone(), windows.clone()], vec![windows.clone(), mac.clone()]] {
             let source = load_newspaper_pictures(&roots).unwrap().unwrap();
             let image = source.load_rgba().unwrap();
-            assert_eq!(source.manifest.frames.len(), 2);
+            assert_eq!(source.manifest.frames.len(), 4);
             assert!(source.frame_by_id(400).is_none());
             let first = source.frame_by_id(NEWSPAPER_PICTURE_BASE + 400).unwrap();
-            assert_eq!(*image.get_pixel(first.x, first.y), expected);
+            assert_eq!(*image.get_pixel(first.x, first.y), mac_ink);
+            let win = source.frame_by_id(WIN95_NEWSPAPER_PICTURE_BASE + 400).unwrap();
+            assert_eq!(*image.get_pixel(win.x, win.y), windows_ink);
             let last = source.frame_by_id(NEWSPAPER_PICTURE_BASE + 411).unwrap();
             assert_eq!(*image.get_pixel(last.x, last.y), windows_ink);
             for frame in &source.manifest.frames {
@@ -109,6 +108,34 @@ mod tests {
         }
         assert!(load_newspaper_pictures(&[root.clone()]).unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires locally imported original Mac and Win95 pictures"]
+    fn newspaper_picture_atlas_keeps_original_editions_distinct() {
+        let mac = PathBuf::from(std::env::var_os("CITYGAME_MAC_PICTURE_ROOT").unwrap());
+        let win = PathBuf::from(std::env::var_os("CITYGAME_WIN95_PICTURE_ROOT").unwrap());
+        let source = load_newspaper_pictures(&[mac.clone(), win.clone()]).unwrap().unwrap();
+        let atlas = source.load_rgba().unwrap();
+        let mut distinct = false;
+        for id in 400..=411 {
+            let mac_path = mac.join(format!("pict/PICT_{id:05}.png"));
+            let win_path = win.join(format!("bitmaps_png/{id}.png"));
+            if !mac_path.is_file() || !win_path.is_file() { continue; }
+            let mac_frame = source.frame_by_id(NEWSPAPER_PICTURE_BASE + id).unwrap();
+            let win_frame = source.frame_by_id(WIN95_NEWSPAPER_PICTURE_BASE + id).unwrap();
+            let mac_image = image::open(mac_path).unwrap().to_rgba8();
+            let win_image = image::open(win_path).unwrap().to_rgba8();
+            assert_eq!((mac_frame.w, mac_frame.h), mac_image.dimensions());
+            assert_eq!((win_frame.w, win_frame.h), win_image.dimensions());
+            for (frame, original) in [(mac_frame, &mac_image), (win_frame, &win_image)] {
+                for (x, y, pixel) in original.enumerate_pixels() {
+                    if pixel.0[3] == 255 { assert_eq!(atlas.get_pixel(frame.x + x, frame.y + y), pixel); }
+                }
+            }
+            distinct |= mac_image != win_image;
+        }
+        assert!(distinct, "the imported pictures should include a pixel difference");
     }
 
     #[test]

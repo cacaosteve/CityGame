@@ -326,6 +326,14 @@ pub(super) fn generate_win95(
     let trees = sliders.trees.min(ui::EDIT_MAP_SLIDER_MAX);
     let (heights, mut xbit) =
         generate_win95_height_plane(hills, water, ocean_enabled, river_enabled, crt, game_rng);
+    // The PE's initial sweep clears only the surface-water bit, retaining
+    // resident flags before the ocean stage adds new salt markers.
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            xbit[city_index(x, y)] |=
+                city.tile_bits_at(x, y).unwrap_or_default().raw_bits() & !0x04;
+        }
+    }
     let terrain = vec![0; CITY_TILES];
     let altm = heights
         .into_iter()
@@ -335,7 +343,7 @@ pub(super) fn generate_win95(
             tunnel_levels: 0,
         })
         .collect();
-    city.replace_edit_map_canvas(terrain, altm);
+    city.replace_pe_edit_map_canvas(terrain, altm);
 
     for x in 0..CITY_WIDTH {
         for y in 0..CITY_HEIGHT {

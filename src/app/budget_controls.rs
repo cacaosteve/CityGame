@@ -6,10 +6,10 @@
 
 use super::{
     BOND_DATA_MAX_COUNT, BUDGET_BOND_AMOUNT, BUDGET_SERVICE_CURRENT_FIELD,
-    BUDGET_SERVICE_FUNDING_FIELD, BUDGET_SERVICE_MISC_STRIDE, MAX_TAX_RATE, ViewerState,
-    append_bond_rate_for_city, bond_issue_rate_scaled_for_city, budget_row_misc_offset_for_city,
-    budget_service_built_counts_for_city, budget_service_funding_misc_offset_for_city,
-    budget_service_funding_percent_for_city, budget_service_funding_raw_for_city,
+    BUDGET_SERVICE_FUNDING_FIELD, BUDGET_SERVICE_MISC_STRIDE, DEFAULT_TAX_RATE, MAX_TAX_RATE,
+    ViewerState, append_bond_rate_for_city, bond_issue_rate_scaled_for_city,
+    budget_row_misc_offset_for_city, budget_service_built_counts_for_city,
+    budget_service_funding_misc_offset_for_city, budget_service_funding_percent_for_city,
     budget_service_misc_offset_for_city, budget_tax_bases_for_city_with_fidelity,
     ensure_budget_misc_defaults_before_extension, ensure_industry_misc_defaults_before_extension,
     industry_stats_for_city, industry_tax_misc_offset, mac_bond_issue_city_value_allows_3a714,
@@ -21,6 +21,73 @@ use super::{
 };
 
 impl ViewerState {
+    /// The Mac budget window has one property-tax control. Its action steps
+    /// residential and commercial independently, then steps the eleven
+    /// industry rates and republishes their average when the industry row
+    /// passes its own bound check.
+    pub(super) fn adjust_mac_budget_property_tax(&mut self, delta: i32) -> bool {
+        let step = delta.signum();
+        if step == 0 {
+            return false;
+        }
+        let mut changed = false;
+        for index in 0..2 {
+            let offset = tax_rate_misc_offset_for_city(&self.city, index).unwrap();
+            let current = self
+                .city
+                .budget_misc_u32_at(offset)
+                .unwrap_or(DEFAULT_TAX_RATE) as i32;
+            if (step > 0 && current < 20) || (step < 0 && current > 0) {
+                self.city
+                    .set_budget_misc_u32_values(offset, &[current.wrapping_add(step) as u32]);
+                changed = true;
+            }
+        }
+        let offset = tax_rate_misc_offset_for_city(&self.city, 2).unwrap();
+        let industry_rate = self
+            .city
+            .budget_misc_u32_at(offset)
+            .unwrap_or(DEFAULT_TAX_RATE) as i32;
+        if (step > 0 && industry_rate < 20) || (step < 0 && industry_rate > 0) {
+            let mut sum = 0u32;
+            for (index, row) in mac_industry_stats_for_city(&self.city).iter().enumerate() {
+                let rate = row.tax.saturating_add(step).clamp(0, 20) as u32;
+                sum += rate;
+                self.city
+                    .set_mac_state_misc_u32_at(industry_tax_misc_offset(index).unwrap(), rate);
+            }
+            self.city
+                .set_budget_misc_u32_values(offset, &[(sum + 6) / 11]);
+            changed = true;
+        }
+        if changed {
+            self.city.mark_all_dirty();
+        }
+        changed
+    }
+
+    /// The Mac main budget window groups school/college and all six transit
+    /// rows. Each row applies the native funding bound independently.
+    pub(super) fn adjust_budget_service_funding_from_dialog(
+        &mut self,
+        service_index: usize,
+        delta: i32,
+    ) -> bool {
+        if self.engine_fidelity.uses_win95() || service_index < 3 {
+            return self.adjust_budget_service_funding(service_index, delta);
+        }
+        let range = match service_index {
+            3..=4 => 3..5,
+            5..=10 => 5..11,
+            _ => return false,
+        };
+        let mut changed = false;
+        for index in range {
+            changed |= self.adjust_budget_service_funding(index, delta);
+        }
+        changed
+    }
+
     pub(super) fn adjust_budget_tax_rate(&mut self, tax_index: usize, delta: i32) -> bool {
         if tax_rate_misc_offset_for_city(&self.city, tax_index).is_none() {
             return false;
@@ -136,11 +203,10 @@ impl ViewerState {
         } else {
             // CODE 4's budget action checks the signed saved funding before
             // stepping it and leaves current, accrual and history untouched.
-            let current = budget_service_funding_raw_for_city(&self.city, service_index) as i32;
+            let current = self.city.budget_misc_u32_at(offset).unwrap_or(100) as i32;
             if delta == 0 || (delta > 0 && current >= 100) || (delta < 0 && current <= 0) {
                 return false;
             }
-            ensure_budget_misc_defaults_before_extension(&mut self.city);
             self.city
                 .set_budget_misc_u32_values(offset, &[current.wrapping_add(delta) as u32]);
         }

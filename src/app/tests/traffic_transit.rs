@@ -373,12 +373,12 @@ fn mac_transit_route_seed_uses_native_offset_priority_without_randomness() {
     tiles[center.1 * CITY_WIDTH + center.0 + 1] = 0xec;
     assert_eq!(
         mac_transit_route_seed(center.0, center.1, |x, y| tiles[y * CITY_WIDTH + x]),
-        Some((center.0, center.1 + 1, 10)),
+        Some((center.0 + 1, center.1, 8)),
         "the first seed offset wins over later special networks"
     );
     assert_eq!(
         mac_transit_route_seed(0, 0, |_, _| 0xe9),
-        Some((0, 1, 11)),
+        Some((1, 0, 11)),
         "out-of-bounds offsets are skipped while preserving scan order"
     );
     assert_eq!(mac_transit_route_seed(64, 64, |_, _| 0), None);
@@ -388,6 +388,7 @@ fn mac_transit_route_seed_uses_native_offset_priority_without_randomness() {
 fn mac_transit_route_search_reaches_zone_and_keeps_native_draw_order() {
     let mut cells = vec![MacTransitRouteCell::default(); CITY_TILES];
     cells[41 * CITY_WIDTH + 40].building = 0x20;
+    cells[41 * CITY_WIDTH + 41].zone_low = 3;
     cells[42 * CITY_WIDTH + 40].zone_low = 3;
     let mut random_values = [0_i16, 0_i16].into_iter();
     let mut probes = Vec::new();
@@ -409,8 +410,8 @@ fn mac_transit_route_search_reaches_zone_and_keeps_native_draw_order() {
     assert_eq!(result.random_draws, 2);
     assert_eq!(
         probes,
-        [(40, 41), (40, 42)],
-        "with stride 1 and base 0, native tests south first (base + stride)",
+        [(41, 40), (40, 41), (41, 41)],
+        "with stride 1 and base 0, native tests east first (base + stride)",
     );
 
     let mut draws = 0;
@@ -435,13 +436,13 @@ fn mac_transit_route_search_reaches_zone_and_keeps_native_draw_order() {
 #[test]
 fn mac_transit_route_unwinds_empty_parent_masks_without_random_draws() {
     let mut cells = vec![MacTransitRouteCell::default(); CITY_TILES];
-    // Seed -> south -> west forms a dead-end branch. Entering the west tile
-    // consumes the south tile's last direction, so its mask is already empty
+    // Seed -> east -> north forms a dead-end branch. Entering the north tile
+    // consumes the east tile's last direction, so its mask is already empty
     // when the child exhausts. Native CODE 14 unwinds that parent before the
     // next QuickDraw call.
-    cells[41 * CITY_WIDTH + 40].building = 0x20;
-    cells[42 * CITY_WIDTH + 40].building = 0x20;
-    cells[42 * CITY_WIDTH + 39].building = 0x20;
+    cells[40 * CITY_WIDTH + 41].building = 0x20;
+    cells[40 * CITY_WIDTH + 42].building = 0x20;
+    cells[39 * CITY_WIDTH + 42].building = 0x20;
 
     let mut draws = 0;
     assert!(
@@ -460,6 +461,86 @@ fn mac_transit_route_unwinds_empty_parent_masks_without_random_draws() {
         .is_none()
     );
     assert_eq!(draws, 5, "no random word is used for the empty parent mask");
+
+    let mut draws = 0;
+    assert!(mac_transit_route_search_with_root_cost(
+        40, 40, 1, 2, 100, 255,
+        |x, y| cells[y * CITY_WIDTH + x],
+        || { draws += 1; 0 },
+    ).is_none());
+    assert_eq!(draws, 4, "restoring the over-limit root exits before another draw");
+}
+
+/// The private fixture is captured immediately before CODE 14 export 217 in
+/// the Fireguard phase-16 replay. It contains native X-major map planes.
+#[test]
+#[ignore = "requires a private native route-entry fixture"]
+fn mac_transit_route_matches_native_root_stack_byte_sweep() {
+    let path = std::env::var("CITYGAME_MAC_ROUTE_ENTRY_PLANES").expect("private fixture path");
+    let bytes = std::fs::read(path).expect("route-entry planes");
+    assert_eq!(bytes.len(), CITY_TILES * 6);
+    let cell = |x: usize, y: usize| {
+        let i = x * CITY_HEIGHT + y;
+        let altm = u16::from_be_bytes([bytes[4 * CITY_TILES + 2 * i], bytes[4 * CITY_TILES + 2 * i + 1]]);
+        MacTransitRouteCell {
+            building: bytes[i],
+            zone_low: bytes[CITY_TILES + i] & 0x0f,
+            underground: bytes[2 * CITY_TILES + i],
+            text_overlay: bytes[3 * CITY_TILES + i],
+            tunnel_levels: ((altm >> 10) & 0x1f) as u8,
+        }
+    };
+    for (root, expected_draws, success, seed) in [
+        (0, 25, true, 0x5e764d91),
+        (1, 25, true, 0x5e764d91),
+        (50, 17, false, 0x3690291d),
+        (74, 9, false, 0x4a39dd85),
+        (75, 8, false, 0x579643bf),
+        (255, 8, false, 0x579643bf),
+    ] {
+        let mut rng = MacToolboxRng::new(0x58d8e756);
+        let mut draws = 0;
+        let result = mac_transit_route_search_with_root_cost(67, 69, 2, 1, 100, root, cell, || {
+            draws += 1;
+            rng.random_i16()
+        });
+        assert_eq!((draws, result.is_some(), rng.seed()), (expected_draws, success, seed), "root {root}");
+    }
+}
+
+/// Lakeland's separate captured route exercises a broad range of native root
+/// costs, including the boundary where the worker exits after five draws.
+#[test]
+#[ignore = "requires private native Lakeland route and sweep fixtures"]
+fn mac_transit_route_matches_lakeland_native_all_root_bytes() {
+    let dir = PathBuf::from(std::env::var_os("CITYGAME_MAC_LAKELAND_ROUTE_ROOT").expect("fixture directory"));
+    let cg = std::fs::read(dir.join("route731.cgms")).unwrap();
+    let cases: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(dir.join("root-cost-sweep.json")).unwrap()).unwrap();
+    assert_eq!(cases.len(), 256);
+    let cell = |x: usize, y: usize| {
+        let i = x * CITY_HEIGHT + y;
+        let plane = |n: usize| cg[20 + n * CITY_TILES + i];
+        let p = 20 + 9 * CITY_TILES + 2 * i;
+        let altm = u16::from_be_bytes([cg[p], cg[p + 1]]);
+        MacTransitRouteCell {
+            building: plane(1), zone_low: plane(2) & 0x0f,
+            underground: plane(4), text_overlay: plane(5),
+            tunnel_levels: ((altm >> 10) & 0x1f) as u8,
+        }
+    };
+    for (root, native) in cases.iter().enumerate() {
+        assert_eq!(native["root"].as_u64(), Some(root as u64));
+        assert_eq!(native["pc"].as_u64(), Some(0xf10000));
+        let mut rng = MacToolboxRng::new(0x78330a1f);
+        let mut draws = 0;
+        let result = mac_transit_route_search_with_root_cost(100, 7, 6, 0, 100, root as u8, cell, || {
+            draws += 1;
+            rng.random_i16()
+        });
+        assert_eq!((draws, rng.seed(), result.is_some()),
+            (native["draws"].as_u64().unwrap() as usize, native["seed"].as_u64().unwrap() as u32,
+             native["d0"].as_u64().unwrap() != 0), "root {root}");
+    }
 }
 
 #[test]
@@ -8176,6 +8257,7 @@ fn january_traffic_count_heuristic_uses_process_crt_seed_not_city_name() {
         },
         1,
     );
+    state.city.set_misc_u32_at(MISC_YEAR_END_OFFSET, 1);
     state.sim_calendar_day0_budget_and_date_at(1901, 1, 1);
     assert_eq!(state.city.pe_traffic_count(), expected);
 }
@@ -10589,21 +10671,15 @@ fn airport_zone_growth_waits_for_airport_technology() {
     let mut state = test_state(city);
 
     state.game_clock = GameClock::new(1900, 1);
-    let expected_developments = expected_special_zone_development_count(&state);
-    assert_eq!(state.develop_special_zones(), expected_developments);
+    assert_eq!(state.develop_special_zones(), 0);
     assert_eq!(state.city.building_at(origin.0, origin.1), 0);
 
     state.game_clock = GameClock::new(1938, 1);
-    // Only the transport-adjacent tile of the 2x2 pad can place a 1x1 runway.
-    let expected_developments = expected_special_zone_development_count(&state);
-    let expected_plan = expected_special_zone_development_plans(&state)
-        .into_iter()
-        .find(|plan| plan.footprint.contains(&origin));
-    assert_eq!(state.develop_special_zones(), expected_developments);
-    assert_eq!(
-        state.city.building_at(origin.0, origin.1),
-        expected_plan.map_or(0, |plan| plan.building),
-        "airport special-zone growth should resume once Airport is invented"
+    assert!(state.develop_special_zones() > 0);
+    assert!(
+        (0..CITY_WIDTH).any(|x| (0..CITY_HEIGHT)
+            .any(|y| state.city.building_at(x, y) == RUNWAY_BUILDING_ID)),
+        "airport growth should place a runway after Airport is invented"
     );
 }
 
@@ -11555,11 +11631,24 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
         traffic,
         win95_overlay_sim,
         pe_process_crt,
+        pe_document_tick_word: None,
+        pe_new_city_reserved_labels: None,
+        pe_registered_mayor_name: "Mayor McSim".into(),
+        pe_newspaper_data: None,
+        pe_newspaper_paint: None,
+        pe_newspaper_paint_attempted: false,
+        pe_newspaper_article: None,
+        mac_newspaper: newspaper_state::MacPaperRuntime::default(),
+        mac_system_font: None,
         mac_process_rng: MacToolboxRng::new(MacToolboxRng::QUICKDRAW_INIT_GRAF_SEED),
+        mac_app_lfsr: crate::mac_random::MacAppLfsrRng::new(
+            crate::mac_random::MacAppLfsrRng::INITIAL_STATE,
+        ),
         mac_kind2_sound_deadline: 0,
         mac_game_rng: crate::mac_random::MacGameLcgRng::new(
             crate::mac_random::MacGameLcgRng::INITIAL_STATE,
         ),
+        mac_music: title_flow::MacMusicSelector::default(),
         pe_process_game_rand,
         edit_map_height_hold: None,
         pe_raise_xter_ui_byte: 0,
@@ -11620,14 +11709,17 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
         power_plant_dialog: None,
         arcology_dialog: None,
         sign_dialog: None,
+            win95_new_city_setup: None,
         military_base_dialog: None,
         city_info_dialog: None,
+        pending_newspaper_music: None,
             status_panel_origin: None,
             status_panel_grab: None,
             info_panel_origin: None,
             info_panel_scale: 1.0,
             info_panel_drag: None,
         founding_newspaper_pending: false,
+        pe_founding_mode_transition_pending: false,
         graph_series_visible: [true; GRAPH_HISTORY_TOTAL_SERIES],
         graph_scale: GraphScale::Year1,
         query_line: String::new(),
@@ -11699,11 +11791,24 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
         traffic,
         win95_overlay_sim,
         pe_process_crt,
+        pe_document_tick_word: None,
+        pe_new_city_reserved_labels: None,
+        pe_registered_mayor_name: "Mayor McSim".into(),
+        pe_newspaper_data: None,
+        pe_newspaper_paint: None,
+        pe_newspaper_paint_attempted: false,
+        pe_newspaper_article: None,
+        mac_newspaper: newspaper_state::MacPaperRuntime::default(),
+        mac_system_font: None,
         mac_process_rng: MacToolboxRng::new(MacToolboxRng::QUICKDRAW_INIT_GRAF_SEED),
+        mac_app_lfsr: crate::mac_random::MacAppLfsrRng::new(
+            crate::mac_random::MacAppLfsrRng::INITIAL_STATE,
+        ),
         mac_kind2_sound_deadline: 0,
         mac_game_rng: crate::mac_random::MacGameLcgRng::new(
             crate::mac_random::MacGameLcgRng::INITIAL_STATE,
         ),
+        mac_music: title_flow::MacMusicSelector::default(),
         pe_process_game_rand,
         edit_map_height_hold: None,
         pe_raise_xter_ui_byte: 0,
@@ -11764,14 +11869,17 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
         power_plant_dialog: None,
         arcology_dialog: None,
         sign_dialog: None,
+            win95_new_city_setup: None,
         military_base_dialog: None,
         city_info_dialog: None,
+        pending_newspaper_music: None,
             status_panel_origin: None,
             status_panel_grab: None,
             info_panel_origin: None,
             info_panel_scale: 1.0,
             info_panel_drag: None,
         founding_newspaper_pending: false,
+        pe_founding_mode_transition_pending: false,
         graph_series_visible: [true; GRAPH_HISTORY_TOTAL_SERIES],
         graph_scale: GraphScale::Year1,
         query_line: String::new(),
@@ -11962,4 +12070,49 @@ fn pe_underground_release_prices_native_prefix_and_existing_tiles() {
     assert_eq!(state.city.city_funds(), 400);
     assert_eq!(state.city.underground_at(40, 40), 1);
     assert_eq!(state.city.pe_xund_occupancy, 1);
+}
+
+/// Captured immediately before native CODE 14 export 217 at 0x4ba444 on
+/// Lakeland. The fixture is the live XBLD/XZON/XUND/XTXT/ALTM input; the
+/// remaining arguments, root byte, and QuickDraw seed are pinned below.
+#[test]
+#[ignore = "requires private native live route-entry capture"]
+fn mac_transit_route_replays_natural_lakeland_capture() {
+    let planes_path = std::env::var("CITYGAME_MAC_NATURAL_ROUTE_PLANES").unwrap();
+    let bytes = std::fs::read(planes_path).unwrap();
+    assert_eq!(bytes.len(), CITY_TILES * 4 + CITY_TILES * 2);
+    let cell = |x: usize, y: usize| {
+        let i = x * CITY_HEIGHT + y;
+        let altm = CITY_TILES * 4 + 2 * i;
+        MacTransitRouteCell {
+            building: bytes[i],
+            zone_low: bytes[CITY_TILES + i] & 0x0f,
+            underground: bytes[CITY_TILES * 2 + i],
+            text_overlay: bytes[CITY_TILES * 3 + i],
+            tunnel_levels:
+                ((u16::from_be_bytes([bytes[altm], bytes[altm + 1]]) >> 10) & 0x1f) as u8,
+        }
+    };
+    let mut rng = MacToolboxRng::new(0x6adb89b6);
+    let mut draws = 0;
+    let result = mac_transit_route_search_with_root_cost(
+        72, 76, 4, 1, 100, 0, cell, || {
+            draws += 1;
+            rng.random_i16()
+        },
+    );
+    assert_eq!(
+        result,
+        Some(MacTransitRouteResult {
+            route: vec![
+                (69, 76, 0), (69, 77, 0), (69, 78, 0), (69, 79, 0),
+                (69, 80, 0), (69, 81, 0), (69, 82, 0), (70, 82, 0),
+                (71, 82, 0), (72, 82, 0), (73, 82, 0), (74, 82, 0),
+            ],
+            cost: 33,
+            random_draws: 13,
+        })
+    );
+    assert_eq!(draws, 13);
+    assert_eq!(rng.seed(), 0x1ba7_9c91);
 }

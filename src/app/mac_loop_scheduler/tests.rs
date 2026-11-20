@@ -9867,6 +9867,35 @@ fn mac_january_budget_review_auto_dismisses_after_native_tickcount_timeout() {
 }
 
 #[test]
+fn mac_january_budget_review_timeout_waits_while_done_button_is_held() {
+    let mut state = mac_phase24_fixture("mac-annual-review-held-done.sc2", WEATHER_TREND_BLIZZARD, 1);
+    let start = 0xffff_ff00;
+    state.mac_loop_scheduler.start_captured_clock(start);
+    state.mac_loop_scheduler.january_budget_review_pending = true;
+    state.mac_loop_scheduler.january_budget_review_started_at = Some(start);
+    state.open_january_budget_review();
+
+    state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+        Duration::from_secs(1_900),
+        0,
+        true,
+        || Duration::ZERO,
+    );
+
+    assert!(state.mac_loop_scheduler.january_budget_review_pending);
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+
+    state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+        Duration::ZERO,
+        0,
+        false,
+        || Duration::ZERO,
+    );
+    assert!(!state.mac_loop_scheduler.january_budget_review_pending);
+    assert_ne!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+}
+
+#[test]
 fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
     for path in ["mac-annual-currents.city", "mac-annual-currents.sc2"] {
         let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);

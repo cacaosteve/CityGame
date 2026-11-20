@@ -549,9 +549,27 @@ impl ViewerState {
         actor_wait_ticks: u32,
         since_frame_start: impl FnMut() -> Duration,
     ) -> GameClockAdvance {
+        self.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+            elapsed,
+            actor_wait_ticks,
+            false,
+            since_frame_start,
+        )
+    }
+
+    /// A held control keeps CODE 4 inside its `_StillDown` loop, so the
+    /// January review's modal timeout cannot be processed until release.
+    pub(super) fn finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+        &mut self,
+        elapsed: Duration,
+        actor_wait_ticks: u32,
+        budget_pointer_down: bool,
+        since_frame_start: impl FnMut() -> Duration,
+    ) -> GameClockAdvance {
         self.finish_mac_frame_calendar_phase_with_music(
             elapsed,
             actor_wait_ticks,
+            budget_pointer_down,
             since_frame_start,
             &mut |_| {},
         )
@@ -561,6 +579,7 @@ impl ViewerState {
         &mut self,
         elapsed: Duration,
         actor_wait_ticks: u32,
+        budget_pointer_down: bool,
         mut since_frame_start: impl FnMut() -> Duration,
         music_callback: &mut impl FnMut(&mut ViewerState),
     ) -> GameClockAdvance {
@@ -580,7 +599,8 @@ impl ViewerState {
             self.advance_mac_earthquake_prelude(now, music_callback);
             return GameClockAdvance::default();
         }
-        if self.mac_loop_scheduler.january_budget_review_pending
+        if !budget_pointer_down
+            && self.mac_loop_scheduler.january_budget_review_pending
             && self
                 .mac_loop_scheduler
                 .january_budget_review_started_at

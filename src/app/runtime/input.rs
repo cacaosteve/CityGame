@@ -1,6 +1,7 @@
 //! Input dispatch for the main window and floating/docked Tools palette.
 
 use super::super::CityInfoDialog;
+use super::super::dialog_content::CityInfoDialogAction;
 use crate::app::dialogs::{
     apply_city_info_dialog_action, city_info_dialog_rect_for_engine,
     mac_budget_review_action_for_release,
@@ -57,6 +58,48 @@ impl InputState {
 
     pub(super) fn holds_pe_idle_for_common_dialog(&self) -> bool {
         self.close_save_pending.is_some() || matches!(self.win95_file_dialog_pending, Some(Win95FileDialog::City | Win95FileDialog::SaveAs))
+    }
+
+    pub(super) fn mac_budget_review_pointer_is_down(&self) -> bool {
+        self.mac_budget_review_pointer_down.is_some()
+    }
+
+    /// Capture the initial press for the Mac annual budget modal. The native
+    /// CODE 4 handler stays in `_StillDown` until the matching release.
+    pub(super) fn mac_budget_review_pointer_down(
+        &mut self,
+        state: &ViewerState,
+        screen: Vec2,
+    ) -> bool {
+        self.mac_budget_review_pointer_down = None;
+        if state.engine_fidelity == EngineFidelity::Mac68k
+            && state.mac_loop_scheduler.january_budget_review_pending
+            && state.city_info_dialog == Some(CityInfoDialog::Budget)
+        {
+            self.mac_budget_review_pointer_down = Some(screen);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return the control activated by a release over the same control that
+    /// was pressed, while the January review is still the active modal.
+    pub(super) fn mac_budget_review_pointer_up(
+        &mut self,
+        state: &ViewerState,
+        screen: Vec2,
+        window_size: (u32, u32),
+    ) -> Option<CityInfoDialogAction> {
+        let down = self.mac_budget_review_pointer_down.take()?;
+        if state.engine_fidelity != EngineFidelity::Mac68k
+            || !state.mac_loop_scheduler.january_budget_review_pending
+            || state.city_info_dialog != Some(CityInfoDialog::Budget)
+        {
+            return None;
+        }
+        mac_budget_review_action_for_release(down, screen, window_size)
+            .filter(|action| state.city_info_dialog_action_enabled(*action))
     }
 }
 
@@ -120,6 +163,33 @@ mod preview_tests {
         state.open_city_info_dialog(CityInfoDialog::Budget);
         assert_eq!(state.info_panel_scale, 1.0);
         assert_eq!(state.info_panel_origin, None);
+    }
+
+    #[test]
+    fn mac_budget_review_pointer_dispatch_activates_on_matching_release() {
+        let city =
+            City::new_blank("/tmp/mac-budget-pointer-dispatch.sc2", "Budget").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.city_info_dialog = Some(CityInfoDialog::Budget);
+        state.mac_loop_scheduler.january_budget_review_pending = true;
+        let mut input = InputState::new();
+        let done = Vec2::new(464.0, 126.0);
+
+        assert!(input.mac_budget_review_pointer_down(&state, done));
+        assert!(input.mac_budget_review_pointer_is_down());
+        assert_eq!(
+            input.mac_budget_review_pointer_up(&state, done, (640, 480)),
+            Some(CityInfoDialogAction::Close)
+        );
+        assert!(!input.mac_budget_review_pointer_is_down());
+
+        assert!(input.mac_budget_review_pointer_down(&state, done));
+        assert_eq!(
+            input.mac_budget_review_pointer_up(&state, Vec2::new(329.0, 228.0), (640, 480)),
+            None
+        );
+        assert!(!input.mac_budget_review_pointer_is_down());
     }
 
     #[test]
@@ -1051,12 +1121,7 @@ fn handle_mouse_event(
             mac_menu::focus_main_window(window);
             let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
             input.mouse_pos = screen;
-            input.mac_budget_review_pointer_down = None;
-            if state.engine_fidelity == EngineFidelity::Mac68k
-                && state.mac_loop_scheduler.january_budget_review_pending
-                && state.city_info_dialog == Some(CityInfoDialog::Budget)
-            {
-                input.mac_budget_review_pointer_down = Some(screen);
+            if input.mac_budget_review_pointer_down(state, screen) {
                 input.painting = false;
                 input.dragging = false;
                 return Ok(());
@@ -1277,15 +1342,10 @@ fn handle_mouse_event(
             y,
             ..
         } if window_id == window.id() && input.mac_budget_review_pointer_down.is_some() => {
-            let down = input.mac_budget_review_pointer_down.take().unwrap();
             let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
             input.mouse_pos = screen;
-            if state.engine_fidelity == EngineFidelity::Mac68k
-                && state.mac_loop_scheduler.january_budget_review_pending
-                && state.city_info_dialog == Some(CityInfoDialog::Budget)
-                && let Some(action) =
-                    mac_budget_review_action_for_release(down, screen, renderer.size())
-                && state.city_info_dialog_action_enabled(action)
+            if let Some(action) =
+                input.mac_budget_review_pointer_up(state, screen, renderer.size())
             {
                 apply_city_info_dialog_action(
                     state,

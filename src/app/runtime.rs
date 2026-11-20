@@ -519,9 +519,10 @@ pub fn run() -> Result<()> {
                 } else {
                     frame_start.duration_since(sampled_at)
                 };
-                state.finish_mac_frame_calendar_phase_with_tick_refresh(
+                state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
                     event_elapsed,
                     waits,
+                    input.mac_budget_review_pointer_is_down(),
                     || frame_start.elapsed(),
                 )
             } else {

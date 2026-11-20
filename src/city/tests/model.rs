@@ -8529,6 +8529,33 @@ fn mac_industry_live_lfsr_matches_quadra_demand_rows() {
 }
 
 #[test]
+fn mac_industry_autodebt_live_demand_rows_match_quadras_january_2085_inputs() {
+    let mut city = City::new_blank("/tmp/mac-industry-autodebt-2085.sc2", "AutoDebt").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(MISC_YEAR_FOUNDED_OFFSET, 1900);
+    let prior = [11_i16, 24, 10, 8, 19, 20, 32, 28, 22, 86, 39];
+    for (row, demand) in prior.into_iter().enumerate() {
+        let base = 0x16c + 12 * row;
+        city.set_mac_state_misc_u32_at(base, i32::from(demand) as u32);
+        city.set_mac_state_misc_u32_at(base + 4, 7);
+        city.set_mac_state_misc_u32_at(base + 8, 0);
+    }
+
+    let mut quickdraw = MacToolboxRng::new(0x775f08e1);
+    let mut app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x930b);
+    city.advance_mac_industry_mix_month(&mut quickdraw, &mut app_lfsr, 2085);
+
+    let demand: [i16; 11] = std::array::from_fn(|row| {
+        city.mac_state_misc_u32_at(0x16c + 12 * row).unwrap() as i16
+    });
+    assert_eq!(
+        demand,
+        [11, 22, 10, 7, 19, 18, 32, 29, 23, 85, 43]
+    );
+    assert_eq!(app_lfsr.state(), 0xbe05);
+}
+
+#[test]
 fn mac_xthg_accepts_legacy_rle_packets() {
     let mut raw = vec![0; 40 * 12];
     raw[..12].copy_from_slice(&[4, 0xff, 0, 81, 43, 0, 0, 0, 0, 0, 0, 20]);

@@ -32,7 +32,7 @@ glam = "0.30"
 pollster = "0.4"
 env_logger = "0.11"
 log = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 freetype-sys = "0.20.1"
 
 # Desktop: system SDL via pkg-config.

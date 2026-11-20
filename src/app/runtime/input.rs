@@ -1,7 +1,10 @@
 //! Input dispatch for the main window and floating/docked Tools palette.
 
 use super::super::CityInfoDialog;
-use crate::app::dialogs::city_info_dialog_rect_for_engine;
+use crate::app::dialogs::{
+    apply_city_info_dialog_action, city_info_dialog_rect_for_engine,
+    mac_budget_review_action_for_release,
+};
 use super::super::map_interaction::{
     handle_map_left_pointer_down, release_map_tools, update_map_paint_pointer_motion,
 };
@@ -17,6 +20,7 @@ pub(super) struct InputState {
     pub(super) paint_tile: Option<(usize, usize)>,
     pub(super) shift_down: bool,
     pub(super) mouse_pos: Vec2,
+    mac_budget_review_pointer_down: Option<Vec2>,
     pub(super) touch: TouchTracker,
     pub(super) fiscal_notice_mouse_down: bool,
     pub(super) map_touch: MapTouchArbiter,
@@ -37,6 +41,7 @@ impl InputState {
             paint_tile: None,
             shift_down: false,
             mouse_pos: Vec2::ZERO,
+            mac_budget_review_pointer_down: None,
             touch: TouchTracker::new(),
             fiscal_notice_mouse_down: false,
             map_touch: MapTouchArbiter::new(),
@@ -1046,6 +1051,16 @@ fn handle_mouse_event(
             mac_menu::focus_main_window(window);
             let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
             input.mouse_pos = screen;
+            input.mac_budget_review_pointer_down = None;
+            if state.engine_fidelity == EngineFidelity::Mac68k
+                && state.mac_loop_scheduler.january_budget_review_pending
+                && state.city_info_dialog == Some(CityInfoDialog::Budget)
+            {
+                input.mac_budget_review_pointer_down = Some(screen);
+                input.painting = false;
+                input.dragging = false;
+                return Ok(());
+            }
             match state.menubar.handle_click(
                 screen,
                 renderer.size(),
@@ -1254,6 +1269,38 @@ fn handle_mouse_event(
             input.paint_tile = None;
             input.painting = false;
             input.dragging = true;
+        }
+        Event::MouseButtonUp {
+            window_id,
+            mouse_btn: MouseButton::Left,
+            x,
+            y,
+            ..
+        } if window_id == window.id() && input.mac_budget_review_pointer_down.is_some() => {
+            let down = input.mac_budget_review_pointer_down.take().unwrap();
+            let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
+            input.mouse_pos = screen;
+            if state.engine_fidelity == EngineFidelity::Mac68k
+                && state.mac_loop_scheduler.january_budget_review_pending
+                && state.city_info_dialog == Some(CityInfoDialog::Budget)
+                && let Some(action) =
+                    mac_budget_review_action_for_release(down, screen, renderer.size())
+                && state.city_info_dialog_action_enabled(action)
+            {
+                apply_city_info_dialog_action(
+                    state,
+                    action,
+                    renderer.size(),
+                    pixel_scale(window, renderer.size()),
+                    video,
+                    window,
+                    sound.as_ref(),
+                );
+            }
+            input.dragging = false;
+            input.painting = false;
+            state.release_palette_button();
+            state.update_window_title(video, window.id());
         }
         Event::MouseButtonUp {
             window_id,

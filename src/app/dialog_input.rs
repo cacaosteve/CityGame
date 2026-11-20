@@ -584,9 +584,73 @@ pub(super) fn city_info_dialog_hit_test_for_engine(
     None
 }
 
+/// The native Mac annual budget modal tracks the control under the initial
+/// press, then commits only if release remains inside that same control.
+pub(super) fn mac_budget_review_action_for_release(
+    down: Vec2,
+    release: Vec2,
+    window_size: (u32, u32),
+) -> Option<CityInfoDialogAction> {
+    let pressed = city_info_dialog_hit_test_for_engine(
+        down,
+        window_size,
+        CityInfoDialog::Budget,
+        EngineFidelity::Mac68k,
+    )?;
+    (city_info_dialog_hit_test_for_engine(
+        release,
+        window_size,
+        CityInfoDialog::Budget,
+        EngineFidelity::Mac68k,
+    ) == Some(pressed))
+    .then_some(pressed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mac_annual_budget_action_commits_only_when_released_inside_pressed_control() {
+        let done = Vec2::new(464.0, 126.0);
+        assert_eq!(
+            mac_budget_review_action_for_release(done, done, (640, 480)),
+            Some(CityInfoDialogAction::Close),
+        );
+        assert_eq!(
+            mac_budget_review_action_for_release(done, Vec2::new(464.0, 145.0), (640, 480)),
+            None,
+        );
+    }
+
+    #[test]
+    fn mac_annual_budget_action_does_not_switch_controls_while_held() {
+        let close = Vec2::new(464.0, 126.0);
+        let police_decrease = Vec2::new(329.0, 228.0);
+        assert_eq!(
+            city_info_dialog_hit_test_for_engine(
+                police_decrease,
+                (640, 480),
+                CityInfoDialog::Budget,
+                EngineFidelity::Mac68k,
+            ),
+            Some(CityInfoDialogAction::AdjustBudgetFunding {
+                service_index: 0,
+                delta: -5,
+            }),
+        );
+        assert_eq!(
+            mac_budget_review_action_for_release(close, police_decrease, (640, 480)),
+            None,
+        );
+        assert_eq!(
+            mac_budget_review_action_for_release(police_decrease, police_decrease, (640, 480)),
+            Some(CityInfoDialogAction::AdjustBudgetFunding {
+                service_index: 0,
+                delta: -5,
+            }),
+        );
+    }
 
     #[test]
     fn mac_budget_done_point_maps_to_close_action() {

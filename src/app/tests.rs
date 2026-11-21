@@ -199,6 +199,7 @@ pub(super) fn test_state(mut city: City) -> ViewerState {
             win95_new_city_setup: None,
         military_base_dialog: None,
         city_info_dialog: None,
+        help_return_dialog: None,
         pending_newspaper_music: None,
             status_panel_origin: None,
             status_panel_grab: None,

@@ -33,6 +33,7 @@ impl ViewerState {
         self.pe_founding_mode_transition_pending = false;
         self.close_other_modal_dialogs();
         self.city_info_dialog = None;
+        self.help_return_dialog = None;
         self.mac_newspaper.detail_open = false;
         self.mac_newspaper.paint = None;
         self.pe_newspaper_paint = None;
@@ -219,6 +220,22 @@ impl ViewerState {
         if dialog == CityInfoDialog::Scenario && self.city.kind != CityFileKind::WinScenario {
             return;
         }
+        if dialog == CityInfoDialog::Help
+            && self.city_info_dialog == Some(CityInfoDialog::Help)
+            && let Some(return_dialog) = self.help_return_dialog.take()
+        {
+            self.city_info_dialog = Some(return_dialog);
+            self.sync_pe_city_info_modal_state();
+            return;
+        }
+        if dialog == CityInfoDialog::Help
+            && self.engine_fidelity == EngineFidelity::Mac68k
+            && self.city_info_dialog == Some(CityInfoDialog::Budget)
+        {
+            self.help_return_dialog = Some(CityInfoDialog::Budget);
+        } else if dialog != CityInfoDialog::Help {
+            self.help_return_dialog = None;
+        }
         // The custom newspaper UI uses Win95 MISC fields. On Mac those same
         // offsets are CODE 4 state-vector slots, so keep this PE-only dialog
         // out of Mac-layout saves even when the selected simulation is Win95.
@@ -321,6 +338,13 @@ impl ViewerState {
 
     pub(super) fn close_city_info_dialog(&mut self) {
         let closed = self.city_info_dialog.take();
+        if closed == Some(CityInfoDialog::Help)
+            && let Some(return_dialog) = self.help_return_dialog.take()
+        {
+            self.city_info_dialog = Some(return_dialog);
+            self.sync_pe_city_info_modal_state();
+            return;
+        }
         if closed == Some(CityInfoDialog::Budget) {
             self.mac_loop_scheduler.january_budget_review_started_at = None;
         }

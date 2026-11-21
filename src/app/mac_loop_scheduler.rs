@@ -51,6 +51,9 @@ pub(super) struct MacLoopScheduler {
     actor_deadline: u32,
     /// Native signed WORD `ffff8c82` used to select the next 30/45-tick interval.
     actor_smoother: i16,
+    /// CODE 2 services an overdue calendar callback before an overdue actor
+    /// callback when both are ready in the same loop pass.
+    actor_sweep_deferred: bool,
     /// Native WORD ffff8c80, accumulated after normal calendar dispatches.
     dispatch_counter: u16,
     /// CODE 14 phase 0 is suspended inside CODE 4 export 225.
@@ -451,6 +454,7 @@ impl ViewerState {
         mut since_frame_sample: impl FnMut() -> Duration,
     ) -> u32 {
         let mut now = self.mac_loop_scheduler.advance_elapsed(elapsed);
+        self.mac_loop_scheduler.actor_sweep_deferred = false;
         // TickCount continues while the map editor is open, but the Mac
         // simulation callback belongs to the live city view. Keep editor
         // frames out of both the actor sweep and calendar/action dispatcher.
@@ -470,6 +474,14 @@ impl ViewerState {
         let (run_state, speed) = self.mac_scheduler_inputs();
         self.mac_loop_scheduler.advance_palette(speed, now);
         if self.mac_loop_scheduler.mac_earthquake_prelude_active() {
+            return 0;
+        }
+        if run_state == 1
+            && now > self.mac_loop_scheduler.deadline
+            && now > self.mac_loop_scheduler.actor_deadline
+            && self.mac_loop_scheduler.deadline < self.mac_loop_scheduler.actor_deadline
+        {
+            self.mac_loop_scheduler.actor_sweep_deferred = true;
             return 0;
         }
         let actor_check_tick = now;
@@ -586,6 +598,9 @@ impl ViewerState {
         mut since_frame_start: impl FnMut() -> Duration,
         music_callback: &mut impl FnMut(&mut ViewerState),
     ) -> GameClockAdvance {
+        let actor_sweep_deferred = std::mem::take(
+            &mut self.mac_loop_scheduler.actor_sweep_deferred,
+        );
         let mut now = self
             .mac_loop_scheduler
             .advance_elapsed(elapsed)
@@ -743,6 +758,11 @@ impl ViewerState {
             {
                 self.advance_mac_scenario_action_with_music(&mut now, music_callback);
             }
+        }
+        if actor_sweep_deferred && advance.days != 0 {
+            self.begin_mac_frame_actor_phase_with_tick_refresh(Duration::ZERO, || {
+                since_frame_start()
+            });
         }
         advance
     }

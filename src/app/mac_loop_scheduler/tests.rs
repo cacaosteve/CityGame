@@ -11764,6 +11764,57 @@ fn mac_actor_phase_resumes_after_fiscal_notice_releases_dispatch() {
 }
 
 #[test]
+fn mac_calendar_runs_before_actor_when_both_deadlines_are_due() {
+    let city = City::new_blank("/tmp/mac-calendar-before-actor.sc2", "Calendar first").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Llama);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.game_clock = GameClock::new(1994, 1).wrapping_add_days(2);
+    let mut history = vec![0_u32; 16 * 52];
+    history[4 * 52] = 41;
+    state.city.set_chunk_u32_values("XGRP", 0, &history);
+    state.mac_loop_scheduler.start_captured_clock(100);
+    state.mac_loop_scheduler.deadline = 100;
+    state.mac_loop_scheduler.actor_deadline = 110;
+    let initial_seed = state.mac_process_rng.seed();
+
+    let waits = state.begin_mac_frame_actor_phase(Duration::from_nanos(21 * 1_000_000_000 / 60));
+    assert_eq!(state.mac_process_rng.seed(), initial_seed);
+
+    let advance = state.finish_mac_frame_calendar_phase(Duration::ZERO, waits);
+    assert_eq!(advance.days, 1);
+    let mut expected = MacToolboxRng::new(initial_seed);
+    expected.random_u16();
+    assert_eq!(state.mac_process_rng.seed(), expected.seed());
+}
+
+#[test]
+fn mac_actor_runs_before_calendar_when_calendar_deadline_is_not_due() {
+    let city = City::new_blank("/tmp/mac-actor-before-calendar.sc2", "Actor first").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Llama);
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    let mut history = vec![0_u32; 16 * 52];
+    history[4 * 52] = 41;
+    state.city.set_chunk_u32_values("XGRP", 0, &history);
+    state.mac_loop_scheduler.start_captured_clock(100);
+    state.mac_loop_scheduler.deadline = 121;
+    state.mac_loop_scheduler.actor_deadline = 110;
+    let mut expected = state.mac_process_rng;
+    expected.random_u16();
+
+    let waits = state.begin_mac_frame_actor_phase(Duration::from_nanos(21 * 1_000_000_000 / 60));
+    assert_eq!(state.mac_process_rng.seed(), expected.seed());
+    assert_eq!(state.finish_mac_frame_calendar_phase(Duration::ZERO, waits).days, 0);
+}
+
+#[test]
 fn mac_fiscal_notice_uses_original_unsigned_absolute_deadline() {
     let notice = |start_tick, dismissed, button_down| MacFiscalNotice {
         start_tick,

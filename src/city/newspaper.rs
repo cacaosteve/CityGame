@@ -67,10 +67,10 @@ impl City {
         Some(())
     }
 
-    /// CODE 7 export 234 inserts into seven priority-ordered Mac story records.
-    /// The UI refresh triggered by some selectors is handled separately.
-    pub(crate) fn queue_mac_newspaper_story(&mut self, selector: u16, parameter: u8) {
-        let Some(&priority) = PE_NEWSPAPER_STORY_PRIORITIES.get(usize::from(selector)) else { return; };
+    /// CODE 7 export 234 inserts into seven priority-ordered Mac story records
+    /// and reports whether this insertion immediately calls export 233.
+    pub(crate) fn queue_mac_newspaper_story(&mut self, selector: u16, parameter: u8) -> bool {
+        let Some(&priority) = PE_NEWSPAPER_STORY_PRIORITIES.get(usize::from(selector)) else { return false; };
         let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] = std::array::from_fn(|i| self.mac_story_record(i));
         let mut insert = 6;
         while insert > 0 && (priority as i16) >= (records[insert - 1][1] as u16 as i16) {
@@ -78,6 +78,12 @@ impl City {
         }
         records[insert] = [u32::from(selector), u32::from(priority), u32::from(parameter), 255, 255, 255];
         for (i, record) in records.into_iter().enumerate() { self.write_mac_story_record(i, record); }
+
+        !self.kind.is_win95()
+            && !self.mac_newspaper_suppressed()
+            && (selector == 2
+                || (self.mac_newspaper_extra_enabled()
+                    && matches!(selector, 3..=5 | 0x24)))
     }
 
     /// CODE 7 export 235 ages and sorts the seven active records before phase 21 inserts.

@@ -35,6 +35,7 @@ const MAC_EARTHQUAKE_FIRST_FRAME_TICKS: u32 = 2;
 // current nominal timeout is 4,800 ticks, with adjacent annual work accounting
 // for the remainder of the observed dispatch gaps.
 const MAC_JANUARY_BUDGET_REVIEW_TIMEOUT_TICKS: u32 = 4_800;
+const MAC_STORY_WINDOW_TIMEOUT_TICKS: u32 = 3_600;
 
 /// CODE 2's post-event 0x26..0xb2 admission. The adaptive actor timer and
 /// native action state are separate workers, not the shared road renderer.
@@ -57,6 +58,10 @@ pub(super) struct MacLoopScheduler {
     pub(super) january_budget_review_pending: bool,
     /// TickCount at which the native January budget review was shown.
     pub(super) january_budget_review_started_at: Option<u32>,
+    /// TickCount at which the automatic CODE 7 story window was shown.
+    pub(super) mac_story_window_started_at: Option<u32>,
+    /// Suspended CODE 8 phase-21 technology/story call, resumed after CODE 7 returns.
+    pub(super) mac_phase21_event_continuation: Option<super::rci::MacPhase21EventContinuation>,
     pub(super) fiscal_notice: Option<MacFiscalNotice>,
     /// A Mac SCEN resource or a point-bearing menu arm supplies the active point.
     pub(super) pending_action_point: Option<(i16, i16)>,
@@ -451,6 +456,35 @@ impl ViewerState {
         mut since_frame_sample: impl FnMut() -> Duration,
     ) -> u32 {
         let mut now = self.mac_loop_scheduler.advance_elapsed(elapsed);
+        if self.mode == AppMode::CityView
+            && self.city_info_dialog
+                == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
+        {
+            let expired = self
+                .mac_loop_scheduler
+                .mac_story_window_started_at
+                .is_some_and(|started_at| {
+                    mac_tick_at_or_after(
+                        now,
+                        started_at.wrapping_add(MAC_STORY_WINDOW_TIMEOUT_TICKS),
+                    )
+                });
+            if expired {
+                self.close_city_info_dialog();
+            } else {
+                return 0;
+            }
+        }
+        if self.mode == AppMode::CityView
+            && self.city_info_dialog.is_none()
+            && self
+                .mac_loop_scheduler
+                .mac_phase21_event_continuation
+                .is_some()
+        {
+            self.resume_mac_phase21_event_draws();
+            return 0;
+        }
         // TickCount continues while the map editor is open, but the Mac
         // simulation callback belongs to the live city view. Keep editor
         // frames out of both the actor sweep and calendar/action dispatcher.

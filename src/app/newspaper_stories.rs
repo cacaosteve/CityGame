@@ -65,7 +65,8 @@ pub(super) fn pe_disaster_end_summary_headline(edition: NewspaperEdition, story_
         | NewspaperEdition::Subscription
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
-        | NewspaperEdition::MacDisaster => {
+        | NewspaperEdition::MacDisaster
+        | NewspaperEdition::MacStoryWindow => {
             format!("{label} Contained")
         }
     }
@@ -87,7 +88,8 @@ pub(super) fn pe_power_plant_aging_headline(edition: NewspaperEdition, param: u8
         | NewspaperEdition::Subscription
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
-        | NewspaperEdition::MacDisaster => {
+        | NewspaperEdition::MacDisaster
+        | NewspaperEdition::MacStoryWindow => {
             format!("Aging {kind} power plant")
         }
     }
@@ -107,7 +109,8 @@ pub(super) fn pe_fund_education_headline(edition: NewspaperEdition) -> String {
         | NewspaperEdition::Subscription
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
-        | NewspaperEdition::MacDisaster => {
+        | NewspaperEdition::MacDisaster
+        | NewspaperEdition::MacStoryWindow => {
             "Schools need funding".to_string()
         }
     }
@@ -126,7 +129,8 @@ pub(super) fn pe_prison_overcrowded_headline(edition: NewspaperEdition) -> Strin
         | NewspaperEdition::Subscription
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
-        | NewspaperEdition::MacDisaster => {
+        | NewspaperEdition::MacDisaster
+        | NewspaperEdition::MacStoryWindow => {
             "Prisons overcrowded".to_string()
         }
     }
@@ -143,7 +147,8 @@ pub(super) fn pe_bridge_collapse_headline(edition: NewspaperEdition) -> String {
         | NewspaperEdition::Subscription
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
-        | NewspaperEdition::MacDisaster => {
+        | NewspaperEdition::MacDisaster
+        | NewspaperEdition::MacStoryWindow => {
             "Bridge collapse disrupts traffic".to_string()
         }
     }
@@ -201,7 +206,8 @@ pub(super) fn pe_health_amenities_newspaper_headline(
         | NewspaperEdition::Subscription
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
-        | NewspaperEdition::MacDisaster => {
+        | NewspaperEdition::MacDisaster
+        | NewspaperEdition::MacStoryWindow => {
             label.to_string()
         }
     }

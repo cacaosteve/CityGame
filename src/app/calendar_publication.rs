@@ -10,7 +10,8 @@ use super::{
     MISC_LAND_VALUE_OFFSET, MISC_NORMAL_POPULATION_OFFSET, NEIGHBOR_CONNECTION_MISC_OFFSET,
     PopulationStats, ViewerState, advance_weather_state, advance_weather_state_win95,
     budget_service_funding_raw_for_city, density_map_microsim64_sum,
-    mac_budget_refresh_rci_budget_currents, mac_consume_phase21_pre_weather_event_draws,
+    mac_advance_phase21_pre_weather_event_draws, mac_budget_refresh_rci_budget_currents,
+    MacPhase21EventContinuation, MacPhase21EventProgress,
     mac_publish_monthly_growth_scalar, mac_publish_monthly_rci_demand,
     mac_publish_monthly_riot_ratio, mac_rci_nature_sample, mac_weather_state_for_city,
     neighbor_connection_tiles_for_city, pe_misc_mirror_storage_active,
@@ -104,12 +105,48 @@ impl ViewerState {
             // slots 0..=11, export 240 adds matching native command options
             // and CityGame's date gate exposes the individual tools. The
             // arcology command additionally uses the rebuilt Mac civic latch.
-            mac_consume_phase21_pre_weather_event_draws(
+            let mut continuation = MacPhase21EventContinuation::default();
+            let progress = mac_advance_phase21_pre_weather_event_draws(
                 &mut self.city,
                 self.game_clock.year(),
-                || self.mac_process_rng.random_i16() as u16,
+                &mut continuation,
+                &mut || self.mac_process_rng.random_i16() as u16,
             );
+            if let MacPhase21EventProgress::Suspended { .. } = progress {
+                self.mac_loop_scheduler.mac_phase21_event_continuation = Some(continuation);
+                self.open_mac_story_window();
+                return (PopulationStats::default(), CityServiceOutcomes::default());
+            }
         }
+        self.finish_day21_after_event_prefix()
+    }
+
+    pub(super) fn resume_mac_phase21_event_draws(&mut self) {
+        let Some(mut continuation) = self
+            .mac_loop_scheduler
+            .mac_phase21_event_continuation
+            .take()
+        else {
+            return;
+        };
+        let progress = mac_advance_phase21_pre_weather_event_draws(
+            &mut self.city,
+            self.game_clock.year(),
+            &mut continuation,
+            &mut || self.mac_process_rng.random_i16() as u16,
+        );
+        match progress {
+            MacPhase21EventProgress::Suspended { .. } => {
+                self.mac_loop_scheduler.mac_phase21_event_continuation = Some(continuation);
+                self.open_mac_story_window();
+            }
+            MacPhase21EventProgress::Complete(_) => {
+                let _ = self.finish_day21_after_event_prefix();
+            }
+        }
+    }
+
+    fn finish_day21_after_event_prefix(&mut self) -> (PopulationStats, CityServiceOutcomes) {
         let (population, outcomes) = self.refresh_live_misc_current_values();
         if !self.engine_fidelity.uses_win95() {
             self.advance_simulation_weather();

@@ -2,6 +2,34 @@ use super::*;
 use crate::app::tests::{blank_city_layout_fixture, test_state};
 
 #[test]
+fn mac_story_window_closes_at_wrapping_tickcount_deadline() {
+    let city = City::new_blank("/tmp/mac-story-window-timeout.sc2", "Story").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.mac_loop_scheduler.start_captured_clock(0xffff_ff00);
+    state.open_mac_story_window();
+    let automatic = state.city_info_dialog.unwrap();
+    let manual = CityInfoDialog::Newspaper(NewspaperEdition::MacStandard);
+    assert_ne!(automatic, manual, "automatic and manual paper modes differ");
+    assert!(automatic.holds_mac_simulation());
+    assert_eq!(
+        Some(automatic),
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
+    );
+
+    assert_eq!(
+        state.begin_mac_frame_actor_phase(Duration::from_secs(59)),
+        0,
+        "the automatic paper holds simulation before its deadline"
+    );
+    assert!(state.city_info_dialog.is_some());
+    state.begin_mac_frame_actor_phase(Duration::from_secs(1));
+    assert_eq!(state.city_info_dialog, None);
+    assert_eq!(state.mac_loop_scheduler.mac_story_window_started_at, None);
+}
+
+#[test]
 fn mac_successful_disaster_resets_earlier_effects_before_alert() {
     for enabled in [false, true] {
         let city = City::new_blank("/tmp/mac-action-sound-reset.sc2", "Sound reset").unwrap();

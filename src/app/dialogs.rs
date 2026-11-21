@@ -296,7 +296,12 @@ impl ViewerState {
         self.city_info_dialog = next_dialog;
         if matches!(next_dialog, Some(CityInfoDialog::Newspaper(edition)) if edition.is_mac()) {
             let page =
-                if next_dialog == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStandard)) {
+                if matches!(
+                    next_dialog,
+                    Some(CityInfoDialog::Newspaper(
+                        NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
+                    ))
+                ) {
                     self.city
                         .mac_state_misc_u32_at(super::MISC_NEWSPAPER_CHOICE_OFFSET)
                         .unwrap_or(0) as u16 as usize
@@ -319,8 +324,23 @@ impl ViewerState {
         self.sync_pe_city_info_modal_state();
     }
 
+    pub(super) fn open_mac_story_window(&mut self) {
+        let started_at = self.mac_loop_scheduler.current_tick();
+        self.city
+            .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+        self.open_city_info_dialog(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow));
+        if self.city_info_dialog
+            == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
+        {
+            self.mac_loop_scheduler.mac_story_window_started_at = Some(started_at);
+        }
+    }
+
     pub(super) fn close_city_info_dialog(&mut self) {
         let closed = self.city_info_dialog.take();
+        if closed == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow)) {
+            self.mac_loop_scheduler.mac_story_window_started_at = None;
+        }
         if closed == Some(CityInfoDialog::Budget) {
             self.mac_loop_scheduler.january_budget_review_started_at = None;
         }

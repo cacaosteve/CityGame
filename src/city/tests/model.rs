@@ -8606,6 +8606,30 @@ fn mac_fire_story_queue_matches_quadras_priority_insertions() {
 }
 
 #[test]
+fn mac_story_insert_reports_the_native_immediate_panel_gate() {
+    let mut city = City::new_blank("/tmp/mac-story-panel-gate.sc2", "Queue").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x1008, 0);
+    assert!(city.queue_mac_newspaper_story(2, 0));
+    for selector in [3, 4, 5, 0x24] {
+        assert!(!city.queue_mac_newspaper_story(selector, 0));
+    }
+
+    city.set_mac_state_misc_u32_at(0x1008, 1);
+    for selector in [3, 4, 5, 0x24] {
+        assert!(city.queue_mac_newspaper_story(selector, 5), "selector {selector}");
+    }
+    for selector in [1, 6, 0x23, 0x25] {
+        assert!(!city.queue_mac_newspaper_story(selector, 0), "selector {selector}");
+    }
+    city.set_mac_newspaper_suppressed(true);
+    assert!(
+        !city.queue_mac_newspaper_story(5, 5),
+        "an inactive application records the story without opening its window"
+    );
+}
+
+#[test]
 fn mac_disaster_class_tracks_highest_priority_and_resets_after_story() {
     let mut city = City::new_blank("/tmp/mac-disaster-class.sc2", "Class").unwrap();
     city.set_building(10, 10, 0xd3); // class 22, priority 4

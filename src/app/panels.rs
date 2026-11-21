@@ -1406,6 +1406,7 @@ impl ViewerState {
             NewspaperEdition::Founding
                 | NewspaperEdition::MacDisaster
                 | NewspaperEdition::MacStandard
+                | NewspaperEdition::MacStoryWindow
         ) {
             None
         } else {
@@ -1480,7 +1481,7 @@ impl ViewerState {
         };
 
         let masthead = if edition.is_mac() {
-            let page = if edition == NewspaperEdition::MacStandard {
+            let page = if matches!(edition, NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow) {
                 self.city
                     .mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET)
                     .unwrap_or(0) as u16 as usize
@@ -1570,6 +1571,7 @@ impl ViewerState {
             NewspaperEdition::Subscription => "DELIVERED TO YOUR CITY",
             NewspaperEdition::Courier => "THE DAILY EDITION",
             NewspaperEdition::MacStandard => "THE DAILY EDITION",
+            NewspaperEdition::MacStoryWindow => "CITY NEWS",
             NewspaperEdition::MacDisaster => "DISASTER REPORT",
         };
         if let Some(paint) = self

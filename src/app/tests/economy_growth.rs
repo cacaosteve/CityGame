@@ -20804,6 +20804,7 @@ fn mac_phase21_recovered_prefix_runs_before_weather_on_both_layouts() {
         let mut city = City::new_blank("/tmp/mac-phase21-prefix-before-weather.sc2", "Phase 21")
             .expect("blank city");
         city.kind = kind;
+        city.set_mac_state_misc_u32_at(0x1008, 0); // Keep this draw-order fixture out of Extra.
         city.set_mac_state_misc_u32_at(technology.misc_offset(), 1900);
 
         let mut state = test_state(city);
@@ -21003,6 +21004,117 @@ fn mac_phase21_technology_timer_scans_in_order_and_clears_first_due_date() {
         );
         assert_eq!(draws.next(), None);
     }
+}
+
+#[test]
+fn mac_phase21_technology_story_suspends_before_poll_and_date_clear() {
+    let mut city = City::new_blank("/tmp/mac-phase21-story-suspend.sc2", "test").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x1008, 1); // Extra enabled
+    city.set_mac_state_misc_u32_at(0x102c, 100); // active opinion poll
+    let technology = Technology::ALL[12]; // CODE 8 selector 5, parameter 5
+    city.set_mac_state_misc_u32_at(technology.misc_offset(), 1900);
+
+    let draw_count = std::cell::Cell::new(0);
+    let mut draw = || {
+        let index = draw_count.get();
+        draw_count.set(draw_count.get() + 1);
+        if index == 11 { 0 } else { 1 }
+    };
+    let mut continuation = super::super::rci::MacPhase21EventContinuation::default();
+    let progress = super::super::rci::mac_advance_phase21_pre_weather_event_draws(
+        &mut city,
+        1994,
+        &mut continuation,
+        &mut draw,
+    );
+
+    assert_eq!(
+        progress,
+        super::super::rci::MacPhase21EventProgress::Suspended {
+            selector: 5,
+            parameter: 5,
+        },
+        "the caller suspends at the selector-5 window"
+    );
+    assert_eq!(draw_count.get(), 12, "CODE 8 suspends before polling");
+    assert_eq!(
+        city.mac_state_misc_u32_at(technology.misc_offset()),
+        Some(1900),
+        "CODE 8 clears the due date only after export 233 returns"
+    );
+    assert!(
+        (0..7).any(|index| {
+            let story = city.mac_story_record(index);
+            story[0] == 5 && story[2] == 5
+        }),
+        "the queue contains selector 5 with parameter 5"
+    );
+    assert_eq!(
+        super::super::rci::mac_advance_phase21_pre_weather_event_draws(
+            &mut city,
+            1994,
+            &mut continuation,
+            &mut draw,
+        ),
+        super::super::rci::MacPhase21EventProgress::Complete(Some(12)),
+    );
+    assert_eq!(
+        city.mac_state_misc_u32_at(technology.misc_offset()),
+        Some(0),
+        "the resumed caller clears the technology date after export 233 returns"
+    );
+}
+
+#[test]
+fn mac_phase21_story_window_resumes_the_live_publisher_after_close() {
+    let mut city = City::new_blank("/tmp/mac-phase21-story-resume.sc2", "test").unwrap();
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x1008, 1); // Extra enabled
+    city.set_mac_state_misc_u32_at(0x102c, 100);
+    let technology = Technology::ALL[12];
+    city.set_mac_state_misc_u32_at(technology.misc_offset(), 1);
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.mac_loop_scheduler.start_captured_clock(0xffff_ff00);
+    state.mac_process_rng = crate::mac_random::MacToolboxRng::new(8);
+
+    state.sim_calendar_day21_demand_and_graphs();
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
+    );
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(technology.misc_offset()),
+        Some(1),
+        "the technology date stays live while the automatic paper is open"
+    );
+    assert!(state
+        .mac_loop_scheduler
+        .mac_phase21_event_continuation
+        .is_some());
+
+    state.begin_mac_frame_actor_phase(Duration::from_secs(59));
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
+    );
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(technology.misc_offset()),
+        Some(1),
+        "phase 21 remains suspended before the timeout"
+    );
+    state.begin_mac_frame_actor_phase(Duration::from_secs(1));
+    assert_eq!(state.city_info_dialog, None);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(technology.misc_offset()),
+        Some(0)
+    );
+    assert!(state
+        .mac_loop_scheduler
+        .mac_phase21_event_continuation
+        .is_none());
 }
 
 #[test]

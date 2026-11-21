@@ -41,11 +41,13 @@ pub(super) enum NewspaperEdition {
     MacStandard,
     /// CODE 10's mandatory Mac disaster-completion paper.
     MacDisaster,
+    /// CODE 7 automatic Extra story window, with its native timeout.
+    MacStoryWindow,
 }
 
 impl NewspaperEdition {
     pub(super) fn is_mac(self) -> bool {
-        matches!(self, Self::MacStandard | Self::MacDisaster)
+        matches!(self, Self::MacStandard | Self::MacDisaster | Self::MacStoryWindow)
     }
 
     pub(super) fn label(self) -> &'static str {
@@ -56,6 +58,7 @@ impl NewspaperEdition {
             Self::Courier => "Courier",
             Self::MacStandard => "Newspaper",
             Self::MacDisaster => "Disaster Report",
+            Self::MacStoryWindow => "Newspaper",
         }
     }
 
@@ -65,7 +68,9 @@ impl NewspaperEdition {
             Self::Subscription => format!("{city_name} Newspaper Subscription"),
             Self::Extra => format!("{city_name} Extra!!!"),
             Self::Courier => format!("The {city_name} {}", newspaper_paper_name(newspaper_choice)),
-            Self::MacStandard | Self::MacDisaster => format!("{city_name} Newspaper"),
+            Self::MacStandard | Self::MacDisaster | Self::MacStoryWindow => {
+                format!("{city_name} Newspaper")
+            }
         }
     }
 
@@ -77,7 +82,7 @@ impl NewspaperEdition {
     ) -> String {
         match self {
             Self::Founding => "Groundwork Laid for a New City".to_owned(),
-            Self::MacStandard => "City News".to_owned(),
+            Self::MacStandard | Self::MacStoryWindow => "City News".to_owned(),
             Self::MacDisaster => "Disaster Report".to_owned(),
             Self::Subscription => {
                 "Subscription active. City hall news delivery is available.".to_owned()
@@ -110,7 +115,9 @@ impl NewspaperEdition {
             Self::Founding => format!(
                 "A new chapter begins for {city_name}. City hall has opened its doors, and the first neighborhoods are ready to take shape. The mayor's first priorities are power, road access, and places for residents to live and work. Local planners look forward to watching this landscape grow into a thriving city."
             ),
-            Self::MacStandard => format!("Reports from {city_name} cover the city's latest developments."),
+            Self::MacStandard | Self::MacStoryWindow => {
+                format!("Reports from {city_name} cover the city's latest developments.")
+            }
             Self::MacDisaster => {
                 format!("City hall reports that the disaster in {city_name} has ended.")
             }
@@ -258,7 +265,11 @@ impl CityInfoDialog {
                 | Self::TunnelQuote { .. }
                 | Self::HighwayWaterBridge { .. }
                 | Self::StadiumTeam { .. }
-                | Self::Newspaper(NewspaperEdition::MacDisaster | NewspaperEdition::MacStandard)
+                | Self::Newspaper(
+                    NewspaperEdition::MacDisaster
+                        | NewspaperEdition::MacStandard
+                        | NewspaperEdition::MacStoryWindow
+                )
         )
     }
 

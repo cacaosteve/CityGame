@@ -138,7 +138,12 @@ impl ViewerState {
         let strings = self.mac_newspaper.strings.clone().context("missing newspaper strings")?;
         let pictures = self.mac_newspaper.pictures.context("missing picture index")?;
         let tick = self.mac_newspaper.tick_word.context("missing newspaper TickCount")?;
-        let page = if self.city_info_dialog == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStandard)) {
+        let page = if matches!(
+            self.city_info_dialog,
+            Some(CityInfoDialog::Newspaper(
+                NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
+            ))
+        ) {
             self.city.mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET).unwrap_or(0) as u16 as usize
         } else { 0 };
         ensure!(page < 6, "invalid newspaper selection");
@@ -229,7 +234,12 @@ impl ViewerState {
         let age = self.city.mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET).unwrap_or(0) as i32;
         // CODE 2 and the subscription caller pass saved choice WORD 1027;
         // the disaster-completion caller explicitly passes page zero.
-        let page = if self.city_info_dialog == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStandard)) {
+        let page = if matches!(
+            self.city_info_dialog,
+            Some(CityInfoDialog::Newspaper(
+                NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
+            ))
+        ) {
             self.city.mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET).unwrap_or(0) as u16 as i16
         } else { 0 };
         if !(0..=5).contains(&page) { return; }

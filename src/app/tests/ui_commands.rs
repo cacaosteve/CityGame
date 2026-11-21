@@ -9891,6 +9891,7 @@ fn mac_standard_paper_uses_saved_page_but_disaster_uses_page_zero() {
         .unwrap() as i32;
     for (edition, selected_page) in [
         (NewspaperEdition::MacStandard, 1),
+        (NewspaperEdition::MacStoryWindow, 1),
         (NewspaperEdition::MacDisaster, 0),
     ] {
         state.open_city_info_dialog(CityInfoDialog::Newspaper(edition));

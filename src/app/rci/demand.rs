@@ -169,17 +169,35 @@ pub(in crate::app) fn mac_rci_nature_sample(city: &mut City, mut random_word: im
     }
 }
 
-/// Run the non-map, pre-weather QuickDraw draws in Mac CODE 8
-/// `export_237` (`0x38d28..0x3905a`). A successful final gate scans the
-/// 17 technology dates in ascending order, admits the Extra poll when enabled,
-/// and clears the first due date. In `export_240`, date slots
-/// 0..=11 add command choices, and slots 12..=15 contribute to the gated
-/// arcology latch refreshed when a date clears.
-pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::app) struct MacPhase21EventContinuation {
+    pending_technology: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum MacPhase21EventProgress {
+    Suspended { selector: u16, parameter: u8 },
+    Complete(Option<usize>),
+}
+
+/// Run the non-map, pre-weather QuickDraw draws in Mac CODE 8 until the event
+/// prefix completes or a story window suspends it. A pending technology scan
+/// resumes after CODE 7 export 233 returns.
+pub(in crate::app) fn mac_advance_phase21_pre_weather_event_draws(
     city: &mut City,
     current_year: u16,
-    mut random_word: impl FnMut() -> u16,
-) -> Option<usize> {
+    continuation: &mut MacPhase21EventContinuation,
+    random_word: &mut impl FnMut() -> u16,
+) -> MacPhase21EventProgress {
+    if let Some(index) = continuation.pending_technology.take() {
+        let technology = Technology::ALL[index];
+        city.mac_poll_for_extra(random_word);
+        city.set_mac_state_misc_u32_at(technology.misc_offset(), 0);
+        city.set_technology_discovery_year(technology, 0);
+        city.refresh_mac_arcology_latch();
+        return MacPhase21EventProgress::Complete(Some(index));
+    }
+
     let selector = random_word() % 6;
     if selector == 0 {
         if random_word() & 3 == 0 {
@@ -234,7 +252,7 @@ pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
     // first-due date clear also refreshes the Mac arcology latch.
     let technology_scan_gate = random_word() & 7;
     if technology_scan_gate != 0 {
-        return None;
+        return MacPhase21EventProgress::Complete(None);
     }
 
     for (index, technology) in Technology::ALL.iter().copied().enumerate() {
@@ -249,16 +267,42 @@ pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
 
         // CODE 8 emits selector 4 or 5 before clearing the due date.
         let (selector, parameter) = if index < 7 { (4, index as u8) } else { (5, (index - 7) as u8) };
-        city.queue_mac_newspaper_story(selector, parameter);
-        city.mac_poll_for_extra(&mut random_word);
+        if city.queue_mac_newspaper_story(selector, parameter) {
+            continuation.pending_technology = Some(index);
+            return MacPhase21EventProgress::Suspended {
+                selector,
+                parameter,
+            };
+        }
+        city.mac_poll_for_extra(random_word);
         // Each technology date occupies its own DWORD slot in the decoded
         // MISC model; native CODE 4 writes its WORD value into that slot.
         city.set_mac_state_misc_u32_at(offset, 0);
         city.set_technology_discovery_year(technology, 0);
         city.refresh_mac_arcology_latch();
-        return Some(index);
+        return MacPhase21EventProgress::Complete(Some(index));
     }
-    None
+    MacPhase21EventProgress::Complete(None)
+}
+
+/// Synchronous CODE 8 fixture used by tests and non-modal month replays.
+pub(in crate::app) fn mac_consume_phase21_pre_weather_event_draws(
+    city: &mut City,
+    current_year: u16,
+    mut random_word: impl FnMut() -> u16,
+) -> Option<usize> {
+    let mut continuation = MacPhase21EventContinuation::default();
+    loop {
+        match mac_advance_phase21_pre_weather_event_draws(
+            city,
+            current_year,
+            &mut continuation,
+            &mut random_word,
+        ) {
+            MacPhase21EventProgress::Suspended { .. } => continue,
+            MacPhase21EventProgress::Complete(index) => return index,
+        }
+    }
 }
 
 /// Win95 `SimulationRCIDemandUpdates` radioactivity arm @ `0x468669` (tests).

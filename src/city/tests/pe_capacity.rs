@@ -4932,7 +4932,11 @@ fn mac_annual_service_and_plant_xmic_rows_match_live_quadra_2001_capture() {
     city.kind = CityFileKind::MacCity;
     city.set_mac_state_misc_u32_at(0x102c, 5_640);
     city.set_mac_state_misc_u32_at(0x002c, 4_563);
-    city.set_mac_state_misc_u32_at(0x0088, 277);
+    // Live R10 MISC vectors fffff062[1..=2] are 405 and 374 (saved at
+    // offsets 0x88 and 0x94); the first school candidate is 784 and is then
+    // capped by growth_scalar / 20 to the captured value 282.
+    city.set_mac_state_misc_u32_at(0x0088, 405);
+    city.set_mac_state_misc_u32_at(0x0094, 374);
     city.set_mac_state_misc_u32_at(MAC_POWER_SUMMARY_MISC_OFFSET, 48);
     for (tile, count) in [(0xcf_u8, 16), (0xd2, 9), (0xd3, 9), (0xd6, 9)] {
         city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + usize::from(tile) * 4, count);

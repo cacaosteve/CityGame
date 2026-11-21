@@ -460,7 +460,10 @@ impl ViewerState {
                 .city_info_dialog
                 .is_some_and(CityInfoDialog::holds_mac_simulation)
             || self.mac_loop_scheduler.january_budget_review_pending
-            || self.mac_loop_scheduler.fiscal_notice.is_some()
+            || self
+                .mac_loop_scheduler
+                .fiscal_notice
+                .is_some_and(|notice| notice.holds_dispatch(now))
         {
             return 0;
         }

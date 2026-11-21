@@ -11686,6 +11686,61 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
 }
 
 #[test]
+fn mac_actor_phase_resumes_after_fiscal_notice_releases_dispatch() {
+    for (dismissed, elapsed, now) in [
+        (false, Duration::from_secs(31), 31 * 60),
+        (true, Duration::from_secs(1), 60),
+    ] {
+        let city = City::new_blank("/tmp/mac-fiscal-actor-timeout.sc2", "Fiscal").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.traffic.set_speed(GameSpeed::Llama);
+        // Arrange the CODE 6 prelude to take exactly one QuickDraw sample.
+        let mut history = vec![0_u32; 16 * 52];
+        history[4 * 52] = 41;
+        state.city.set_chunk_u32_values("XGRP", 0, &history);
+        state.mac_loop_scheduler.actor_deadline = 0;
+        state.open_mac_fiscal_crisis_notice();
+        if dismissed {
+            state
+                .mac_loop_scheduler
+                .fiscal_notice
+                .as_mut()
+                .unwrap()
+                .dismissed = true;
+        }
+        assert_eq!(mac_actor_sweep_history_inputs(&state.city), Some((41, 0, 0)));
+        assert_eq!(state.mac_loop_scheduler.current_tick(), 0);
+        assert!(!state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .unwrap()
+            .holds_dispatch(now));
+
+        let mut expected_rng = state.mac_process_rng;
+        expected_rng.random_u16();
+        let waits = state.begin_mac_frame_actor_phase(elapsed);
+
+        assert_eq!(
+            state.mac_process_rng.seed(),
+            expected_rng.seed(),
+            "the overdue actor callback must run before the calendar phase resumes the notice; dismissed={dismissed}"
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.actor_deadline,
+            now + 45,
+            "the actor deadline refreshes from the frame TickCount; dismissed={dismissed}"
+        );
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
+                .days,
+            1
+        );
+    }
+}
+
+#[test]
 fn mac_fiscal_notice_uses_original_unsigned_absolute_deadline() {
     let notice = |start_tick, dismissed, button_down| MacFiscalNotice {
         start_tick,

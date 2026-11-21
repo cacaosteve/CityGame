@@ -9896,6 +9896,29 @@ fn mac_january_budget_review_timeout_waits_while_done_button_is_held() {
 }
 
 #[test]
+fn mac_january_budget_review_resumes_with_modeless_query_open() {
+    let mut state = mac_phase24_fixture("mac-annual-review-query.city", WEATHER_TREND_BLIZZARD, 1);
+    state.game_clock = GameClock::new_with_day(1911, 1, 0);
+    state.city_info_dialog = Some(CityInfoDialog::Query { x: 50, y: 15 });
+    state.mac_loop_scheduler.january_budget_review_pending = true;
+    state.mac_loop_scheduler.january_budget_review_started_at = Some(0);
+
+    let advance = state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+        Duration::ZERO,
+        0,
+        false,
+        || Duration::ZERO,
+    );
+
+    assert_eq!(advance.days, 1);
+    assert!(!state.mac_loop_scheduler.january_budget_review_pending);
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Query { x: 50, y: 15 })
+    );
+}
+
+#[test]
 fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
     for path in ["mac-annual-currents.city", "mac-annual-currents.sc2"] {
         let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);

@@ -4894,6 +4894,38 @@ fn mac_annual_marina_xmic_matches_quadras_2015_to_2017_lfsr_captures() {
 }
 
 #[test]
+fn mac_annual_marina_xmic_matches_live_quadra_2001_capture() {
+    let mut city = City::new_blank("/tmp/sc2000-mac-marina-2001-capture.sc2", "Marina2001")
+        .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x102c, 5_640);
+    city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xf8 * 4, 0);
+    city.microsims.as_mut().unwrap()[9] = super::MicrosimRecord {
+        tile_id: 0xf8,
+        stat1: 15,
+        ..super::MicrosimRecord::default()
+    };
+
+    let mut quickdraw = MacToolboxRng::new(0x1866_0894);
+    let mut app_lfsr = MacAppLfsrRng::new(0xe0ec);
+    city.refresh_mac_monthly_random_xmic_rows_with_external_slots(
+        0,
+        0,
+        0,
+        0,
+        0,
+        false,
+        &mut quickdraw,
+        &mut app_lfsr,
+        |_, _, _| {},
+    );
+
+    assert_eq!(city.microsim_at(9).map(|row| row.stat1), Some(13));
+    assert_eq!(app_lfsr.state(), 0xda2d);
+    assert_eq!(quickdraw.seed(), 0x1866_0894);
+}
+
+#[test]
 fn mac_monthly_transit_copies_tile_and_passenger_words_then_clears_inputs() {
     let mut city =
         City::new_blank("/tmp/sc2000-mac-transit-monthly.sc2", "MacTransit").expect("blank city");
@@ -5144,6 +5176,30 @@ fn mac_monthly_park_uses_saved_park_census_and_prior_attendance() {
     assert_eq!(row.stat2, 45, "small plus large park census");
     assert_eq!(row.stat3, 5, "min(45/9, 7200/120)");
     assert_eq!(row.stat0, 0x5a);
+}
+
+#[test]
+fn mac_annual_park_matches_live_quadra_2001_xmic_row() {
+    let mut city = City::new_blank("/tmp/sc2000-mac-park-2001-capture.sc2", "MacPark2001")
+        .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x102c, 5_640);
+    // The captured row constrains the two park census inputs to total nine;
+    // this worker uses their combined total.
+    city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 13 * 4, 0);
+    city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xd5 * 4, 9);
+    city.microsims.as_mut().unwrap()[6] = super::MicrosimRecord {
+        tile_id: 0xd5,
+        stat1: 0x033f,
+        stat2: 9,
+        stat3: 1,
+        ..super::MicrosimRecord::default()
+    };
+
+    city.refresh_mac_monthly_park_microsims();
+
+    let row = city.microsim_at(6).expect("captured XMIC slot");
+    assert_eq!((row.stat1, row.stat2, row.stat3), (940, 9, 1));
 }
 
 #[test]

@@ -2574,8 +2574,47 @@ fn opening_city_information_dialog_clears_stale_modal_and_drag_state() {
     assert_eq!(state.arcology_dialog, None);
     assert_eq!(state.sign_dialog, None);
     assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Help));
+    assert!(CityInfoDialog::Help.holds_mac_simulation());
     assert_eq!(state.city.label_at(2), Some("Original Sign"));
     assert_drag_states_cleared(&state);
+}
+
+#[test]
+fn mac_budget_help_returns_to_review_without_finishing_it() {
+    let city =
+        City::new_blank("/tmp/sc2000-mac-budget-help.sc2", "Budget help").expect("blank city");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mac_loop_scheduler.january_budget_review_pending = true;
+    state.mac_loop_scheduler.january_budget_review_started_at = Some(1234);
+
+    state.open_city_info_dialog(CityInfoDialog::Budget);
+    state.open_city_info_dialog(CityInfoDialog::Help);
+
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Help));
+    assert!(state.mac_loop_scheduler.january_budget_review_pending);
+    assert_eq!(
+        state.mac_loop_scheduler.january_budget_review_started_at,
+        Some(1234)
+    );
+
+    state.close_city_info_dialog();
+
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+    assert!(state.mac_loop_scheduler.january_budget_review_pending);
+    assert_eq!(
+        state.mac_loop_scheduler.january_budget_review_started_at,
+        Some(1234)
+    );
+
+    state.open_city_info_dialog(CityInfoDialog::Help);
+    state.open_city_info_dialog(CityInfoDialog::Help);
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+    assert!(state.mac_loop_scheduler.january_budget_review_pending);
+    assert_eq!(
+        state.mac_loop_scheduler.january_budget_review_started_at,
+        Some(1234)
+    );
 }
 
 #[test]

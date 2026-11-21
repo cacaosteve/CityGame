@@ -268,6 +268,7 @@ impl CityInfoDialog {
                 | Self::TunnelQuote { .. }
                 | Self::HighwayWaterBridge { .. }
                 | Self::StadiumTeam { .. }
+                | Self::Help
                 | Self::Newspaper(
                     NewspaperEdition::MacDisaster
                         | NewspaperEdition::MacStandard
@@ -324,6 +325,7 @@ impl CityInfoDialog {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CityInfoDialogAction {
     Close,
+    OpenHelp,
     CenterMapOn { x: usize, y: usize },
     ToggleAutoBudget,
     ToggleGraphSeries(usize),

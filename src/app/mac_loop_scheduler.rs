@@ -460,10 +460,7 @@ impl ViewerState {
                 .city_info_dialog
                 .is_some_and(CityInfoDialog::holds_mac_simulation)
             || self.mac_loop_scheduler.january_budget_review_pending
-            || self
-                .mac_loop_scheduler
-                .fiscal_notice
-                .is_some_and(|notice| notice.holds_dispatch(now))
+            || self.mac_loop_scheduler.fiscal_notice.is_some()
         {
             return 0;
         }
@@ -743,6 +740,16 @@ impl ViewerState {
             {
                 self.advance_mac_scenario_action_with_music(&mut now, music_callback);
             }
+        }
+        if resumed_notice {
+            // CODE 14 is suspended inside the fiscal notice. The native
+            // actor timer is reached only after that calendar call returns,
+            // so resume the overdue sweep after its budget continuation.
+            let elapsed_since_frame_start = since_frame_start();
+            self.begin_mac_frame_actor_phase_with_tick_refresh(
+                elapsed_since_frame_start,
+                || Duration::ZERO,
+            );
         }
         advance
     }

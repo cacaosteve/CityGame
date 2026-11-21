@@ -11657,6 +11657,7 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         state.traffic.set_speed(GameSpeed::Llama);
         state.game_clock = GameClock::new(1901, 1);
         state.open_mac_fiscal_crisis_notice();
+        state.mac_loop_scheduler.dispatch_counter = 1;
         let counter = state.mac_loop_scheduler.dispatch_counter;
         let elapsed = if early_key {
             Duration::from_secs(1)
@@ -11697,7 +11698,13 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         );
         assert_eq!(
             state.mac_loop_scheduler.dispatch_counter,
-            counter.wrapping_add(1)
+            0,
+            "the resumed actor helper resets the dispatch counter after phase completion; dismissed={early_key}"
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.actor_smoother,
+            1,
+            "the actor helper must observe the completed phase increment before resetting it; dismissed={early_key}"
         );
         assert_eq!(state.city_info_dialog, None);
         assert_eq!(
@@ -11709,7 +11716,7 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
 }
 
 #[test]
-fn mac_actor_phase_resumes_after_fiscal_notice_releases_dispatch() {
+fn mac_actor_phase_runs_after_fiscal_notice_continuation_returns() {
     for (dismissed, elapsed, now) in [
         (false, Duration::from_secs(31), 31 * 60),
         (true, Duration::from_secs(1), 60),
@@ -11718,6 +11725,7 @@ fn mac_actor_phase_resumes_after_fiscal_notice_releases_dispatch() {
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.traffic.set_speed(GameSpeed::Llama);
+        state.no_disasters_enabled = true;
         // Arrange the CODE 6 prelude to take exactly one QuickDraw sample.
         let mut history = vec![0_u32; 16 * 52];
         history[4 * 52] = 41;
@@ -11740,25 +11748,36 @@ fn mac_actor_phase_resumes_after_fiscal_notice_releases_dispatch() {
             .unwrap()
             .holds_dispatch(now));
 
+        let initial_rng = state.mac_process_rng;
         let mut expected_rng = state.mac_process_rng;
         expected_rng.random_u16();
         let waits = state.begin_mac_frame_actor_phase(elapsed);
 
         assert_eq!(
             state.mac_process_rng.seed(),
-            expected_rng.seed(),
-            "the overdue actor callback must run before the calendar phase resumes the notice; dismissed={dismissed}"
+            initial_rng.seed(),
+            "the actor pass must wait until the suspended calendar continuation returns; dismissed={dismissed}"
         );
         assert_eq!(
             state.mac_loop_scheduler.actor_deadline,
-            now + 45,
-            "the actor deadline refreshes from the frame TickCount; dismissed={dismissed}"
+            0,
+            "the suspended calendar phase returns before refreshing the actor deadline; dismissed={dismissed}"
         );
         assert_eq!(
             state
                 .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
                 .days,
             1
+        );
+        assert_eq!(
+            state.mac_process_rng.seed(),
+            expected_rng.seed(),
+            "the overdue actor callback runs after the fiscal continuation; dismissed={dismissed}"
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.actor_deadline,
+            now + 45,
+            "the actor deadline refreshes after the calendar continuation; dismissed={dismissed}"
         );
     }
 }

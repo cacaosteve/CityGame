@@ -11709,8 +11709,8 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         assert_eq!(state.city_info_dialog, None);
         assert_eq!(
             state.mac_loop_scheduler.deadline,
-            if early_key { 73 } else { 1813 },
-            "resuming the native fiscal-notice dispatch must refresh the calendar deadline"
+            0,
+            "the notice continuation keeps the existing calendar deadline for the next CODE 2 check"
         );
     }
 }
@@ -11725,6 +11725,11 @@ fn mac_actor_phase_runs_after_fiscal_notice_continuation_returns() {
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.traffic.set_speed(GameSpeed::Llama);
+        state.game_clock = GameClock::new(1901, 1);
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.mac_loop_scheduler.deadline = 0;
         state.no_disasters_enabled = true;
         // Arrange the CODE 6 prelude to take exactly one QuickDraw sample.
         let mut history = vec![0_u32; 16 * 52];
@@ -11763,22 +11768,16 @@ fn mac_actor_phase_runs_after_fiscal_notice_continuation_returns() {
             0,
             "the suspended calendar phase returns before refreshing the actor deadline; dismissed={dismissed}"
         );
+        let start = state.game_clock;
+        let advance = state.finish_mac_frame_calendar_phase(Duration::ZERO, waits);
+        assert_eq!(advance.days, 1);
         assert_eq!(
-            state
-                .finish_mac_frame_calendar_phase(Duration::ZERO, waits)
-                .days,
-            1
+            state.game_clock,
+            start.wrapping_add_days(1),
+            "after the notice's suspended dispatch returns, a separately due calendar callback must still run; dismissed={dismissed}"
         );
-        assert_eq!(
-            state.mac_process_rng.seed(),
-            expected_rng.seed(),
-            "the overdue actor callback runs after the fiscal continuation; dismissed={dismissed}"
-        );
-        assert_eq!(
-            state.mac_loop_scheduler.actor_deadline,
-            now + 45,
-            "the actor deadline refreshes after the calendar continuation; dismissed={dismissed}"
-        );
+        assert_eq!(state.mac_process_rng.seed(), expected_rng.seed());
+        assert_eq!(state.mac_loop_scheduler.actor_deadline, now + 45);
     }
 }
 

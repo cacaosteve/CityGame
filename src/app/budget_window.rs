@@ -1473,6 +1473,42 @@ mod tests {
     }
 
     #[test]
+    fn mac_january_2020_budget_summary_combines_ytd_and_estimate_before_twelfths() {
+        let row_ytd = [
+            219, 42, 222, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0,
+        ];
+        let row_estimate = [
+            209, 42, 238, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0,
+        ];
+        let ytd_pre_month_division = [
+            2632, 504, 2665, 0, 0, -1200, -1200, 0, -300, 0, -283, 0, 0, 0, 0, 0,
+        ];
+        let estimate_pre_month_division = [
+            2508, 504, 2856, 0, 0, -1200, -1200, 0, -300, 0, -283, 0, 0, 0, 0, 0,
+        ];
+        let entries = std::array::from_fn(|index| Entry {
+            label: LABELS[index],
+            setting: Some(0),
+            year_to_date: Some(row_ytd[index]),
+            mac_ytd_pre_month_division: Some(ytd_pre_month_division[index]),
+            mac_estimate_pre_month_division: Some(estimate_pre_month_division[index]),
+            annual: row_estimate[index],
+        });
+
+        assert_eq!(row_ytd.into_iter().sum::<i64>(), 235);
+        assert_eq!(row_estimate.into_iter().sum::<i64>(), 241);
+        assert_eq!(
+            mac_cashflow_summary(&entries, -3482),
+            MacCashflowSummary {
+                year_to_date: 234,
+                estimated: 240,
+                end_of_year_funds: -3248,
+            },
+            "R13 January 2020 combines each native accumulator before dividing by 12"
+        );
+    }
+
+    #[test]
     fn mac_budget_estimate_projection_uses_saved_ytd_and_remaining_months() {
         let mut city = City::new_blank("/tmp/mac-budget-projection.SC2", "Budget projection")
             .expect("blank city");

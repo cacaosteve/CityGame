@@ -4926,6 +4926,103 @@ fn mac_annual_marina_xmic_matches_live_quadra_2001_capture() {
 }
 
 #[test]
+fn mac_annual_service_and_plant_xmic_rows_match_live_quadra_2001_capture() {
+    let mut city = City::new_blank("/tmp/sc2000-mac-annual-xmic-2001-capture.sc2", "Annual2001")
+        .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_mac_state_misc_u32_at(0x102c, 5_640);
+    city.set_mac_state_misc_u32_at(0x002c, 4_563);
+    city.set_mac_state_misc_u32_at(0x0088, 277);
+    city.set_mac_state_misc_u32_at(MAC_POWER_SUMMARY_MISC_OFFSET, 48);
+    for (tile, count) in [(0xcf_u8, 16), (0xd2, 9), (0xd3, 9), (0xd6, 9)] {
+        city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + usize::from(tile) * 4, count);
+    }
+    city.microsims.as_mut().unwrap()[10] = super::MicrosimRecord {
+        tile_id: 0xd2,
+        stat0: 95,
+        stat1: 55,
+        stat2: 408,
+        stat3: 85,
+    };
+    city.microsims.as_mut().unwrap()[11] = super::MicrosimRecord {
+        tile_id: 0xd3,
+        stat0: 100,
+        stat1: 50,
+        stat2: 4,
+        stat3: 5,
+    };
+    city.microsims.as_mut().unwrap()[12] = super::MicrosimRecord {
+        tile_id: 0xd6,
+        stat0: 12,
+        stat1: 249,
+        stat2: 49,
+        stat3: 25,
+    };
+    city.microsims.as_mut().unwrap()[13] = super::MicrosimRecord {
+        tile_id: 0xcf,
+        stat0: 15,
+        stat1: 200,
+        stat2: 50,
+        stat3: 0,
+    };
+
+    let mut quickdraw = MacToolboxRng::new(0x1866_0894);
+    let mut app_lfsr = MacAppLfsrRng::new(0xe0ec);
+    city.refresh_mac_monthly_random_xmic_rows_with_external_slots(
+        95,
+        100,
+        100,
+        100,
+        100,
+        false,
+        &mut quickdraw,
+        &mut app_lfsr,
+        |_, _, _| {},
+    );
+
+    assert_eq!(
+        [
+            city.microsim_at(10).unwrap(),
+            city.microsim_at(11).unwrap(),
+            city.microsim_at(12).unwrap(),
+            city.microsim_at(13).unwrap(),
+        ],
+        [
+            super::MicrosimRecord {
+                tile_id: 0xd2,
+                stat0: 95,
+                stat1: 62,
+                stat2: 507,
+                stat3: 116,
+            },
+            super::MicrosimRecord {
+                tile_id: 0xd3,
+                stat0: 100,
+                stat1: 50,
+                stat2: 4,
+                stat3: 19,
+            },
+            super::MicrosimRecord {
+                tile_id: 0xd6,
+                stat0: 12,
+                stat1: 282,
+                stat2: 56,
+                stat3: 25,
+            },
+            super::MicrosimRecord {
+                tile_id: 0xcf,
+                stat0: 16,
+                stat1: 200,
+                stat2: 48,
+                stat3: 0,
+            },
+        ]
+    );
+    assert_eq!(quickdraw.seed(), 0x5545_d5c0);
+    assert_eq!(app_lfsr.state(), 0xe0ec);
+}
+
+#[test]
 fn mac_monthly_transit_copies_tile_and_passenger_words_then_clears_inputs() {
     let mut city =
         City::new_blank("/tmp/sc2000-mac-transit-monthly.sc2", "MacTransit").expect("blank city");

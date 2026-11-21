@@ -4931,7 +4931,9 @@ fn mac_annual_service_and_plant_xmic_rows_match_live_quadra_2001_capture() {
         .expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_mac_state_misc_u32_at(0x102c, 5_640);
-    city.set_mac_state_misc_u32_at(0x002c, 4_563);
+    // The live Jan 2001 CODE 3 boundary has `ffffeffe` = 4,571; with the
+    // saved police census of 9, the annual row stores 4,571 / 9 = 507.
+    city.set_mac_state_misc_u32_at(0x002c, 4_571);
     // Live R10 MISC vectors fffff062[1..=2] are 405 and 374 (saved at
     // offsets 0x88 and 0x94); the first school candidate is 784 and is then
     // capped by growth_scalar / 20 to the captured value 282.

@@ -1916,8 +1916,15 @@ mod tests {
         let table = native_u32(at_a5(0xfd66)) as usize;
         assert!(table + 16 * 0x70 <= ram.len());
 
-        let mut city = City::new_blank("/tmp/citygame-r10-budget-edit.city", "AutoDebt").unwrap();
-        city.kind = CityFileKind::MacCity;
+        let source_city = root
+            .parent()
+            .unwrap()
+            .join("mac68k-story-window-r13-20261121")
+            .join("AutoDebt.city");
+        let mut city = City::load(source_city).unwrap();
+        assert_eq!(city.kind, CityFileKind::MacCity);
+        // The source file lacks CNAM, so City::load falls back to the filename.
+        city.name = "AutoDebt".to_owned();
         city.set_saved_date(crate::city::CityDate {
             year: 1996,
             month: 1,
@@ -1968,6 +1975,31 @@ mod tests {
         let after = entries_for_city_for_month(&state.city, EngineFidelity::Mac68k, 1, true);
         assert_eq!(
             mac_cashflow_summary(&after, i64::from(state.city.city_funds())),
+            MacCashflowSummary {
+                year_to_date: 346,
+                estimated: 328,
+                end_of_year_funds: -9_203,
+            }
+        );
+
+        let save_path = std::env::temp_dir().join(format!(
+            "citygame-r10-budget-edit-{}.city",
+            std::process::id()
+        ));
+        state.city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(&save_path).unwrap();
+        assert_eq!(reloaded.kind, CityFileKind::MacCity);
+        assert_eq!(reloaded.name, "AutoDebt");
+        assert_eq!(reloaded.city_funds(), -9_549);
+        assert_eq!(
+            reloaded.budget_misc_u32_at(0x077c + 5 * BUDGET_SERVICE_MISC_STRIDE * 4 + 4),
+            Some(95)
+        );
+        let reloaded_entries =
+            entries_for_city_for_month(&reloaded, EngineFidelity::Mac68k, 1, true);
+        assert_eq!(
+            mac_cashflow_summary(&reloaded_entries, i64::from(reloaded.city_funds())),
             MacCashflowSummary {
                 year_to_date: 346,
                 estimated: 328,

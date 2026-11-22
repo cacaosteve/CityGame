@@ -2001,6 +2001,94 @@ fn pe_save_current_city_appends_sc2_to_scenario_without_overwriting_source() {
 }
 
 #[test]
+#[ignore = "requires retained native Win95 scenario saves and Flint scenario asset"]
+fn win95_captured_flint_scenario_saves_match_native_chunk_order() {
+    let capture = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_SCENARIO_SAVE_CAPTURE")
+            .expect("CITYGAME_WIN95_SCENARIO_SAVE_CAPTURE must point to the private capture"),
+    );
+    let source = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_WIN95_SCENARIO_SAVE_SOURCE")
+            .expect("CITYGAME_WIN95_SCENARIO_SAVE_SOURCE must point to the original Flint SCN"),
+    );
+    let original = std::fs::read(&source).expect("read original Flint scenario");
+    for (scenario_open, native_filename) in [(false, "ordinary-save.sc2"), (true, "native-save.sc2")] {
+        let native_save = std::fs::read(capture.join("evidence").join(native_filename))
+            .unwrap_or_else(|_| panic!("missing native {native_filename} capture"));
+        let native_tags = crate::city::chunk_tags_in_file(&native_save).unwrap();
+        assert!(
+            !native_tags
+                .iter()
+                .any(|tag| matches!(tag.as_str(), "SCEN" | "TEXT" | "PICT"))
+        );
+
+        let directory = std::env::temp_dir().join(format!(
+            "citygame-native-flint-save-{}-{scenario_open}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source_copy = directory.join("flint.SCN");
+        let saved = directory.join("flint.SCN.sc2");
+        std::fs::write(&source_copy, &original).unwrap();
+
+        let mut state =
+            test_state(City::new_blank(directory.join("holder.sc2"), "Holder").unwrap());
+        state.engine_fidelity = EngineFidelity::Win95;
+        if scenario_open {
+            state
+                .load_win_scenario(&source_copy, (1280, 800), 1.0)
+                .expect("open Flint through the scenario route");
+        } else {
+            state
+                .load_city(&source_copy, (1280, 800), 1.0)
+                .expect("open Flint through the ordinary city route");
+        }
+        assert_eq!(state.city.kind, CityFileKind::WinScenario);
+        assert_eq!(state.city.pe_scenario_active(), scenario_open);
+        state
+            .save_current_city((1280, 800), 1.0)
+            .expect("save Flint city");
+        assert_eq!(state.city.path, saved);
+        assert_eq!(std::fs::read(&source_copy).unwrap(), original);
+
+        let citygame_save = std::fs::read(&saved).expect("read CityGame Flint save");
+        let citygame_tags = crate::city::chunk_tags_in_file(&citygame_save).unwrap();
+        assert!(
+            !citygame_tags
+                .iter()
+                .any(|tag| matches!(tag.as_str(), "SCEN" | "TEXT" | "PICT"))
+        );
+        let native_standard: Vec<_> = native_tags
+            .iter()
+            .filter(|tag| crate::city::SAVE_CHUNK_ORDER.contains(&tag.as_str()))
+            .cloned()
+            .collect();
+        let citygame_standard: Vec<_> = citygame_tags
+            .iter()
+            .filter(|tag| crate::city::SAVE_CHUNK_ORDER.contains(&tag.as_str()))
+            .cloned()
+            .collect();
+        assert_eq!(native_standard.first().map(String::as_str), Some("CNAM"));
+        assert_eq!(
+            citygame_standard, native_standard,
+            "standard SCDH chunk order, scenario_open={scenario_open}"
+        );
+
+        state
+            .load_city(&saved, (1280, 800), 1.0)
+            .expect("reload CityGame Flint save");
+        assert_eq!(state.city.kind, CityFileKind::WinSc2);
+        assert!(!state.city.pe_scenario_active());
+        assert_eq!(
+            state.city.scenario_time_limit_months(),
+            None,
+            "the saved city must not resume its SCN payload"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn pe_scenario_open_route_controls_activation_and_opening_disaster() {
     let path = std::env::temp_dir().join(format!("citygame-scenario-route-{}.scn", std::process::id()));
     let mut scenario = City::new_blank(&path, "Scenario route").unwrap();

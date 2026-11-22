@@ -1377,7 +1377,7 @@ fn valid_chunk_header(bytes: &[u8], offset: usize) -> bool {
     offset + 8 + size <= bytes.len()
 }
 
-/// Win95 save order from `FUN_004323ac`, corroborated against bundled stock cities.
+/// Standard Win95 SC2 save order from `FUN_004323ac`, corroborated against bundled stock cities.
 pub const SAVE_CHUNK_ORDER: &[&str] = &[
     "MISC", "ALTM", "XTER", "XBLD", "XZON", "XUND", "XTXT", "XLAB", "XMIC", "XTHG", "XBIT", "XTRF",
     "XPLT", "XVAL", "XCRM", "XPLC", "XFIR", "XPOP", "XROG", "XGRP", "CNAM",
@@ -1395,11 +1395,22 @@ pub fn encode_scdh_file(chunks: &[CityChunk]) -> Result<Vec<u8>> {
 
 pub(super) fn encode_scdh_file_for_kind(
     chunks: &[CityChunk],
-    _kind: CityFileKind,
+    kind: CityFileKind,
 ) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     let mut written = HashSet::new();
+    // Captured Win95 saves from a `.SCN` put the city name first on both
+    // ordinary and scenario opens. Keep the standard order for other kinds.
+    if kind == CityFileKind::WinScenario
+        && let Some(chunk) = chunks.iter().find(|chunk| chunk.name == "CNAM")
+    {
+        write_chunk(&mut body, chunk);
+        written.insert(chunk.name.as_str());
+    }
     for name in SAVE_CHUNK_ORDER {
+        if written.contains(name) {
+            continue;
+        }
         if let Some(chunk) = chunks.iter().find(|chunk| chunk.name == *name) {
             write_chunk(&mut body, chunk);
             written.insert(chunk.name.as_str());

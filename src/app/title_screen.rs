@@ -1438,6 +1438,11 @@ mod tests {
             let saved_city = City::load(&path).unwrap();
             let mut state = test_state(saved_city);
             state.engine_fidelity = EngineFidelity::Mac68k;
+            if action == crate::app::mac_loop_scheduler::scenario_action::HURRICANE_ACTION {
+                state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(
+                    crate::mac_random::MacAppLfsrRng::startup_seed(0x5a37),
+                );
+            }
             if crate::app::mac_loop_scheduler::scenario_action::mac_scenario_action_supported(
                 action,
             ) {
@@ -1472,6 +1477,7 @@ mod tests {
                     state.load_city(&save_path, (1280, 800), 1.0).unwrap();
                     assert_eq!(state.city.misc_u32_at(0x04), Some(2));
                     let clock = state.game_clock;
+                    let rng_after_open = state.mac_process_rng.seed();
                     state.traffic.set_speed(crate::traffic::GameSpeed::Cheetah);
                     let advance =
                         state.advance_mac_frame_simulation(std::time::Duration::from_secs(1));
@@ -1481,7 +1487,7 @@ mod tests {
                         state.city.traffic_overlays().unwrap()[1].to_bytes(),
                         [5, 7, 0, 80, 52, 14, 0, 0, 0, 0, 0, 0],
                     );
-                    assert_eq!(state.mac_process_rng.seed(), 282_475_249);
+                    assert_eq!(state.mac_process_rng.seed(), rng_after_open);
                     let mut monster = state.city.traffic_overlays().unwrap()[1];
                     monster.state = 3;
                     state.city.set_mac_object_slot_record(1, monster);
@@ -1490,6 +1496,13 @@ mod tests {
                     assert_eq!(state.city.traffic_overlays().unwrap()[1].kind, 0);
                     assert_eq!(state.city.text_overlay_at(80, 52), Some(0));
                     assert_eq!(state.city.misc_u32_at(0x04), Some(1));
+                    assert_eq!(
+                        state.city_info_dialog,
+                        Some(crate::app::CityInfoDialog::Newspaper(
+                            crate::app::NewspaperEdition::MacDisaster,
+                        ))
+                    );
+                    state.close_city_info_dialog();
                     assert_eq!(state.advance_mac_frame_simulation(frame).days, 1);
                 } else if action
                     == crate::app::mac_loop_scheduler::scenario_action::HURRICANE_ACTION
@@ -1516,6 +1529,13 @@ mod tests {
                         assert_eq!(state.advance_mac_frame_simulation(frame).days, 0);
                     }
                     assert_eq!(state.city.misc_u32_at(0x04), Some(1));
+                    assert_eq!(
+                        state.city_info_dialog,
+                        Some(crate::app::CityInfoDialog::Newspaper(
+                            crate::app::NewspaperEdition::MacDisaster,
+                        ))
+                    );
+                    state.close_city_info_dialog();
                     assert_eq!(state.advance_mac_frame_simulation(frame).days, 1);
                 }
                 std::fs::remove_file(&save_path).unwrap();

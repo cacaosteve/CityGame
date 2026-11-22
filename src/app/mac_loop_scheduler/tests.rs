@@ -8334,6 +8334,32 @@ fn mac_earthquake_r14_third_autodebt_scan_matches_live_at_menu_derived_point() {
     city.prepare_mac_fidelity_from_saved_city();
     city.set_mac_pending_action(6);
 
+    // The native menu command performs the two coordinate draws before the
+    // post-event CODE 14 phase partition. Exercise CityGame's actual menu
+    // command path here instead of validating only a manually reconstructed
+    // Point; the later worker replay remains a separate captured boundary.
+    let mut menu_state = test_state(city.clone());
+    menu_state.engine_fidelity = EngineFidelity::Mac68k;
+    menu_state.mode = AppMode::CityView;
+    // Normal city-open publishes CODE 2 run-state 1 before menu actions.
+    menu_state.city.set_mac_state_misc_u32_at(0x0004, 1);
+    menu_state.traffic.set_speed(GameSpeed::Paused);
+    menu_state.mac_process_rng = MacToolboxRng::new(0x7a21_a40e);
+    let command = crate::app::command_bus::app_command_for_menu_command(
+        crate::menu_model::CMD_START_EARTHQUAKE,
+    )
+    .expect("native Earthquake menu command is routed");
+    let effect = menu_state
+        .apply_state_app_command(&command)
+        .expect("menu command is handled");
+    assert_eq!(effect.disaster_log, Some((DisasterKind::Earthquake, true)));
+    assert_eq!(
+        menu_state.city.mac_pending_action(),
+        u32::from(scenario_action::EARTHQUAKE_ACTION)
+    );
+    assert_eq!(menu_state.mac_loop_scheduler.pending_action_point, Some((27, 24)));
+    assert_eq!(menu_state.mac_process_rng.seed(), 0x2c9b_3a2b);
+
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.traffic.set_speed(GameSpeed::Paused);

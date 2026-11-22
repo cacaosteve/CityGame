@@ -8258,6 +8258,63 @@ fn mac_earthquake_november_2026_worker_and_action_match_live_snapshots() {
 }
 
 #[test]
+#[ignore = "requires CGMS snapshots reconstructed from the live R14 AutoDebt Earthquake"]
+fn mac_earthquake_r14_autodebt_worker_matches_live_snapshot_and_rng() {
+    let source_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_SOURCE_CITY")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_R14_SOURCE_CITY to the original AutoDebt city");
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_ENTRY_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_R14_ENTRY_CGMS to the live entry snapshot");
+    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_WORKER_CGMS")
+        .expect("set CITYGAME_MAC_EARTHQUAKE_R14_WORKER_CGMS to the native worker-return snapshot");
+    let source = City::load(source_path).expect("load original AutoDebt city");
+    assert_eq!(source.misc_u32_at(0x10b0), Some(0));
+    assert_eq!(source.misc_u32_at(0x10b4), Some(0));
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read R14 Earthquake entry snapshot"),
+    )
+    .unwrap();
+    let native_worker = std::fs::read(worker_path).expect("read R14 worker-return snapshot");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_pending_action(6);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_process_rng = MacToolboxRng::new(0x4b82_892b);
+    state.mac_game_rng = MacGameLcgRng::new(0x0729_0abb);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x8c81);
+    let mut now = 99_518;
+
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        (101, 80),
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+
+    assert_eq!(state.mac_process_rng.seed(), 0x1408_b579);
+    assert_eq!(state.mac_game_rng.state(), 0x0729_0abb);
+    assert_eq!(state.mac_app_lfsr.state(), 0x8c81);
+    assert_eq!(state.city.mac_state_misc_u32_at(0x10b0), Some(0));
+    assert_eq!(state.city.mac_state_misc_u32_at(0x10b4), Some(0));
+    let actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let map_end = 20 + 196_608;
+    assert_eq!(
+        &actual[..map_end],
+        &native_worker[..map_end],
+        "CityGame differs from the R14 AutoDebt Earthquake worker-return map"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_worker[census_start..census_end],
+        "Mac XBLD census after the R14 AutoDebt Earthquake worker"
+    );
+}
+
+#[test]
 fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts() {
     for path in ["mac-mixed-earthquake.city", "mac-mixed-earthquake.sc2"] {
         let city = blank_city_layout_fixture(path, "Mixed earthquake");

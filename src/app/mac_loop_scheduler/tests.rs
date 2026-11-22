@@ -8316,7 +8316,7 @@ fn mac_earthquake_r14_autodebt_worker_matches_live_snapshot_and_rng() {
 
 #[test]
 #[ignore = "requires the third live R14 AutoDebt Earthquake CGMS pair"]
-fn mac_earthquake_r14_third_autodebt_scan_matches_live_with_inferred_point() {
+fn mac_earthquake_r14_third_autodebt_scan_matches_live_at_menu_derived_point() {
     let source_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_SOURCE_CITY")
         .expect("set CITYGAME_MAC_EARTHQUAKE_R14_SOURCE_CITY to the original AutoDebt city");
     let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_THIRD_ENTRY_CGMS")
@@ -8342,13 +8342,22 @@ fn mac_earthquake_r14_third_autodebt_scan_matches_live_with_inferred_point() {
     state.mac_app_lfsr = MacAppLfsrRng::new(0xf948);
     let mut now = 428_814;
 
-    // Candidate center from reversing the final two QuickDraw states before
-    // worker entry. The same event has 76 total draws after the last logged
-    // CODE 2 seed, so these have not yet been joined to the menu callsites.
-    // The worker-boundary result is evidence for this candidate point only.
+    // The native trace holds QuickDraw at 0x7a21a40e through mouse-down, then
+    // advances exactly twice on Earthquake menu release to 0x2c9b3a2b. Those
+    // are the menu handler's two `% 126 + 1` point draws, yielding (27,24).
+    // This joins the menu callsite by its two-draw chronology and static
+    // ownership; the low-memory Point itself was not readable in the RAM
+    // snapshot. A later monthly CODE 14 dispatch advances 76 more draws
+    // before the worker entry seed.
+    let mut menu_rng = MacToolboxRng::new(0x7a21_a40e);
+    let x = usize::from(menu_rng.random_u16()) % 126 + 1;
+    let y = usize::from(menu_rng.random_u16()) % 126 + 1;
+    assert_eq!((x, y), (27, 24));
+    assert_eq!(menu_rng.seed(), 0x2c9b_3a2b);
+
     scenario_action::seed_earthquake(
         &mut state.city,
-        (106, 71),
+        (x as i16, y as i16),
         &mut state.mac_process_rng,
         &mut now,
         &mut state.mac_app_lfsr,

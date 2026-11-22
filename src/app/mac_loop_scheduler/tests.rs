@@ -10094,6 +10094,103 @@ fn mac_january_budget_review_resumes_while_query_dialog_is_open() {
 }
 
 #[test]
+#[ignore = "requires private ZooAge January 3577 Quadra RAM and CGMS captures"]
+fn mac_january_3577_zoo_xmic_matches_native_ordered_annual_dispatch() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_ZOO_ANNUAL_CAPTURE_DIR").unwrap(),
+    );
+    let input_cgms = std::fs::read(root.join("rust-341.cgms")).unwrap();
+    let mut city = crate::city::city_from_cgms_v4_for_test(&input_cgms).unwrap();
+    assert_eq!(city.kind, crate::city::CityFileKind::MacCity);
+    assert_eq!(
+        city.saved_date(),
+        Some(crate::city::CityDate {
+            year: 3576,
+            month: 12,
+        })
+    );
+
+    let entry_xmic = std::fs::read(root.join("rust-341-xmic.bin")).unwrap();
+    assert_eq!(entry_xmic.len(), 150 * 8);
+    for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+        city.set_microsim_tile_id(slot, row[0]);
+        city.set_microsim_stat0(slot, row[1]);
+        city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+        city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+        city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+    }
+
+    let entry_ram = std::fs::read(root.join("phase-299.ram")).unwrap();
+    let native_u32 = |ram: &[u8], address: usize| {
+        u32::from_be_bytes(ram[address..address + 4].try_into().unwrap())
+    };
+    let native_u16 = |ram: &[u8], address: usize| {
+        u16::from_be_bytes(ram[address..address + 2].try_into().unwrap())
+    };
+    assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+    let entry_a5 = native_u32(&entry_ram, 0x904) as usize;
+    let entry_qd_port = native_u32(&entry_ram, entry_a5) as usize;
+    let entry_xmic_ptr = native_u32(&entry_ram, entry_a5 + 0xfd48 - 0x10000) as usize;
+    assert_eq!(
+        &entry_ram[entry_xmic_ptr..entry_xmic_ptr + 150 * 8],
+        entry_xmic.as_slice(),
+        "the replay CGMS and XMIC are the captured Dec 3576 entry state"
+    );
+    let native_entry_funds = native_u32(&entry_ram, entry_a5 + 0xefac - 0x10000) as i32;
+    city.set_city_funds(native_entry_funds);
+    assert_eq!(city.city_funds(), native_entry_funds);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mac_process_rng = MacToolboxRng::new(native_u32(&entry_ram, entry_qd_port - 126));
+    state.mac_app_lfsr = MacAppLfsrRng::new(native_u16(&entry_ram, entry_a5 - 2));
+    let mut pre_worker_game_rng = MacGameLcgRng::new(native_u32(&entry_ram, entry_a5 - 8));
+    // The native entry/exit snapshots show three app-LCG advances before the
+    // four zoo-field draws in CODE 3. Their intervening scheduler caller is
+    // outside this worker boundary; retain the measured stream position here.
+    for _ in 0..3 {
+        pre_worker_game_rng.bounded(2);
+    }
+    let native_worker_game_seed = pre_worker_game_rng.state();
+    state.mac_game_rng = pre_worker_game_rng;
+
+    state.refresh_mac_xmic_with_arcologies([0; 5], [0; 3]);
+
+    let exit_ram = std::fs::read(root.join("phase-300.ram")).unwrap();
+    assert_eq!(exit_ram.len(), 16 * 1024 * 1024);
+    let exit_a5 = native_u32(&exit_ram, 0x904) as usize;
+    let exit_xmic_ptr = native_u32(&exit_ram, exit_a5 + 0xfd48 - 0x10000) as usize;
+    let native_exit_xmic = &exit_ram[exit_xmic_ptr..exit_xmic_ptr + 150 * 8];
+    let native_zoo_row = &native_exit_xmic[16 * 8..17 * 8];
+    let zoo = state.city.microsim_at(16).expect("captured zoo XMIC slot");
+    assert_eq!(
+        [
+            zoo.tile_id,
+            zoo.stat0,
+            (zoo.stat1 >> 8) as u8,
+            zoo.stat1 as u8,
+            (zoo.stat2 >> 8) as u8,
+            zoo.stat2 as u8,
+            (zoo.stat3 >> 8) as u8,
+            zoo.stat3 as u8,
+        ],
+        native_zoo_row,
+        "the ordered annual dispatcher matches the native zoo row"
+    );
+    assert_eq!(
+        state.mac_game_rng.state(),
+        native_u32(&exit_ram, exit_a5 - 8),
+        "the four zoo-field draws advance the captured pre-worker LCG state"
+    );
+    assert_eq!(native_worker_game_seed, 0x0113_bbfc);
+    assert_eq!(
+        state.city.microsim_at(16).map(|row| (row.stat0, row.stat1, row.stat2, row.stat3)),
+        Some((0x22, 0x51, 0x11, 0x0a)),
+        "captured zoo XMIC row after its four game-LCG draws"
+    );
+}
+
+#[test]
 fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
     for path in ["mac-annual-currents.city", "mac-annual-currents.sc2"] {
         let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);

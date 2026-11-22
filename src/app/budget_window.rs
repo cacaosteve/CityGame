@@ -1901,4 +1901,77 @@ mod tests {
         assert_eq!(cashflow.estimated, 168);
         assert_eq!(cashflow.end_of_year_funds, -4_850);
     }
+
+    #[test]
+    #[ignore = "requires private R10 January 1996 before/after Police edit RAM captures"]
+    fn mac_r10_january_1996_police_decrease_matches_native_budget_edit() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R10_BUDGET_CAPTURE_DIR").unwrap(),
+        );
+        let ram = std::fs::read(root.join("jan1996-budget-panel-ram.bin")).unwrap();
+        let native_u32 =
+            |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
+        let a5 = native_u32(0x904) as usize;
+        let at_a5 = |offset: usize| a5 + offset - 0x10000;
+        let table = native_u32(at_a5(0xfd66)) as usize;
+        assert!(table + 16 * 0x70 <= ram.len());
+
+        let mut city = City::new_blank("/tmp/citygame-r10-budget-edit.city", "AutoDebt").unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.set_saved_date(crate::city::CityDate {
+            year: 1996,
+            month: 1,
+        });
+        city.set_city_funds(native_u32(at_a5(0xefac)) as i32);
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+
+        assert_eq!(city.city_funds(), -9_549);
+        let before = entries_for_city_for_month(&city, EngineFidelity::Mac68k, 1, true);
+        assert_eq!(
+            mac_cashflow_summary(&before, i64::from(city.city_funds())),
+            MacCashflowSummary {
+                year_to_date: 346,
+                estimated: 323,
+                end_of_year_funds: -9_203,
+            }
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        assert!(state.adjust_budget_service_funding_from_dialog(0, -5));
+        assert_eq!(
+            state
+                .city
+                .budget_misc_u32_at(0x077c + 5 * BUDGET_SERVICE_MISC_STRIDE * 4 + 4),
+            Some(95)
+        );
+
+        let after = entries_for_city_for_month(&state.city, EngineFidelity::Mac68k, 1, true);
+        assert_eq!(
+            mac_cashflow_summary(&after, i64::from(state.city.city_funds())),
+            MacCashflowSummary {
+                year_to_date: 346,
+                estimated: 328,
+                end_of_year_funds: -9_203,
+            }
+        );
+
+        let after_ram = std::fs::read(root.join("jan1996-budget-panel-police-95-ram.bin")).unwrap();
+        let after_native_u32 = |address: usize| {
+            u32::from_be_bytes(after_ram[address..address + 4].try_into().unwrap())
+        };
+        let after_a5 = after_native_u32(0x904) as usize;
+        let after_table = after_native_u32(after_a5 + 0xfd66 - 0x10000) as usize;
+        let police = after_table + 5 * 0x70;
+        assert_eq!(after_native_u32(police + 96), 1);
+        assert_eq!(after_native_u32(police + 100), 95);
+        assert_eq!(after_native_u32(police + 104), 1200);
+    }
 }

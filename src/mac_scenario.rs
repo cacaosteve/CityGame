@@ -54,6 +54,7 @@ impl MacScenarioStart {
 pub(crate) struct MacScenario {
     pub start: MacScenarioStart,
     pub text: Option<String>,
+    pub picture: Option<Vec<u8>>,
 }
 
 impl MacScenario {
@@ -76,7 +77,12 @@ impl MacScenario {
                 .trim_matches('\0')
                 .to_string()
         });
-        Some(Self { start, text })
+        let picture = resource_128(fork, b"PICT").map(<[u8]>::to_vec);
+        Some(Self {
+            start,
+            text,
+            picture,
+        })
     }
 }
 

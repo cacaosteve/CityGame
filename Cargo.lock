@@ -1369,9 +1369,9 @@ dependencies = [
 
 [[package]]
 name = "oxideav-pict"
-version = "0.0.4"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21e7ca05d63615f9e2caa76e1cf5ef1990e532be5ddb6631fd5ec98a7a4726c9"
+checksum = "a8c013cb5f2648286ee6fabb513170aec39870d7ce76a5877327666b1834e0bb"
 
 [[package]]
 name = "parking_lot"

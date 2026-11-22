@@ -3,7 +3,7 @@
 use crate::audio_import;
 use anyhow::{Context, Result, ensure};
 use image::{GenericImage, Rgba, RgbaImage};
-use oxideav_pict::parse_pict;
+use oxideav_pict::decode_rgba8;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -270,7 +270,7 @@ fn convert_picts(source: &Path, output: &Path) {
             let mut wrapped = vec![0u8; 512];
             wrapped.extend_from_slice(&data);
             let decoded =
-                parse_pict(&wrapped).with_context(|| format!("decoding {}", path.display()))?;
+                decode_rgba8(&wrapped).with_context(|| format!("decoding {}", path.display()))?;
             let image = RgbaImage::from_raw(decoded.width, decoded.height, decoded.data)
                 .context("PICT decoder returned an invalid RGBA buffer")?;
             fs::create_dir_all(&dest)?;

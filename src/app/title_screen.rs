@@ -867,7 +867,7 @@ fn scenario_palette(palette: &AnimatedPalette) -> [[f32; 4]; 256] {
 
 fn scenario_picture_preview(data: &[u8], palette: &[[f32; 4]; 256]) -> Option<Vec<[f32; 4]>> {
     if data.get(0..4)? != b"FORM" {
-        return None;
+        return scenario_pict_preview(data);
     }
     let form_size = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?) as usize;
     let form_end = 8usize.checked_add(form_size)?;
@@ -910,6 +910,36 @@ fn scenario_picture_preview(data: &[u8], palette: &[[f32; 4]; 256]) -> Option<Ve
         offset = end;
     }
     None
+}
+
+fn scenario_pict_preview(data: &[u8]) -> Option<Vec<[f32; 4]>> {
+    let decoded = std::panic::catch_unwind(|| oxideav_pict::decode_rgba8(data))
+        .ok()?
+        .ok()?;
+    let width = decoded.width as usize;
+    let height = decoded.height as usize;
+    if width == 0
+        || height == 0
+        || decoded.data.len() != width.checked_mul(height)?.checked_mul(4)?
+    {
+        return None;
+    }
+
+    let mut colors = Vec::with_capacity(PREVIEW_SIZE * PREVIEW_SIZE);
+    for y in 0..PREVIEW_SIZE {
+        let sy = y * height / PREVIEW_SIZE;
+        for x in 0..PREVIEW_SIZE {
+            let sx = x * width / PREVIEW_SIZE;
+            let offset = (sy * width + sx) * 4;
+            colors.push([
+                decoded.data[offset] as f32 / 255.0,
+                decoded.data[offset + 1] as f32 / 255.0,
+                decoded.data[offset + 2] as f32 / 255.0,
+                decoded.data[offset + 3] as f32 / 255.0,
+            ]);
+        }
+    }
+    Some(colors)
 }
 
 fn generated_terrain_preview(seed: u32) -> Vec<[f32; 4]> {
@@ -1037,9 +1067,15 @@ fn discover_scenarios(profile: &AssetProfile) -> Vec<ScenarioEntry> {
                 .find(|(root, _)| path.starts_with(root))
                 .or_else(|| palettes.first())
                 .map(|(_, palette)| palette);
-            let preview = std::fs::read(&path)
-                .ok()
-                .and_then(|data| scenario_picture_preview(&data, palette?))
+            let preview = mac
+                .as_ref()
+                .and_then(|scenario| scenario.picture.as_deref())
+                .and_then(scenario_pict_preview)
+                .or_else(|| {
+                    std::fs::read(&path)
+                        .ok()
+                        .and_then(|data| scenario_picture_preview(&data, palette?))
+                })
                 .unwrap_or_else(|| city_map_preview(&city));
             Some(ScenarioEntry {
                 path,
@@ -1335,6 +1371,41 @@ fn preview(out: &mut Vec<UiSolid>, rect: Rect, colors: &[[f32; 4]], depth: f32) 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn mac_scenario_preview_decodes_pict_region_with_right_edge() {
+        let mut pict = oxideav_pict::PictBuilder::new(0, 0, 8, 8);
+        pict.fg_color(255, 0, 0);
+        pict.region(oxideav_pict::Verb::Paint, 0, 0, 8, 8, &[(0, &[0, 8])])
+            .unwrap();
+        let pict = pict.finish();
+
+        let preview = super::scenario_picture_preview(&pict, &[[0.0; 4]; 256])
+            .expect("Mac resource PICT preview should decode");
+
+        assert_eq!(preview.len(), 32 * 32);
+        assert_eq!(preview[0], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(preview[31], [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    #[ignore = "requires locally extracted Macintosh Scenario Disk data and forks"]
+    fn mac_retail_scenario_pict_resources_decode() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_SCENARIO_FIXTURES").unwrap(),
+        );
+        for name in ["Charleston", "Dullsville", "Flint", "Hollywood", "Oakland"] {
+            let scenario = crate::mac_scenario::MacScenario::read(&root.join(name)).unwrap();
+            assert!(
+                scenario
+                    .picture
+                    .as_deref()
+                    .and_then(super::scenario_pict_preview)
+                    .is_some(),
+                "retail PICT preview should decode: {name}"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires locally extracted Macintosh Scenario Disk data and forks"]
     fn mac_scenario_retail_catalog_and_fresh_start() {
         use super::*;
@@ -1357,6 +1428,11 @@ mod tests {
             assert_eq!(scenario.start.action, action);
             assert_eq!(scenario.start.point, point);
             assert_eq!(&scenario.start.goals[..2], &[months, population]);
+            let picture = scenario
+                .picture
+                .as_deref()
+                .expect("retail Mac scenario PICT 128 resource");
+            assert!(super::scenario_pict_preview(picture).is_some());
             assert!(scenario.text.unwrap().contains(name));
 
             let saved_city = City::load(&path).unwrap();

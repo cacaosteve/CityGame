@@ -1653,6 +1653,42 @@ mod tests {
     }
 
     #[test]
+    fn mac_january_2040_budget_summary_combines_negative_cashflows_before_twelfths() {
+        let row_ytd = [
+            68, 12, 79, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0,
+        ];
+        let row_estimate = [
+            59, 12, 75, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0,
+        ];
+        let ytd_pre_month_division = [
+            816, 155, 957, 0, 0, -1200, -1200, 0, -300, 0, -283, 0, 0, 0, 0, 0,
+        ];
+        let estimate_pre_month_division = [
+            716, 145, 907, 0, 0, -1200, -1200, 0, -300, 0, -283, 0, 0, 0, 0, 0,
+        ];
+        let entries = std::array::from_fn(|index| Entry {
+            label: LABELS[index],
+            setting: Some(0),
+            year_to_date: Some(row_ytd[index]),
+            mac_ytd_pre_month_division: Some(ytd_pre_month_division[index]),
+            mac_estimate_pre_month_division: Some(estimate_pre_month_division[index]),
+            annual: row_estimate[index],
+        });
+
+        assert_eq!(row_ytd.into_iter().sum::<i64>(), -89);
+        assert_eq!(row_estimate.into_iter().sum::<i64>(), -102);
+        assert_eq!(
+            mac_cashflow_summary(&entries, 1244),
+            MacCashflowSummary {
+                year_to_date: -87,
+                estimated: -101,
+                end_of_year_funds: 1157,
+            },
+            "R13 January 2040 uses signed aggregate-before-division order for negative totals"
+        );
+    }
+
+    #[test]
     fn mac_budget_estimate_projection_uses_saved_ytd_and_remaining_months() {
         let mut city = City::new_blank("/tmp/mac-budget-projection.SC2", "Budget projection")
             .expect("blank city");

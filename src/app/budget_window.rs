@@ -2007,6 +2007,43 @@ mod tests {
             }
         );
 
+        let after_done_ram = std::fs::read(root.join("jan1996-after-done-ram.bin")).unwrap();
+        let after_done_u32 = |address: usize| {
+            u32::from_be_bytes(after_done_ram[address..address + 4].try_into().unwrap())
+        };
+        let after_done_a5 = after_done_u32(0x904) as usize;
+        let native_settled_funds = after_done_u32(after_done_a5 + 0xefac - 0x10000) as i32;
+        assert_eq!(native_settled_funds, -9_203);
+
+        // Follow the production January-close accounting sequence. The native
+        // after-Done capture is three age units later, so compare the settled
+        // cash result here and check CityGame's immediate year-reset boundary
+        // separately before any simulated January accrual can run.
+        state.apply_budget_year_end_settlement();
+        assert_eq!(state.city.city_funds(), native_settled_funds);
+        state.clear_budget_year_history();
+        for row in 0..BUDGET_TOTAL_COUNT {
+            let offset = budget_row_misc_offset_for_city(
+                &state.city,
+                row,
+                BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
+            )
+            .unwrap();
+            assert_eq!(state.city.budget_misc_u32_at(offset), Some(0), "row {row}");
+        }
+
+        let settled_path = std::env::temp_dir().join(format!(
+            "citygame-r10-budget-settlement-{}.city",
+            std::process::id()
+        ));
+        state.city.save(&settled_path).unwrap();
+        let settled_reload = City::load(&settled_path).unwrap();
+        std::fs::remove_file(&settled_path).unwrap();
+        let mut settled_state = crate::app::tests::test_state(settled_reload);
+        settled_state.engine_fidelity = EngineFidelity::Mac68k;
+        settled_state.apply_budget_year_end_settlement();
+        assert_eq!(settled_state.city.city_funds(), native_settled_funds);
+
         let after_ram = std::fs::read(root.join("jan1996-budget-panel-police-95-ram.bin")).unwrap();
         let after_native_u32 = |address: usize| {
             u32::from_be_bytes(after_ram[address..address + 4].try_into().unwrap())

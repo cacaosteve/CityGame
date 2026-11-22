@@ -4644,6 +4644,20 @@ fn win95_native_generated_city_survives_citygame_save_reload() {
     native.save(&roundtrip_path).unwrap();
     let roundtrip = City::load(&roundtrip_path).unwrap();
     std::fs::remove_file(roundtrip_path).unwrap();
+    for index in 0..150 {
+        assert_eq!(
+            roundtrip.microsim_at(index),
+            native.microsim_at(index),
+            "XMIC record {index}"
+        );
+    }
+    let live_actors = std::fs::read(capture.join("generator-play/xthg-records.bin"))
+        .expect("missing native XTHG capture");
+    let actors = crate::win95_overlay::encode_xthg_records(
+        roundtrip.traffic_overlays().expect("missing CityGame XTHG"),
+    )
+    .unwrap();
+    assert_eq!(actors, live_actors, "XTHG records");
     for plane in ["altm", "xter", "xbld", "xzon", "xund", "xtxt", "xbit"] {
         let live = std::fs::read(capture.join(format!("generator-play/{plane}-x-major.bin")))
             .expect("missing native plane capture");

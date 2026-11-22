@@ -1945,6 +1945,18 @@ mod tests {
 
         let mut state = crate::app::tests::test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
+        assert_eq!(
+            crate::app::dialog_input::city_info_dialog_hit_test_for_engine(
+                Vec2::new(329.0, 228.0),
+                (640, 480),
+                CityInfoDialog::Budget,
+                EngineFidelity::Mac68k,
+            ),
+            Some(CityInfoDialogAction::AdjustBudgetFunding {
+                service_index: 0,
+                delta: -5,
+            })
+        );
         assert!(state.adjust_budget_service_funding_from_dialog(0, -5));
         assert_eq!(
             state

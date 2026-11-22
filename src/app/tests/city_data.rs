@@ -4637,6 +4637,8 @@ fn win95_native_generated_city_survives_citygame_save_reload() {
             .expect("CITYGAME_WIN95_CAPTURE_DIR must point to the private live capture"),
     );
     let mut native = City::load(capture.join("native-generated-play.sc2")).unwrap();
+    let native_name = native.name.clone();
+    let native_misc = native.misc_u32_values(0, 0x12c0 / 4);
     let roundtrip_path = std::env::temp_dir().join(format!(
         "citygame-native-generated-roundtrip-{}.sc2",
         std::process::id()
@@ -4644,6 +4646,52 @@ fn win95_native_generated_city_survives_citygame_save_reload() {
     native.save(&roundtrip_path).unwrap();
     let roundtrip = City::load(&roundtrip_path).unwrap();
     std::fs::remove_file(roundtrip_path).unwrap();
+    assert_eq!(
+        roundtrip.misc_u32_values(0, 0x12c0 / 4),
+        native_misc,
+        "decoded MISC state"
+    );
+    assert_eq!(roundtrip.name, native_name, "city name");
+    assert_eq!(
+        roundtrip.traffic_density_slice(),
+        native.traffic_density_slice(),
+        "XTRF"
+    );
+    assert_eq!(
+        roundtrip.land_value_slice(),
+        native.land_value_slice(),
+        "XVAL"
+    );
+    assert_eq!(
+        roundtrip.crime_density_slice(),
+        native.crime_density_slice(),
+        "XCRM"
+    );
+    assert_eq!(
+        roundtrip.pollution_density_slice(),
+        native.pollution_density_slice(),
+        "XPLT"
+    );
+    assert_eq!(
+        roundtrip.police_coverage_slice(),
+        native.police_coverage_slice(),
+        "XPLC"
+    );
+    assert_eq!(
+        roundtrip.fire_coverage_slice(),
+        native.fire_coverage_slice(),
+        "XFIR"
+    );
+    assert_eq!(
+        roundtrip.population_density_slice(),
+        native.population_density_slice(),
+        "XPOP"
+    );
+    assert_eq!(
+        roundtrip.rate_of_growth_slice(),
+        native.rate_of_growth_slice(),
+        "XROG"
+    );
     for index in 0..150 {
         assert_eq!(
             roundtrip.microsim_at(index),

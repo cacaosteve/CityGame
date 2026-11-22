@@ -676,7 +676,9 @@ impl ViewerState {
             self.mac_loop_scheduler.deadline = refreshed_tick.wrapping_add(interval);
             GameClockAdvance { days: 1, months: 1 }
         } else if self.mac_loop_scheduler.january_budget_review_pending {
-            if self.city_info_dialog.is_some() {
+            if self.city_info_dialog.is_some_and(|dialog| {
+                dialog == CityInfoDialog::Budget || dialog.holds_mac_simulation()
+            }) {
                 return GameClockAdvance::default();
             }
             self.mac_loop_scheduler.january_budget_review_pending = false;

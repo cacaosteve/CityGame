@@ -9924,6 +9924,25 @@ fn mac_january_budget_review_timeout_waits_while_done_button_is_held() {
 }
 
 #[test]
+fn mac_january_budget_review_resumes_while_query_dialog_is_open() {
+    let mut state = mac_phase24_fixture("mac-annual-review-query.sc2", WEATHER_TREND_BLIZZARD, 1);
+    state.mac_loop_scheduler.january_budget_review_pending = true;
+    state.city_info_dialog = Some(CityInfoDialog::Query { x: 12, y: 34 });
+
+    state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+        Duration::ZERO,
+        0,
+        false,
+        || Duration::ZERO,
+    );
+
+    assert!(
+        !state.mac_loop_scheduler.january_budget_review_pending,
+        "a modeless Query dialog must not hold the pending annual review"
+    );
+}
+
+#[test]
 fn mac_january_budget_keeps_saved_tax_bases_and_refreshes_bond_count() {
     for path in ["mac-annual-currents.city", "mac-annual-currents.sc2"] {
         let mut state = mac_phase24_fixture(path, WEATHER_TREND_BLIZZARD, 1);

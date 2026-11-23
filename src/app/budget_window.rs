@@ -4607,6 +4607,82 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R14 January 2116 budget-panel RAM and CGMS capture"]
+    fn mac_r14_january_2116_budget_panel_projection_matches_native_capture() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R14_JAN2116_BUDGET_CAPTURE_DIR").unwrap(),
+        );
+        let cgms = std::fs::read(root.join("budget-review-age64800-current.cgms")).unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&cgms).unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.name = "AutoDebt".to_owned();
+        city.set_saved_date(crate::city::CityDate {
+            year: 2116,
+            month: 1,
+        });
+        city.set_city_funds(-13_842);
+
+        let ram = std::fs::read(root.join("budget-review-age64800-current.ram")).unwrap();
+        let native_u32 =
+            |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
+        let a5 = native_u32(0x904) as usize;
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        assert!(table + 16 * 0x70 <= ram.len());
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2116,
+                month: 1
+            })
+        );
+        assert_eq!(city.city_funds(), -13_842);
+        let entries = entries_for_city_for_month(&city, EngineFidelity::Mac68k, 1, true);
+        let summary = mac_cashflow_summary(&entries, i64::from(city.city_funds()));
+        assert_eq!(
+            summary,
+            MacCashflowSummary {
+                year_to_date: -142,
+                estimated: -142,
+                end_of_year_funds: -13_984,
+            },
+            "must match the visible January 2116 AutoDebt review"
+        );
+
+        let save_path = std::env::temp_dir().join(format!(
+            "citygame-r14-jan2116-budget-{}.city",
+            std::process::id()
+        ));
+        city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(&save_path).unwrap();
+        assert_eq!(reloaded.kind, CityFileKind::MacCity);
+        assert_eq!(
+            reloaded.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2116,
+                month: 1
+            })
+        );
+        assert_eq!(reloaded.city_funds(), -13_842);
+        let reloaded_entries =
+            entries_for_city_for_month(&reloaded, EngineFidelity::Mac68k, 1, true);
+        assert_eq!(
+            mac_cashflow_summary(&reloaded_entries, i64::from(reloaded.city_funds())),
+            summary,
+            "captured budget projection must persist through a Mac city save/reload"
+        );
+    }
+
+    #[test]
     #[ignore = "requires private R10 January 1996 before/after Police edit RAM captures"]
     fn mac_r10_january_1996_police_decrease_matches_native_budget_edit() {
         let root = std::path::PathBuf::from(

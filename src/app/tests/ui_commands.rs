@@ -5083,7 +5083,7 @@ fn pe_newspaper_gift_entry_483250_zone_type_paint_and_bridge() {
     pe_newspaper_gift_entry_483250(&mut city, &mut crt, 35, 35, 0xf9);
     assert_eq!(city.zone_at(35, 35).expect("z").raw_bits() & 0xf0, 0xf0);
     let b = city.building_at(35, 35);
-    assert!((0x70..0x70 + 0x0c).contains(&u16::from(b)), "building {b}");
+    assert!((0x70..0x74).contains(&u16::from(b)), "building {b}");
     // plain bridge
     pe_newspaper_gift_entry_483250(&mut city, &mut crt, 36, 36, 0x33c);
     assert_eq!(city.building_at(36, 36), 0x57);
@@ -5109,10 +5109,10 @@ fn pe_newspaper_gift_entry_483250_nuclear_stadium_twin_size4_zonetype() {
     assert_eq!(city.pe_w_sports_teams(), 1);
     pe_newspaper_gift_entry_483250(&mut city, &mut crt, 50, 50, 0x295);
     assert_eq!(city.zone_at(50, 50).expect("ind").raw_bits() & 0x0f, 6);
-    // size4 paints from (49,51); type4 base 0xc4.
+    // size4 paints from (49,51); paint selector 4 uses table type 2 (0xbc).
     let b = city.building_at(49, 51);
     assert!(
-        (0xc4..0xc4 + 2).contains(&u16::from(b)),
+        (0xbc..0xbc + 6).contains(&u16::from(b)),
         "size4 building {b}"
     );
     pe_newspaper_gift_entry_483250(&mut city, &mut crt, 70, 70, 0x374);
@@ -5211,7 +5211,11 @@ fn pe_newspaper_gift_zone_story_bands_use_the_native_building_table_selector() {
             City::new_blank("/tmp/sc2000-gift-zone-table.sc2", "GiftZoneTable").expect("blank");
         let mut crt = Win95CrtRand::new(0x1937);
         let mut expected_crt = crt;
-        let expected = pe_zone_paint_pick_building_4e755e(&mut expected_crt, 1, table_type);
+        let expected = if table_type == 0 {
+            0x70 + expected_crt.random_u16_mask(3) as u8
+        } else {
+            pe_zone_paint_pick_building_4e755e(&mut expected_crt, 1, table_type)
+        };
         pe_newspaper_gift_entry_483250(&mut city, &mut crt, 20, 20, story_id);
         assert_eq!(
             city.building_at(20, 20),
@@ -5261,7 +5265,7 @@ fn pe_newspaper_gift_zone_paint_size2_483d08_empty_falls_to_size1() {
     let mut city = City::new_blank("/tmp/sc2000-gift-zpaint-s2e.sc2", "GiftS2e").expect("blank");
     let mut crt = Win95CrtRand::new(9);
     // type 1 (not 4) + empty XBLD → size-1 paint from table index 5 (base 0x7c).
-    pe_newspaper_gift_zone_paint_size2_483d08(&mut city, &mut crt, 22, 22, 1);
+    pe_newspaper_gift_zone_paint_size2_483d08(&mut city, &mut crt, 22, 22, 1, 1);
     let b = u16::from(city.building_at(22, 22));
     assert!((0x7c..0x7c + 8).contains(&b), "building {b}");
     assert_eq!(city.zone_at(22, 22).expect("z").raw_bits() & 0xf0, 0xf0);
@@ -5271,7 +5275,7 @@ fn pe_newspaper_gift_zone_paint_size2_483d08_empty_falls_to_size1() {
 fn pe_newspaper_gift_zone_paint_size2_483d08_type4_paints_size2() {
     let mut city = City::new_blank("/tmp/sc2000-gift-zpaint-s2.sc2", "GiftS2").expect("blank");
     let mut crt = Win95CrtRand::new(3);
-    pe_newspaper_gift_zone_paint_size2_483d08(&mut city, &mut crt, 30, 30, 4);
+    pe_newspaper_gift_zone_paint_size2_483d08(&mut city, &mut crt, 30, 30, 4, 4);
     // type4 size2 base 0xaa mod 2 — at least one tile in the jittered 2×2 must match.
     let mut found = false;
     for dx in 0..3u16 {
@@ -5294,7 +5298,7 @@ fn pe_newspaper_gift_zone_paint_size2_483d08_type4_paints_size2() {
 fn pe_newspaper_gift_zone_paint_size3_483d6b_type4_paints_half1() {
     let mut city = City::new_blank("/tmp/sc2000-gift-zpaint-s3.sc2", "GiftS3").expect("blank");
     let mut crt = Win95CrtRand::new(4);
-    pe_newspaper_gift_zone_paint_size3_483d6b(&mut city, &mut crt, 40, 40, 4);
+    pe_newspaper_gift_zone_paint_size3_483d6b(&mut city, &mut crt, 40, 40, 4, 4);
     // size3 → half=1 → 2×2; type4 base 0xac mod 2.
     let mut found = false;
     for dx in 0..3usize {
@@ -5317,15 +5321,39 @@ fn pe_newspaper_gift_zone_paint_size3_483d6b_type4_paints_half1() {
 fn pe_newspaper_gift_zone_paint_size4_483dce_type4_at_offset() {
     let mut city = City::new_blank("/tmp/sc2000-gift-zpaint-s4.sc2", "GiftS4").expect("blank");
     let mut crt = Win95CrtRand::new(5);
-    pe_newspaper_gift_zone_paint_size4_483dce(&mut city, &mut crt, 50, 50, 4);
+    pe_newspaper_gift_zone_paint_size4_483dce(&mut city, &mut crt, 50, 50, 4, 4);
     // origin (49, 51); size4 → half=2 → 3×3; type4 base 0xc4 mod 2.
     let b = u16::from(city.building_at(49, 51));
     assert!((0xc4..0xc4 + 2).contains(&b), "building {b}");
     assert_eq!(u16::from(city.building_at(51, 51)), b);
     assert_eq!(u16::from(city.building_at(49, 49)), b);
-    pe_newspaper_gift_zone_paint_size4_483dce(&mut city, &mut crt, 50, 50, 1);
+    pe_newspaper_gift_zone_paint_size4_483dce(&mut city, &mut crt, 50, 50, 1, 4);
     // type≠4 skips — leave prior stamp.
     assert_eq!(u16::from(city.building_at(49, 51)), b);
+}
+
+#[test]
+fn pe_newspaper_gift_size4_keeps_paint_selector_separate_from_table_type() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-gift-zpaint-s4-type2.sc2", "GiftS4T2").expect("blank");
+    // METROPOL tile 0x2a7 reaches the size-4 arm with paint selector 4 but
+    // table type 2. Its captured retail entry seed selects 0xbf from 0xbc..0xc1.
+    let mut crt = Win95CrtRand::new(0x305e_1c7b);
+    pe_newspaper_gift_zone_paint_size4_483dce(&mut city, &mut crt, 74, 122, 4, 2);
+    assert_eq!(city.building_at(73, 123), 0xbf);
+    assert_eq!(city.building_at(75, 122), 0xbf);
+    assert_eq!(crt.seed(), 0xc40d_f552);
+}
+
+#[test]
+fn pe_newspaper_gift_residential_pop1_uses_xval_band_and_rand_mask() {
+    let mut city = City::new_blank("/tmp/sc2000-gift-xval-pop1.sc2", "GiftXval").expect("blank");
+    // A blank new-city XVAL plane reads as band 0. PE `0x436ea0` uses
+    // `rand & 3`, not the generic `% 12` table used by other zone types.
+    let mut crt = Win95CrtRand::new(0xaa09_6edb);
+    pe_newspaper_gift_entry_483250(&mut city, &mut crt, 31, 37, 0xfc);
+    assert_eq!(city.building_at(31, 37), 0x71);
+    assert_eq!(crt.seed(), 0xd00d_7e32);
 }
 
 #[test]

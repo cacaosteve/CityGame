@@ -487,27 +487,9 @@ fn pe_newspaper_gift_zone_type_then_paint_483b48(
     };
     match ax_size {
         1 => pe_newspaper_gift_zone_paint_size1_436ee7(city, crt, x, y, table_type),
-        2 => pe_newspaper_gift_zone_paint_size2_483d08(
-            city,
-            crt,
-            x,
-            y,
-            if paint_type == 4 { 4 } else { table_type },
-        ),
-        3 => pe_newspaper_gift_zone_paint_size3_483d6b(
-            city,
-            crt,
-            x,
-            y,
-            if paint_type == 4 { 4 } else { table_type },
-        ),
-        4 => pe_newspaper_gift_zone_paint_size4_483dce(
-            city,
-            crt,
-            x,
-            y,
-            if paint_type == 4 { 4 } else { table_type },
-        ),
+        2 => pe_newspaper_gift_zone_paint_size2_483d08(city, crt, x, y, paint_type, table_type),
+        3 => pe_newspaper_gift_zone_paint_size3_483d6b(city, crt, x, y, paint_type, table_type),
+        4 => pe_newspaper_gift_zone_paint_size4_483dce(city, crt, x, y, paint_type, table_type),
         // PE hospital/church JT arms gate on paint type `bx == 4`.
         5 if paint_type == 4 => {
             let _ = pe_newspaper_gift_place_hospital_483df1(city, x, y);
@@ -633,7 +615,16 @@ pub(super) fn pe_newspaper_gift_zone_paint_size1_436ee7(
     y: usize,
     zone_type: u8,
 ) {
-    let building = pe_zone_paint_pick_building_4e755e(crt, 1, zone_type);
+    // Win95 `0x436ea0` special-cases size 1 / type 0: it chooses the
+    // residential variant from the live XVAL microsim cell using `rand & 3`.
+    // The remaining types use the shared base/count tables at `0x4e755e`.
+    let building = if zone_type == 0 {
+        let xval = super::rci::pe_xval_byte_at_city_coords(city, x, y);
+        super::rci::rci_choose_and_place_building_with_rng(ZONE_RESIDENTIAL_DENSE, 1, xval, crt)
+            .expect("residential size-1 chooser")
+    } else {
+        pe_zone_paint_pick_building_4e755e(crt, 1, zone_type)
+    };
     pe_place_tile_441f00(city, x, y, building);
     pe_newspaper_gift_mark_zone_corners_436f5f(city, x, y);
     // PE @ `0x436fad`: XBIT `|= 0xe0` after corner OR.
@@ -697,9 +688,10 @@ pub(super) fn pe_newspaper_gift_zone_paint_size2_483d08(
     crt: &mut Win95CrtRand,
     x: usize,
     y: usize,
-    zone_type: u8,
+    paint_type: u8,
+    table_type: u8,
 ) {
-    pe_newspaper_gift_zone_paint_size_jitter_483d08(city, crt, x, y, zone_type, 2);
+    pe_newspaper_gift_zone_paint_size_jitter_483d08(city, crt, x, y, paint_type, table_type, 2);
 }
 
 /// PE newspaper gift zone-paint size-3 @ `0x483d6b`: same jitter/empty gates as size-2
@@ -709,22 +701,25 @@ pub(super) fn pe_newspaper_gift_zone_paint_size3_483d6b(
     crt: &mut Win95CrtRand,
     x: usize,
     y: usize,
-    zone_type: u8,
+    paint_type: u8,
+    table_type: u8,
 ) {
-    pe_newspaper_gift_zone_paint_size_jitter_483d08(city, crt, x, y, zone_type, 3);
+    pe_newspaper_gift_zone_paint_size_jitter_483d08(city, crt, x, y, paint_type, table_type, 3);
 }
 
-/// Shared gift size-2/3 type-4 jitter (`0x483d08`/`0x483d6b`): `y' = y-(rand&1)+1`,
-/// `x' = x+(rand&1)-1`, then size-N paint; non-type-4 empty XBLD → size-1.
+/// Shared gift size-2/3 selector (`0x483d08`/`0x483d6b`): paint type 4 jitters
+/// `y' = y-(rand&1)+1`, `x' = x+(rand&1)-1`; the separate table type selects
+/// the building family. Other paint types fall through to size-1 on empty XBLD.
 fn pe_newspaper_gift_zone_paint_size_jitter_483d08(
     city: &mut City,
     crt: &mut Win95CrtRand,
     x: usize,
     y: usize,
-    zone_type: u8,
+    paint_type: u8,
+    table_type: u8,
     paint_size: u8,
 ) {
-    if zone_type == 4 {
+    if paint_type == 4 {
         let y2 = (y as isize) - ((crt.random_u16() & 1) as isize) + 1;
         let x2 = (x as isize) + ((crt.random_u16() & 1) as isize) - 1;
         if x2 < 0 || y2 < 0 {
@@ -736,12 +731,12 @@ fn pe_newspaper_gift_zone_paint_size_jitter_483d08(
             x2 as usize,
             y2 as usize,
             paint_size,
-            zone_type,
+            table_type,
         );
         return;
     }
     if x < CITY_WIDTH && y < CITY_HEIGHT && city.building_at(x, y) == 0 {
-        pe_newspaper_gift_zone_paint_size1_436ee7(city, crt, x, y, zone_type);
+        pe_newspaper_gift_zone_paint_size1_436ee7(city, crt, x, y, table_type);
     }
 }
 
@@ -752,10 +747,11 @@ pub(super) fn pe_newspaper_gift_zone_paint_size4_483dce(
     crt: &mut Win95CrtRand,
     x: usize,
     y: usize,
-    zone_type: u8,
+    paint_type: u8,
+    table_type: u8,
 ) {
-    if zone_type != 4 || x == 0 {
+    if paint_type != 4 || x == 0 {
         return;
     }
-    let _ = pe_newspaper_gift_zone_paint_size_gt1_436fb6(city, crt, x - 1, y + 1, 4, zone_type);
+    let _ = pe_newspaper_gift_zone_paint_size_gt1_436fb6(city, crt, x - 1, y + 1, 4, table_type);
 }

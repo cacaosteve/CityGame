@@ -1640,19 +1640,21 @@ mod music_open_tests {
     }
 
     #[test]
-    #[ignore = "requires authentic private BAZ/BERN Classic CTYs and native Win95 reader planes"]
+    #[ignore = "requires authentic private Classic CTYs and native Win95 reader planes"]
     fn win95_authentic_classic_cty_confirmation_open_and_save_reload_match_native_planes() {
         use std::collections::BTreeMap;
 
         let source = std::path::PathBuf::from(
             std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_INPUT")
                 .or_else(|| std::env::var_os("CITYGAME_CLASSIC_CTY_BERN_INPUT"))
+                .or_else(|| std::env::var_os("CITYGAME_CLASSIC_CTY_METROPOL_INPUT"))
                 .unwrap(),
         );
         let city_name = source.file_stem().unwrap().to_string_lossy().to_string();
         let (native_year, native_month) = match city_name.as_str() {
             "BAZ" => (2000, 1),
             "BERN" => (1977, 10),
+            "METROPOL" => (2099, 8),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let (planes_env, expected_crt, expected_game_rand) = match city_name.as_str() {
@@ -1662,6 +1664,11 @@ mod music_open_tests {
                 0x9302_aeea,
             ),
             "BERN" => ("CITYGAME_CLASSIC_CTY_BERN_PLANES", 0xb2ed_7061, 0x0b76_55c9),
+            "METROPOL" => (
+                "CITYGAME_CLASSIC_CTY_METROPOL_PLANES",
+                0x336a_066e,
+                0x1eca_8ce3,
+            ),
             _ => unreachable!(),
         };
         let mut expected_open_crt = crate::win95_random::Win95CrtRand::new(expected_crt);

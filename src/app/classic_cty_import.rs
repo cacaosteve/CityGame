@@ -693,6 +693,129 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private authentic METROPOL CTY stage captures"]
+    fn authentic_metropol_reader_stages_match_native_win95() {
+        use std::collections::BTreeMap;
+
+        let cty =
+            std::path::PathBuf::from(std::env::var("CITYGAME_CLASSIC_CTY_METROPOL_INPUT").unwrap());
+        let read_map = |env_name: &str| -> BTreeMap<String, String> {
+            let path = std::path::PathBuf::from(std::env::var(env_name).unwrap());
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+        };
+        let reader_planes = read_map("CITYGAME_CLASSIC_CTY_METROPOL_READER_PLANES");
+        let pre_border = read_map("CITYGAME_CLASSIC_CTY_METROPOL_PRE_BORDER");
+        let pre_normalizer = read_map("CITYGAME_CLASSIC_CTY_METROPOL_PRE_NORMALIZER");
+        let native_crt_entries: Vec<u32> = serde_json::from_slice(
+            &std::fs::read(std::env::var("CITYGAME_CLASSIC_CTY_METROPOL_CRT_ENTRIES").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let native_xbld_entries: Vec<u8> = serde_json::from_slice(
+            &std::fs::read(std::env::var("CITYGAME_CLASSIC_CTY_METROPOL_XBLD_ENTRIES").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = |planes: &BTreeMap<String, String>, name: &str| {
+            planes
+                .get(name)
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let xbld = |city: &City| {
+            (0..128)
+                .flat_map(|x| (0..128).map(move |y| city.building_at(x, y)))
+                .collect::<Vec<_>>()
+        };
+
+        let classic = crate::city::classic_cty::ClassicCtyFile::read(&cty).unwrap();
+        assert_eq!(native_crt_entries.len(), classic.tiles.len());
+        assert_eq!(native_xbld_entries.len(), classic.tiles.len());
+        let mut city = City::new_blank(&cty, "METROPOL").unwrap();
+        clear_classic_cty_target_map(&mut city);
+        city.pe_dw_tile_count[0] = 128 * 128;
+        let mut crt = Win95CrtRand::new(2_503_793_637);
+        for (index, tile) in classic.tiles.iter().enumerate() {
+            assert_eq!(
+                city.building_at(tile.x.into(), tile.y.into()),
+                native_xbld_entries[index],
+                "pre-conversion target XBLD at CTY tile #{index} ({},{},{:#x})",
+                tile.x,
+                tile.y,
+                tile.id
+            );
+            assert_eq!(
+                crt.seed(),
+                native_crt_entries[index],
+                "pre-conversion CRT at CTY tile #{index} ({},{},{:#x})",
+                tile.x,
+                tile.y,
+                tile.id
+            );
+            super::super::newspaper_gifts::pe_newspaper_gift_entry_483250(
+                &mut city,
+                &mut crt,
+                isize::from(tile.x),
+                isize::from(tile.y),
+                tile.id,
+            );
+        }
+        let mut game_rand = Win95GameRand::new(1);
+        let native_pre_border_xbld = bytes(&pre_border, "XBLD");
+        let pre_border_xbld = xbld(&city);
+        let differences = pre_border_xbld
+            .iter()
+            .zip(&native_pre_border_xbld)
+            .enumerate()
+            .filter_map(|(i, (actual, native))| (actual != native).then_some((i, *actual, *native)))
+            .collect::<Vec<_>>();
+        assert!(
+            differences.is_empty(),
+            "payload XBLD has {} differing cells; first differences {:?}",
+            differences.len(),
+            &differences[..differences.len().min(20)]
+        );
+
+        apply_cty_border(&mut city, &mut game_rand);
+        let native_pre_normalizer_xbld = bytes(&pre_normalizer, "XBLD");
+        let pre_normalizer_xbld = xbld(&city);
+        let differences = pre_normalizer_xbld
+            .iter()
+            .zip(&native_pre_normalizer_xbld)
+            .enumerate()
+            .filter_map(|(i, (actual, native))| (actual != native).then_some((i, *actual, *native)))
+            .collect::<Vec<_>>();
+        assert!(
+            differences.is_empty(),
+            "border XBLD has {} differing cells; first differences {:?}",
+            differences.len(),
+            &differences[..differences.len().min(20)]
+        );
+
+        normalize_cty_map(&mut city);
+        let native_reader_xbld = bytes(&reader_planes, "XBLD");
+        let reader_xbld = xbld(&city);
+        let differences = reader_xbld
+            .iter()
+            .zip(&native_reader_xbld)
+            .enumerate()
+            .filter_map(|(i, (actual, native))| (actual != native).then_some((i, *actual, *native)))
+            .collect::<Vec<_>>();
+        assert!(
+            differences.is_empty(),
+            "normalizer XBLD has {} differing cells; first differences {:?}",
+            differences.len(),
+            &differences[..differences.len().min(20)]
+        );
+        city.pe_reseed_neighbor_fame_ranks_before_year_42e585(&mut crt, classic.date().year);
+        assert_eq!(crt.seed(), 0x336a_066e);
+        assert_eq!(game_rand.state(), 0x1eca_8ce3);
+    }
+
+    #[test]
     #[ignore = "requires private authentic BERN CTY and native Win95 reader plane capture"]
     fn authentic_bern_reader_calendar_and_map_planes_match_native_win95() {
         use std::collections::BTreeMap;

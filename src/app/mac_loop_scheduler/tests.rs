@@ -7764,7 +7764,9 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             manual.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
-        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
+        // CODE 10 entry to the first shake TickCount consumes two native
+        // QuickDraw advances before its direct scan Random sites.
+        assert_eq!(manual.mac_process_rng.seed(), 984_943_658);
         assert_eq!(manual.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
         assert_eq!(
             manual
@@ -7796,14 +7798,14 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
                 if phase & 1 == 0 { 16.0 } else { 0.0 }
             );
         }
-        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
+        assert_eq!(manual.mac_process_rng.seed(), 984_943_658);
         assert_eq!(
             manual
                 .advance_frame_simulation(Duration::from_millis(84))
                 .days,
             0
         );
-        assert_eq!(manual.mac_process_rng.seed(), 1_017_324_090);
+        assert_eq!(manual.mac_process_rng.seed(), 1_338_654_090);
         assert_eq!(manual.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
         assert!(!manual.take_pending_mac_earthquake_sound());
         assert_eq!(quake_sound_requests, 24);
@@ -7824,9 +7826,9 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             monthly.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
-        // Phase 24 queues the earthquake at this QuickDraw entry seed; the
-        // dispatcher does not consume the worker RNG until the shake finishes.
-        assert_eq!(monthly.mac_process_rng.seed(), 1_983_943_974);
+        // CODE 10's pre-shake setup consumes two QuickDraw advances before
+        // the first TickCount sample and before the scan begins.
+        assert_eq!(monthly.mac_process_rng.seed(), 300_483_032);
         for _ in 0..25 {
             assert_eq!(
                 monthly
@@ -7835,7 +7837,7 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
                 0
             );
         }
-        assert_eq!(monthly.mac_process_rng.seed(), 1_013_997_541);
+        assert_eq!(monthly.mac_process_rng.seed(), 1_558_535_238);
     }
 }
 
@@ -7866,8 +7868,13 @@ fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
     state.hover_tile = Some((12, 34));
 
     assert!(state.start_disaster(DisasterKind::Earthquake));
+    let worker_entry_seed = state.mac_process_rng.seed();
     assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+    let mut expected_first_shake_seed = MacToolboxRng::new(worker_entry_seed);
+    expected_first_shake_seed.random_i16();
+    expected_first_shake_seed.random_i16();
     let prelude_seed = state.mac_process_rng.seed();
+    assert_eq!(prelude_seed, expected_first_shake_seed.seed());
     assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
 
     let mut previous_tick = 0;
@@ -8508,7 +8515,10 @@ fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts
             .city
             .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
         state.traffic.set_speed(GameSpeed::Paused);
-        state.mac_process_rng = MacToolboxRng::new(1);
+        // The CODE 10 pre-shake setup consumes two draws. Choose the inverse
+        // Park-Miller state so the native mixed-scan fixture still enters its
+        // map worker at seed 1.
+        state.mac_process_rng = MacToolboxRng::new(1_475_608_308);
         state.city.set_mac_pending_action(6);
         state.mac_loop_scheduler.pending_action_point = Some((2, 3));
         for (x, y) in [(0, 14), (1, 32)] {

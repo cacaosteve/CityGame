@@ -30,6 +30,7 @@ const MAC_EXPORT80_RENDER_WAIT_TICKS_PER_LOOP: u32 = 12;
 const MAC_EARTHQUAKE_SHAKE_FRAMES: u8 = 24;
 const MAC_EARTHQUAKE_FRAME_WAIT_TICKS: u32 = 5;
 const MAC_EARTHQUAKE_FIRST_FRAME_TICKS: u32 = 2;
+const MAC_EARTHQUAKE_PRE_SHAKE_RANDOM_DRAWS: u8 = 2;
 // One live pixel census kept the native January review visible across 4,760
 // TickCount ticks; a second annual boundary had a 5,180-tick CODE 7 gap. The
 // current nominal timeout is 4,800 ticks, with adjacent annual work accounting
@@ -897,6 +898,14 @@ impl ViewerState {
                 count != 0
             }
             scenario_action::EARTHQUAKE_ACTION => {
+                // The natural R15 Quadra trace advances QuickDraw twice
+                // between CODE 10 entry and its first shake TickCount sample.
+                // The worker's direct _Random sites are after the shake; the
+                // native pre-shake writer is still unresolved, so preserve
+                // the measured stream boundary here without injecting a seed.
+                for _ in 0..MAC_EARTHQUAKE_PRE_SHAKE_RANDOM_DRAWS {
+                    self.mac_process_rng.random_i16();
+                }
                 self.mac_loop_scheduler
                     .begin_mac_earthquake_prelude(point, *now);
                 true

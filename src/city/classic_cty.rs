@@ -73,15 +73,15 @@ impl ClassicCtyFile {
     }
 }
 
-/// Apply the retail converter's currently ported first tile-ID range (`0x00..=0x2f`).
-/// This is a converter building block, not a complete CTY import: later IDs use
-/// additional tables, neighboring-tile rules, and both Win95 random streams.
-pub(crate) fn apply_tile_through_0x2f(
+/// Apply the retail converter cases currently ported for tile IDs through `0x3f`.
+/// This remains a converter building block, not a complete CTY import: later IDs
+/// use additional tables, neighboring-tile rules, and both Win95 random streams.
+pub(crate) fn apply_supported_tile(
     city: &mut City,
     crt: &mut Win95CrtRand,
     tile: ClassicCtyTile,
 ) -> Result<()> {
-    if tile.id > 0x2f {
+    if tile.id > 0x3f {
         bail!(
             "Classic CTY tile {:#x} is outside the ported converter range",
             tile.id
@@ -91,6 +91,14 @@ pub(crate) fn apply_tile_through_0x2f(
     let y = usize::from(tile.y);
     if x >= 128 || y >= 128 {
         bail!("Classic CTY tile coordinate ({x},{y}) is outside the city map");
+    }
+
+    // FUN_00483250 routes `0x34` through DestroyBuilding(0) before placing
+    // the rubble tile. Until the importer can provide that complete footprint
+    // operation, reject occupied cells before changing even the common ALTM
+    // prelude. Empty cells take the verified PlaceTile-only path.
+    if tile.id == 0x34 && city.building_at(x, y) != 0 {
+        bail!("Classic CTY rubble tile requires Win95 DestroyBuilding state");
     }
 
     // FUN_00483250 applies this ALTM mask before dispatching every tile ID.
@@ -113,6 +121,29 @@ pub(crate) fn apply_tile_through_0x2f(
         0x25..=0x2b => {
             let replacement = ((crt.random_u15() & 3) + 9) as u8;
             place_win95_tile(city, x, y, replacement);
+        }
+        0x30..=0x33 => {
+            // FUN_00483250 installs the tornado marker and sets the active
+            // disaster BSS (`0x4c9ee8`) and type (`0x4ca93c`) to 2.
+            city.set_pe_dw_disaster_active(1);
+            city.set_pe_w_current_disaster_type(2);
+            city.set_text_overlay(x, y, 0xfc);
+        }
+        0x34 => place_win95_tile(city, x, y, 5),
+        0x35..=0x37 => {
+            // Native avoids both rand() and PlaceTile when a building is
+            // already present at this coordinate.
+            if city.building_at(x, y) == 0 {
+                let replacement = ((crt.random_u15() & 3) + 1) as u8;
+                place_win95_tile(city, x, y, replacement);
+            }
+        }
+        0x38..=0x3f => {
+            // FUN_00483250 sets the active disaster BSS/type to 1 and marks
+            // this cell with the native XTXT sentinel.
+            city.set_pe_w_current_disaster_type(1);
+            city.set_pe_dw_disaster_active(1);
+            city.set_text_overlay(x, y, 0xff);
         }
         _ => unreachable!("range checked above"),
     }
@@ -217,7 +248,7 @@ mod tests {
 
         city.set_altm_word(14, 123, 0x3fff);
         city.set_tile_bits(14, 123, TileBits::new(0x21));
-        apply_tile_through_0x2f(
+        apply_supported_tile(
             &mut city,
             &mut crt,
             ClassicCtyTile {
@@ -234,7 +265,7 @@ mod tests {
         assert_eq!(city.building_at(14, 123), 0);
 
         let expected_building = ((reference_crt.random_u15() & 3) + 6) as u8;
-        apply_tile_through_0x2f(
+        apply_supported_tile(
             &mut city,
             &mut crt,
             ClassicCtyTile {
@@ -250,7 +281,7 @@ mod tests {
         assert_eq!(city.pe_dw_tile_count[usize::from(expected_building)], 1);
 
         let expected_building = ((reference_crt.random_u15() & 3) + 9) as u8;
-        apply_tile_through_0x2f(
+        apply_supported_tile(
             &mut city,
             &mut crt,
             ClassicCtyTile {
@@ -266,6 +297,105 @@ mod tests {
     }
 
     #[test]
+    fn applies_native_disaster_markers_and_conditional_tile_draws() {
+        use crate::city::City;
+
+        let mut city = City::new_blank("classic-prefix.sc2", "Classic prefix").unwrap();
+        let mut crt = Win95CrtRand::new(7);
+        let original_crt = crt;
+
+        apply_supported_tile(
+            &mut city,
+            &mut crt,
+            ClassicCtyTile {
+                x: 14,
+                y: 123,
+                id: 0x31,
+            },
+        )
+        .unwrap();
+        assert_eq!(city.text_overlay_at(14, 123), Some(0xfc));
+        assert_eq!(city.pe_w_current_disaster_type(), 2);
+        assert_eq!(city.pe_dw_disaster_active(), 1);
+        assert_eq!(crt, original_crt);
+
+        apply_supported_tile(
+            &mut city,
+            &mut crt,
+            ClassicCtyTile {
+                x: 15,
+                y: 123,
+                id: 0x38,
+            },
+        )
+        .unwrap();
+        assert_eq!(city.text_overlay_at(15, 123), Some(0xff));
+        assert_eq!(city.pe_w_current_disaster_type(), 1);
+        assert_eq!(city.pe_dw_disaster_active(), 1);
+        assert_eq!(crt, original_crt);
+
+        city.set_building(16, 123, 5);
+        let before_occupied_rubble = city.clone();
+        assert!(
+            apply_supported_tile(
+                &mut city,
+                &mut crt,
+                ClassicCtyTile {
+                    x: 16,
+                    y: 123,
+                    id: 0x34,
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            city.altm_at(16, 123),
+            before_occupied_rubble.altm_at(16, 123)
+        );
+        assert_eq!(crt, original_crt);
+
+        let mut expected_crt = crt;
+        let expected = ((expected_crt.random_u15() & 3) + 1) as u8;
+        apply_supported_tile(
+            &mut city,
+            &mut crt,
+            ClassicCtyTile {
+                x: 17,
+                y: 123,
+                id: 0x35,
+            },
+        )
+        .unwrap();
+        assert_eq!(city.building_at(17, 123), expected);
+        assert_eq!(crt, expected_crt);
+
+        let after_empty_rubble = crt;
+        apply_supported_tile(
+            &mut city,
+            &mut crt,
+            ClassicCtyTile {
+                x: 17,
+                y: 123,
+                id: 0x36,
+            },
+        )
+        .unwrap();
+        assert_eq!(crt, after_empty_rubble, "occupied tile must skip CRT rand");
+
+        apply_supported_tile(
+            &mut city,
+            &mut crt,
+            ClassicCtyTile {
+                x: 18,
+                y: 123,
+                id: 0x34,
+            },
+        )
+        .unwrap();
+        assert_eq!(city.building_at(18, 123), 5);
+    }
+
+    #[test]
     fn rejects_unported_tile_ids_before_mutating_city_or_rng() {
         use crate::city::City;
 
@@ -273,13 +403,13 @@ mod tests {
         let before = city.clone();
         let mut crt = Win95CrtRand::new(7);
         assert!(
-            apply_tile_through_0x2f(
+            apply_supported_tile(
                 &mut city,
                 &mut crt,
                 ClassicCtyTile {
                     x: 14,
                     y: 123,
-                    id: 0x30,
+                    id: 0x40,
                 },
             )
             .is_err()

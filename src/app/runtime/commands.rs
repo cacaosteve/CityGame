@@ -1731,6 +1731,16 @@ mod music_open_tests {
         )
         .expect("normal confirmed document-open path imports CTY");
         assert_eq!(*callbacks.borrow(), ["music", "finish"]);
+        assert_eq!(
+            state.pe_process_crt_seed(),
+            0xb8bb_6730,
+            "confirmed BAZ open preserves reader output plus native open-controller samples"
+        );
+        assert_eq!(
+            state.pe_process_game_rand_state(),
+            0x9302_aeea,
+            "confirmed BAZ open preserves the native border LCG sequence"
+        );
         let opened_planes = collect_planes(&state.city);
         for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {
             let native = expected_bytes(name);

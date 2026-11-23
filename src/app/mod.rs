@@ -1240,6 +1240,10 @@ impl ViewerState {
         self.pe_process_crt.seed()
     }
 
+    pub(super) fn pe_process_game_rand_state(&self) -> u32 {
+        self.pe_process_game_rand.state()
+    }
+
     pub(super) fn pe_process_lfsr_state(&self) -> u16 {
         self.pe_process_lfsr.state()
     }

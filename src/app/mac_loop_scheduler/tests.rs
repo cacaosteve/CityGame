@@ -6966,6 +6966,66 @@ fn mac_r15_tornado_menu_point_matches_live_quickdraw_boundary() {
 }
 
 #[test]
+fn mac_r15_earthquake_selection_during_tornado_enters_shake_prelude() {
+    let city = blank_city_layout_fixture("r15-tornado-earthquake.city", "R15 action handoff");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.traffic.set_speed(GameSpeed::Paused);
+    state.mac_process_rng = MacToolboxRng::new(0x5222_343b);
+
+    let tornado = crate::app::command_bus::app_command_for_menu_command(
+        crate::menu_model::CMD_START_TORNADO,
+    )
+    .expect("Tornado menu command is routed");
+    state
+        .apply_state_app_command(&tornado)
+        .expect("Tornado menu command is handled");
+    assert_eq!(state.mac_loop_scheduler.pending_action_point, Some((126, 52)));
+    assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(0x1044),
+        Some(u32::from(scenario_action::TORNADO_ACTION))
+    );
+    assert!(scenario_action::mac_scenario_action_active(&state.city));
+
+    let earthquake = crate::app::command_bus::app_command_for_menu_command(
+        crate::menu_model::CMD_START_EARTHQUAKE,
+    )
+    .expect("Earthquake menu command is routed");
+    state
+        .apply_state_app_command(&earthquake)
+        .expect("Earthquake menu command is handled");
+    assert_eq!(state.city.mac_pending_action(), 6);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(0x1044),
+        Some(u32::from(scenario_action::TORNADO_ACTION)),
+        "the current Tornado remains active until CODE 2 consumes the new selector"
+    );
+
+    state.traffic.set_speed(GameSpeed::Cheetah);
+    state.mac_loop_scheduler.deadline = 0;
+    assert_eq!(
+        state.advance_frame_simulation(Duration::from_millis(100)).days,
+        0
+    );
+    assert_eq!(state.city.mac_pending_action(), 0);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(0x1044),
+        Some(u32::from(scenario_action::TORNADO_ACTION)),
+        "Tornado remains the active selector during the Earthquake shake prelude"
+    );
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
+        Some(CITY_MODE_DISASTER)
+    );
+    assert!(state.mac_loop_scheduler.mac_earthquake_prelude_active());
+}
+
+#[test]
 fn mac_manual_disaster_selection_replaces_pending_during_active_action() {
     for (path, auto_goto) in [
         ("manual-replacement.city", true),

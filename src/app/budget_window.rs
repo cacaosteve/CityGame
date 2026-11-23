@@ -1973,6 +1973,141 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R15 January 2011 RAM, CGMS, and XMIC captures"]
+    fn mac_r15_january_2011_budget_review_matches_native_panel() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R15_BUDGET_CAPTURE_DIR").unwrap(),
+        );
+        let snapshot = std::fs::read(root.join("jan2011-budget-entry.cgms")).unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&snapshot).unwrap();
+        let xmic = std::fs::read(root.join("jan2011-budget-entry-xmic.bin")).unwrap();
+        assert_eq!(xmic.len(), 150 * 8);
+        for (i, row) in xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(i, row[0]);
+            city.set_microsim_stat0(i, row[1]);
+            city.set_microsim_stat1(i, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(i, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(i, u16::from_be_bytes([row[6], row[7]]));
+        }
+
+        let ram = std::fs::read(root.join("jan2011-budget-entry.ram")).unwrap();
+        assert_eq!(ram.len(), 16 * 1024 * 1024);
+        let native_u32 =
+            |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
+        let a5 = native_u32(0x904) as usize;
+        let at_a5 = |offset: usize| a5 + offset - 0x10000;
+        let table = native_u32(at_a5(0xfd66)) as usize;
+        assert!(table + 16 * 0x70 <= ram.len());
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        city.set_city_funds(native_u32(at_a5(0xefac)) as i32);
+        city.name = "AutoDebt".to_owned();
+
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2011,
+                month: 1
+            })
+        );
+        assert_eq!(city.city_funds(), -5_815);
+        let entries = entries_for_city_for_month(&city, EngineFidelity::Mac68k, 1, true);
+        let sum = |range: std::ops::Range<usize>, ytd: bool| {
+            entries[range]
+                .iter()
+                .map(|entry| {
+                    if ytd {
+                        entry.year_to_date.unwrap()
+                    } else {
+                        entry.annual
+                    }
+                })
+                .sum::<i64>()
+        };
+        assert_eq!((sum(0..3, true), sum(0..3, false)), (480, 512));
+        assert_eq!((sum(3..4, true), sum(3..4, false)), (0, 0));
+        assert_eq!((sum(4..5, true), sum(4..5, false)), (0, 0));
+        assert_eq!((sum(5..6, true), sum(5..6, false)), (-100, -100));
+        assert_eq!((sum(6..7, true), sum(6..7, false)), (-100, -100));
+        assert_eq!((sum(7..8, true), sum(7..8, false)), (0, 0));
+        assert_eq!((sum(8..10, true), sum(8..10, false)), (-25, -25));
+        assert_eq!((sum(10..16, true), sum(10..16, false)), (-23, -23));
+        let cashflow = mac_cashflow_summary(&entries, i64::from(city.city_funds()));
+        assert_eq!(cashflow.year_to_date, 233);
+        assert_eq!(cashflow.estimated, 264);
+        assert_eq!(cashflow.end_of_year_funds, -5_582);
+
+        let mut annual_settlement = crate::app::tests::test_state(city.clone());
+        annual_settlement.engine_fidelity = EngineFidelity::Mac68k;
+        annual_settlement.apply_budget_year_end_settlement();
+        let timeout_ram = std::fs::read(root.join("jan2011-review-timeout-return.ram")).unwrap();
+        assert_eq!(timeout_ram.len(), 16 * 1024 * 1024);
+        let timeout_u32 = |address: usize| {
+            u32::from_be_bytes(timeout_ram[address..address + 4].try_into().unwrap())
+        };
+        // The RAM snapshot was taken after the event handler restored another
+        // A5 context. The matching CODE 2 rows at TickCount 219991 retain the
+        // live game A5 base 0x773758 for the funds field.
+        let timeout_a5 = 0x0077_3758usize;
+        let native_timeout_funds = timeout_u32(timeout_a5 + 0xefac - 0x10000) as i32;
+        assert_eq!(native_timeout_funds, -5_583);
+        assert_eq!(annual_settlement.city.city_funds(), native_timeout_funds);
+
+        // The matching January 2010 review was closed in the same native
+        // R15 session. Its next live boundary has funds -5815, a +218
+        // row-by-row settlement from the January panel's -6033 balance.
+        let before_snapshot = std::fs::read(root.join("jan2010-budget-entry.cgms")).unwrap();
+        let mut before = crate::city::city_from_cgms_v4_for_test(&before_snapshot).unwrap();
+        let before_xmic = std::fs::read(root.join("jan2010-budget-entry-xmic.bin")).unwrap();
+        assert_eq!(before_xmic.len(), 150 * 8);
+        for (i, row) in before_xmic.chunks_exact(8).enumerate() {
+            before.set_microsim_tile_id(i, row[0]);
+            before.set_microsim_stat0(i, row[1]);
+            before.set_microsim_stat1(i, u16::from_be_bytes([row[2], row[3]]));
+            before.set_microsim_stat2(i, u16::from_be_bytes([row[4], row[5]]));
+            before.set_microsim_stat3(i, u16::from_be_bytes([row[6], row[7]]));
+        }
+        let before_ram = std::fs::read(root.join("jan2010-budget-entry.ram")).unwrap();
+        assert_eq!(before_ram.len(), 16 * 1024 * 1024);
+        let before_u32 = |address: usize| {
+            u32::from_be_bytes(before_ram[address..address + 4].try_into().unwrap())
+        };
+        let before_a5 = before_u32(0x904) as usize;
+        let before_at_a5 = |offset: usize| before_a5 + offset - 0x10000;
+        let before_table = before_u32(before_at_a5(0xfd66)) as usize;
+        assert!(before_table + 16 * 0x70 <= before_ram.len());
+        for row in 0..16 {
+            let start = before_table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = before_u32(start + offset);
+            }
+            before
+                .set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        before.set_city_funds(before_u32(before_at_a5(0xefac)) as i32);
+        let mut settlement = crate::app::tests::test_state(before);
+        settlement.engine_fidelity = EngineFidelity::Mac68k;
+        settlement.apply_budget_year_end_settlement();
+
+        let after_ram = std::fs::read(root.join("feb2010-postreview-return.ram")).unwrap();
+        assert_eq!(after_ram.len(), 16 * 1024 * 1024);
+        let after_u32 = |address: usize| {
+            u32::from_be_bytes(after_ram[address..address + 4].try_into().unwrap())
+        };
+        let after_a5 = after_u32(0x904) as usize;
+        let native_funds = after_u32(after_a5 + 0xefac - 0x10000) as i32;
+        assert_eq!(native_funds, -5_815);
+        assert_eq!(settlement.city.city_funds(), native_funds);
+    }
+
+    #[test]
     #[ignore = "requires private R14 January 2032 RAM, CGMS, and XMIC captures"]
     fn mac_r14_january_2032_budget_review_matches_native_panel() {
         let root = std::path::PathBuf::from(

@@ -24,6 +24,9 @@ pub(crate) fn load_classic_cty(
     clear_classic_cty_target_map(&mut city);
     apply_cty_tiles(&mut city, crt, game_rand, &classic.tiles);
     let date = classic.date();
+    // FUN_004829F0 word-swaps header dword +0x64 and publishes it as funds
+    // (`0x4ca444`, PE MISC +0x14).
+    city.set_city_funds(classic.starting_funds());
     // FUN_004829F0 copies header WORD +0x6a to the PE Auto-Budget DWORD
     // (`0x4cc4b0`, saved MISC +0x0ff0) without boolean normalization.
     city.set_misc_u32_at(

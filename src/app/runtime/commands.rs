@@ -1662,6 +1662,12 @@ mod music_open_tests {
             "METROPOL" => 1,
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
+        let native_funds = match city_name.as_str() {
+            "BAZ" => 0x4ccc_4e20_i32,
+            "BERN" => 0x0206,
+            "METROPOL" => 0x9989,
+            other => panic!("unsupported native Classic CTY fixture {other}"),
+        };
         let (planes_env, expected_crt, expected_game_rand) = match city_name.as_str() {
             "BAZ" => (
                 "CITYGAME_CLASSIC_CTY_NATIVE_PLANES",
@@ -1743,6 +1749,11 @@ mod music_open_tests {
             |state: &ViewerState| {
                 assert_eq!(state.city.name, city_name);
                 assert_eq!(
+                    state.city.city_funds(),
+                    native_funds,
+                    "normal {city_name} open publishes the native starting funds"
+                );
+                assert_eq!(
                     state
                         .city
                         .misc_u32_at(crate::app::budget::AUTO_BUDGET_MISC_OFFSET),
@@ -1810,6 +1821,11 @@ mod music_open_tests {
         assert_eq!(reopened.saved_date(), state.city.saved_date());
         assert_eq!(reopened.year_founded(), state.city.year_founded());
         assert_eq!(reopened.year_founded(), Some(1900));
+        assert_eq!(
+            reopened.city_funds(),
+            native_funds,
+            "saved/reloaded {city_name} retains the native starting funds"
+        );
         assert_eq!(
             reopened.misc_u32_at(crate::app::budget::AUTO_BUDGET_MISC_OFFSET),
             Some(native_auto_budget),

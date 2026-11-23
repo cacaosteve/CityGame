@@ -10280,6 +10280,46 @@ fn mac_january_3577_zoo_xmic_matches_native_ordered_annual_dispatch() {
         Some((0x22, 0x51, 0x11, 0x0a)),
         "captured zoo XMIC row after its four game-LCG draws"
     );
+
+    let xmic_bytes = |city: &crate::city::City| {
+        let mut bytes = Vec::with_capacity(150 * 8);
+        for slot in 0..150 {
+            let row = city.microsim_at(slot).expect("Mac XMIC slot");
+            bytes.extend([
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ]);
+        }
+        bytes
+    };
+    let citygame_exit_xmic = xmic_bytes(&state.city);
+    let roundtrip_path = std::env::temp_dir().join(format!(
+        "citygame-mac-zoo-xmic-roundtrip-{}.city",
+        std::process::id()
+    ));
+    state.city.save(&roundtrip_path).unwrap();
+    let reloaded = crate::city::City::load(&roundtrip_path).unwrap();
+    std::fs::remove_file(roundtrip_path).unwrap();
+    assert_eq!(reloaded.kind, crate::city::CityFileKind::MacCity);
+    let reloaded_xmic = xmic_bytes(&reloaded);
+    assert_eq!(
+        &reloaded_xmic[16 * 8..17 * 8],
+        native_zoo_row,
+        "the native annual zoo result survives CityGame save/reload"
+    );
+    for slot in 0..150 {
+        assert_eq!(
+            &reloaded_xmic[slot * 8..slot * 8 + 8],
+            &citygame_exit_xmic[slot * 8..slot * 8 + 8],
+            "CityGame XMIC slot {slot} survives save/reload"
+        );
+    }
 }
 
 #[test]

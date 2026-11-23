@@ -7865,16 +7865,25 @@ fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
         .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
     state.traffic.set_speed(GameSpeed::Paused);
     state.mac_loop_scheduler.start_captured_clock(0);
+    // R15's pre-event MouseDown boundary; the real menu path should consume
+    // two coordinate draws and reach the captured CODE 10 worker entry.
+    state.mac_process_rng = MacToolboxRng::new(0x7956_15b5);
     state.hover_tile = Some((12, 34));
 
     assert!(state.start_disaster(DisasterKind::Earthquake));
     let worker_entry_seed = state.mac_process_rng.seed();
+    assert_eq!(worker_entry_seed, 0x4039_47e7);
+    assert_eq!(
+        state.mac_loop_scheduler.pending_action_point,
+        Some((70, 12))
+    );
     assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
     let mut expected_first_shake_seed = MacToolboxRng::new(worker_entry_seed);
     expected_first_shake_seed.random_i16();
     expected_first_shake_seed.random_i16();
     let prelude_seed = state.mac_process_rng.seed();
     assert_eq!(prelude_seed, expected_first_shake_seed.seed());
+    assert_eq!(prelude_seed, 0x03c3_accb);
     assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
 
     let mut previous_tick = 0;

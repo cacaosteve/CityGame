@@ -8461,10 +8461,10 @@ fn mac_earthquake_r15_autodebt_worker_matches_live_rng_and_map() {
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.traffic.set_speed(GameSpeed::Paused);
-    // In this capture the first CODE 10 scan site sees two QuickDraw draws
-    // after export-246 entry. Keep that caller/prelude delta separate from the
-    // map worker, whose direct scan comparator starts at the captured scan
-    // seed rather than assuming it equals the function-entry seed.
+    // In this capture the first CODE 10 shake TickCount already sees two
+    // QuickDraw advances after export-246 entry; the seed stays fixed through
+    // the first scan. Keep that setup/helper delta separate from the map
+    // worker, whose comparator starts at the captured scan seed.
     state.mac_process_rng = MacToolboxRng::new(0x03c3_accb);
     state.mac_game_rng = MacGameLcgRng::new(0x540f_ffce);
     state.mac_app_lfsr = MacAppLfsrRng::new(0x1083);

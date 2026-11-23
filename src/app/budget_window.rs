@@ -2429,6 +2429,18 @@ mod tests {
         assert_eq!(cashflow.year_to_date, 251);
         assert_eq!(cashflow.estimated, 237);
         assert_eq!(cashflow.end_of_year_funds, -4_585);
+        let mut annual_settlement = crate::app::tests::test_state(city);
+        annual_settlement.engine_fidelity = EngineFidelity::Mac68k;
+        annual_settlement.apply_budget_year_end_settlement();
+        let return_ram = std::fs::read(root.join("jan2015-review-timeout-return.ram")).unwrap();
+        assert_eq!(return_ram.len(), 16 * 1024 * 1024);
+        let return_u32 = |address: usize| {
+            u32::from_be_bytes(return_ram[address..address + 4].try_into().unwrap())
+        };
+        let return_a5 = return_u32(0x904) as usize;
+        let native_funds = return_u32(return_a5 + 0xefac - 0x10000) as i32;
+        assert_eq!(native_funds, -4_584);
+        assert_eq!(annual_settlement.city.city_funds(), native_funds);
     }
 
     #[test]

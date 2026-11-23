@@ -136,7 +136,9 @@ pub(in crate::app) fn initialize_new_city_budget_rows(city: &mut City, fidelity:
             match fidelity {
                 // PE 0x40e722..0x40e756 clears current and YTD, sets
                 // funding, and initializes month-zero's funding history.
-                EngineFidelity::Win95 => city.set_budget_misc_u32_values(offset, &[0, value, 0, 0, value]),
+                EngineFidelity::Win95 => {
+                    city.set_budget_misc_u32_values(offset, &[0, value, 0, 0, value])
+                }
                 EngineFidelity::Mac68k => city.set_budget_misc_u32_values(offset, &[value, value]),
             }
         }

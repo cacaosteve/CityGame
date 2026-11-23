@@ -533,7 +533,10 @@ fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
         {
             let directory = output.join("catalog/data");
             fs::create_dir_all(&directory)?;
-            fs::write(directory.join("win95-read-error.json"), serde_json::to_vec(&messages)?)?;
+            fs::write(
+                directory.join("win95-read-error.json"),
+                serde_json::to_vec(&messages)?,
+            )?;
         }
         if let Ok(message) = fs::read(&executable)
             .map_err(anyhow::Error::from)
@@ -541,7 +544,10 @@ fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
         {
             let directory = output.join("catalog/data");
             fs::create_dir_all(&directory)?;
-            fs::write(directory.join("win95-wrong-iff-city-type.json"), serde_json::to_vec(&message)?)?;
+            fs::write(
+                directory.join("win95-wrong-iff-city-type.json"),
+                serde_json::to_vec(&message)?,
+            )?;
         }
         if let Ok(message) = fs::read(&executable)
             .map_err(anyhow::Error::from)
@@ -549,7 +555,10 @@ fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
         {
             let directory = output.join("catalog/data");
             fs::create_dir_all(&directory)?;
-            fs::write(directory.join("win95-not-iff.json"), serde_json::to_vec(&message)?)?;
+            fs::write(
+                directory.join("win95-not-iff.json"),
+                serde_json::to_vec(&message)?,
+            )?;
         }
         if let Ok(message) = fs::read(&executable)
             .map_err(anyhow::Error::from)
@@ -557,7 +566,10 @@ fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
         {
             let directory = output.join("catalog/data");
             fs::create_dir_all(&directory)?;
-            fs::write(directory.join("win95-city-open-failure.json"), serde_json::to_vec(&message)?)?;
+            fs::write(
+                directory.join("win95-city-open-failure.json"),
+                serde_json::to_vec(&message)?,
+            )?;
         }
         if let Ok(feedback) = fs::read(&executable)
             .map_err(anyhow::Error::from)
@@ -565,7 +577,10 @@ fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
         {
             let directory = output.join("catalog/data");
             fs::create_dir_all(&directory)?;
-            fs::write(directory.join("win95-save-feedback.json"), serde_json::to_vec(&feedback)?)?;
+            fs::write(
+                directory.join("win95-save-feedback.json"),
+                serde_json::to_vec(&feedback)?,
+            )?;
         }
         match fs::read(&executable)
             .map_err(anyhow::Error::from)
@@ -585,7 +600,8 @@ fn copy_catalog(source: &Path, output: &Path) -> Result<()> {
     // Keep each archive member independently. A partial original installation
     // is observably different depending on which of the two opens fails first.
     for name in ["DATA_USA.DAT", "DATA_USA.IDX"] {
-        if let Some(source) = find_case_insensitive(source, &["DATA", name]).filter(|p| p.is_file()) {
+        if let Some(source) = find_case_insensitive(source, &["DATA", name]).filter(|p| p.is_file())
+        {
             let destination = output.join("catalog/data");
             fs::create_dir_all(&destination)
                 .with_context(|| format!("creating {}", destination.display()))?;
@@ -889,19 +905,33 @@ mod tests {
     #[test]
     fn preserves_each_available_newspaper_archive_member() {
         let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("citygame-partial-pe-data-{}-{nonce}", std::process::id()));
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "citygame-partial-pe-data-{}-{nonce}",
+            std::process::id()
+        ));
         for (dat, idx) in [(false, false), (true, false), (false, true), (true, true)] {
             let source = root.join(format!("source-{dat}-{idx}"));
             let output = root.join(format!("output-{dat}-{idx}"));
             fs::create_dir_all(source.join("Data")).unwrap();
-            if dat { fs::write(source.join("Data/data_usa.dat"), b"dat").unwrap(); }
-            if idx { fs::write(source.join("Data/data_usa.idx"), b"idx").unwrap(); }
+            if dat {
+                fs::write(source.join("Data/data_usa.dat"), b"dat").unwrap();
+            }
+            if idx {
+                fs::write(source.join("Data/data_usa.idx"), b"idx").unwrap();
+            }
             copy_catalog(&source, &output).unwrap();
-            for (name, present, expected) in [("DATA_USA.DAT", dat, &b"dat"[..]), ("DATA_USA.IDX", idx, &b"idx"[..])] {
+            for (name, present, expected) in [
+                ("DATA_USA.DAT", dat, &b"dat"[..]),
+                ("DATA_USA.IDX", idx, &b"idx"[..]),
+            ] {
                 let path = output.join("catalog/data").join(name);
                 assert_eq!(path.is_file(), present, "{name}");
-                if present { assert_eq!(fs::read(path).unwrap(), expected); }
+                if present {
+                    assert_eq!(fs::read(path).unwrap(), expected);
+                }
             }
         }
         fs::remove_dir_all(root).unwrap();
@@ -915,31 +945,53 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let output = std::env::temp_dir().join(format!("citygame-win95-catalog-{}-{nonce}", std::process::id()));
+        let output = std::env::temp_dir().join(format!(
+            "citygame-win95-catalog-{}-{nonce}",
+            std::process::id()
+        ));
         fs::create_dir_all(&output).unwrap();
         copy_catalog(&source, &output).unwrap();
         let labels: [String; 5] = serde_json::from_slice(
             &fs::read(output.join("catalog/data/win95-new-city-labels.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(labels, ["Llamas", "Alpacas", "Camels", "Dromedaries", "Army Ants"]);
+        assert_eq!(
+            labels,
+            ["Llamas", "Alpacas", "Camels", "Dromedaries", "Army Ants"]
+        );
         let feedback: [String; 2] = serde_json::from_slice(
             &fs::read(output.join("catalog/data/win95-save-feedback.json")).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         let executable = fs::read(source.join("simcity.exe")).unwrap();
-        assert_eq!(feedback, crate::win95_resources::save_feedback_strings(&executable).unwrap());
+        assert_eq!(
+            feedback,
+            crate::win95_resources::save_feedback_strings(&executable).unwrap()
+        );
         let open_failure: String = serde_json::from_slice(
             &fs::read(output.join("catalog/data/win95-city-open-failure.json")).unwrap(),
-        ).unwrap();
-        assert_eq!(open_failure, crate::win95_resources::city_open_failure_string(&executable).unwrap());
+        )
+        .unwrap();
+        assert_eq!(
+            open_failure,
+            crate::win95_resources::city_open_failure_string(&executable).unwrap()
+        );
         let not_iff: String = serde_json::from_slice(
             &fs::read(output.join("catalog/data/win95-not-iff.json")).unwrap(),
-        ).unwrap();
-        assert_eq!(not_iff, crate::win95_resources::not_iff_string(&executable).unwrap());
+        )
+        .unwrap();
+        assert_eq!(
+            not_iff,
+            crate::win95_resources::not_iff_string(&executable).unwrap()
+        );
         let wrong_type: String = serde_json::from_slice(
             &fs::read(output.join("catalog/data/win95-wrong-iff-city-type.json")).unwrap(),
-        ).unwrap();
-        assert_eq!(wrong_type, crate::win95_resources::wrong_iff_city_type_string(&executable).unwrap());
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_type,
+            crate::win95_resources::wrong_iff_city_type_string(&executable).unwrap()
+        );
         fs::remove_dir_all(output).unwrap();
     }
 

@@ -87,7 +87,12 @@ pub(super) fn start_scatter(
 }
 
 /// CODE 10 FUN_3c944 selects the first matching XBLD in X-major order.
-pub(super) fn start_walk(city: &mut City, rng: &mut MacToolboxRng, now: &mut u32, lfsr: &mut MacAppLfsrRng) -> Option<usize> {
+pub(super) fn start_walk(
+    city: &mut City,
+    rng: &mut MacToolboxRng,
+    now: &mut u32,
+    lfsr: &mut MacAppLfsrRng,
+) -> Option<usize> {
     let (x, y) = first_source(city, WALK_SOURCE)?;
     // The native scan rechecks one byte beyond each row. Contiguous XBLD
     // rows make a source at (x, 0) appear as (x - 1, 128) first.

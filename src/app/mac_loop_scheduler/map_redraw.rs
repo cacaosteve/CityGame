@@ -56,8 +56,12 @@ pub(super) struct MacMapRedrawEffects {
 
 impl MacMapRedrawEffects {
     pub(super) fn apply(self, city: &mut City, lfsr: &mut MacAppLfsrRng) {
-        for _ in 0..self.kind6_draws { lfsr.bounded(2); }
-        for (x, y) in self.stale_proxies { city.set_text_overlay(x, y, 0); }
+        for _ in 0..self.kind6_draws {
+            lfsr.bounded(2);
+        }
+        for (x, y) in self.stale_proxies {
+            city.set_text_overlay(x, y, 0);
+        }
     }
 }
 
@@ -76,13 +80,22 @@ fn mac_small_building_width_units(building: u8) -> i32 {
 impl MacMapClip {
     #[cfg(test)]
     pub(super) fn from_native_snapshot(top: i32, left: i32, bottom: i32, right: i32) -> Self {
-        Self { top, left, bottom, right }
+        Self {
+            top,
+            left,
+            bottom,
+            right,
+        }
     }
 
     pub(super) fn union(self, other: Self) -> Self {
         // QuickDraw UnionRect ignores an empty input rectangle.
-        if self.top >= self.bottom || self.left >= self.right { return other; }
-        if other.top >= other.bottom || other.left >= other.right { return self; }
+        if self.top >= self.bottom || self.left >= self.right {
+            return other;
+        }
+        if other.top >= other.bottom || other.left >= other.right {
+            return self;
+        }
         Self {
             top: self.top.min(other.top),
             left: self.left.min(other.left),
@@ -94,24 +107,48 @@ impl MacMapClip {
 
 impl MacMapRedrawView {
     #[cfg(test)]
-    pub(super) fn from_native_snapshot(width: i32, height: i32, origin_x: i32, origin_y: i32, zoom: u32, rotation: u8) -> Self {
-        Self { width, height, origin_x, origin_y, zoom, rotation }
+    pub(super) fn from_native_snapshot(
+        width: i32,
+        height: i32,
+        origin_x: i32,
+        origin_y: i32,
+        zoom: u32,
+        rotation: u8,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            origin_x,
+            origin_y,
+            zoom,
+            rotation,
+        }
     }
 
     /// Surface part of CODE 12 export 178. The caller resolves shape
     /// dimensions from the selected original sprite table and separately
     /// handles any actor bounds associated with an XTXT marker.
     pub(super) fn surface_tile_dirty_bounds(
-        self, city: &City, x: usize, y: usize, terrain_height: i32,
+        self,
+        city: &City,
+        x: usize,
+        y: usize,
+        terrain_height: i32,
         building_shape: Option<(i32, i32)>,
     ) -> Option<MacMapClip> {
-        if x >= CITY_WIDTH || y >= CITY_HEIGHT || self.zoom > 2 { return None; }
+        if x >= CITY_WIDTH || y >= CITY_HEIGHT || self.zoom > 2 {
+            return None;
+        }
         let (xv, yv) = super::super::view_navigation::rotate_tile_coords(x, y, self.rotation);
         let unit = 4 << self.zoom;
         let left = self.origin_x + unit * (xv as i32 - yv as i32);
         let base = self.origin_y + (unit / 2) * (xv + yv) as i32;
         let altitude = city.altm_at(x, y);
-        let height = if city.terrain_at(x, y) < 16 { altitude.land } else { altitude.water };
+        let height = if city.terrain_at(x, y) < 16 {
+            altitude.land
+        } else {
+            altitude.water
+        };
         let mut bottom = base - 3 * (1 << self.zoom) * i32::from(height);
         let mut top = bottom - terrain_height;
         let mut right = left + unit * 2;
@@ -120,11 +157,15 @@ impl MacMapRedrawView {
             let (building_height, building_width) = building_shape?;
             let mut sprite_y = bottom;
             if (0x51..0x5d).contains(&building) || matches!(building, 0x6a | 0x6b) {
-                sprite_y += (i32::from(altitude.land) - i32::from(altitude.water)) * 3 * (1 << self.zoom);
+                sprite_y +=
+                    (i32::from(altitude.land) - i32::from(altitude.water)) * 3 * (1 << self.zoom);
             }
             if building >= 0x61 {
                 let mask = [0x80, 0x10, 0x20, 0x40][usize::from(self.rotation & 3)];
-                if city.zone_at(x, y).is_some_and(|zone| zone.raw_bits() & mask != 0) {
+                if city
+                    .zone_at(x, y)
+                    .is_some_and(|zone| zone.raw_bits() & mask != 0)
+                {
                     let sprite_bottom = sprite_y - unit / 2 + building_width / 4;
                     top = top.min(sprite_bottom - building_height);
                     bottom = bottom.max(sprite_bottom);
@@ -135,22 +176,40 @@ impl MacMapRedrawView {
             }
         }
         let margin = 8 << self.zoom;
-        if bottom < 0 || top > self.height || right < 0 || left > self.width
-            || self.width - left < margin || right < margin
-        { return None; }
-        Some(MacMapClip { top, left, bottom, right })
+        if bottom < 0
+            || top > self.height
+            || right < 0
+            || left > self.width
+            || self.width - left < margin
+            || right < margin
+        {
+            return None;
+        }
+        Some(MacMapClip {
+            top,
+            left,
+            bottom,
+            right,
+        })
     }
 
     /// Resolve shape dimensions from the same imported Mac pack as the map.
     /// A missing mapping or sprite leaves the bounds unknown to the caller.
     pub(super) fn surface_tile_dirty_bounds_from_assets(
-        self, city: &City, x: usize, y: usize,
+        self,
+        city: &City,
+        x: usize,
+        y: usize,
         shapes: &crate::mac_shape_table::MacShapeDimensions,
     ) -> Option<MacMapClip> {
-        if x >= CITY_WIDTH || y >= CITY_HEIGHT { return None; }
+        if x >= CITY_WIDTH || y >= CITY_HEIGHT {
+            return None;
+        }
         let (_, terrain_height) = shapes.terrain_dimensions(city.terrain_at(x, y), self.zoom)?;
         let building = city.building_at(x, y);
-        let building_shape = if building == 0 { None } else {
+        let building_shape = if building == 0 {
+            None
+        } else {
             let (width, height) = shapes.building_dimensions(building, self.zoom)?;
             Some((height as i32, width as i32))
         };
@@ -160,13 +219,22 @@ impl MacMapRedrawView {
     /// Include a known actor proxy after the surface tile passes clipping,
     /// as CODE 12 export 178 does before it returns to the terrain walker.
     pub(super) fn tile_dirty_bounds_from_assets(
-        self, city: &City, x: usize, y: usize,
+        self,
+        city: &City,
+        x: usize,
+        y: usize,
         shapes: &crate::mac_shape_table::MacShapeDimensions,
     ) -> Option<MacMapClip> {
         let surface = self.surface_tile_dirty_bounds_from_assets(city, x, y, shapes)?;
-        let actor = city.text_overlay_at(x, y).and_then(|marker| {
-            marker.checked_sub(0xc9).filter(|&slot| slot < 40).map(usize::from)
-        }).and_then(|slot| city.traffic_overlays()?.get(slot))
+        let actor = city
+            .text_overlay_at(x, y)
+            .and_then(|marker| {
+                marker
+                    .checked_sub(0xc9)
+                    .filter(|&slot| slot < 40)
+                    .map(usize::from)
+            })
+            .and_then(|slot| city.traffic_overlays()?.get(slot))
             .and_then(|actor| self.actor_dirty_bounds(city, actor));
         Some(actor.map_or(surface, |bounds| surface.union(bounds)))
     }
@@ -174,17 +242,20 @@ impl MacMapRedrawView {
     /// CODE 5 export 80's generic explosion frame, as accumulated by its
     /// local `0x7e34` helper before export 174 flushes the rectangle.
     pub(super) fn destruction_frame_bounds(
-        self, x: usize, y: usize, height: u8, frame: usize,
-        column: usize, row: usize, variant: u8,
+        self,
+        x: usize,
+        y: usize,
+        height: u8,
+        frame: usize,
+        column: usize,
+        row: usize,
+        variant: u8,
     ) -> MacMapClip {
         // Shape-table heights at indices 0x188 + zoom*500 + variant.
-        const HEIGHTS: [[i32; 4]; 3] = [
-            [17, 13, 11, 8], [31, 27, 21, 17], [64, 49, 39, 32],
-        ];
+        const HEIGHTS: [[i32; 4]; 3] = [[17, 13, 11, 8], [31, 27, 21, 17], [64, 49, 39, 32]];
         let (x, y) = super::super::view_navigation::rotate_tile_coords(x, y, self.rotation);
         let unit = 4 << self.zoom;
-        let left = self.origin_x + unit * (x as i32 - y as i32)
-            + unit * (column + row) as i32;
+        let left = self.origin_x + unit * (x as i32 - y as i32) + unit * (column + row) as i32;
         let bottom = self.origin_y + unit / 2 * (x + y) as i32
             - 3 * (1 << self.zoom) * i32::from(height)
             + unit / 2 * (column as i32 - row as i32 - frame as i32);
@@ -199,22 +270,34 @@ impl MacMapRedrawView {
     /// CODE 6 export 111's screen rectangle for a live actor. Its kind tables
     /// define the minimum zoom and horizontal, upper and lower extents.
     pub(super) fn actor_dirty_bounds(
-        self, city: &City, actor: &crate::win95_overlay::Win95OverlayRecord,
+        self,
+        city: &City,
+        actor: &crate::win95_overlay::Win95OverlayRecord,
     ) -> Option<MacMapClip> {
         const ABOVE: [i32; 18] = [0, 10, 6, 6, 4, 15, 2, 6, 6, 2, 4, 4, 0, 0, 6, 9, 12, 0];
         const BELOW: [i32; 18] = [0, 0, 0, 1, 4, 0, 0, 2, 2, 2, 4, 4, 0, 0, 2, 0, 2, 0];
         const HALF_WIDTH: [i32; 18] = [0, 2, 2, 5, 4, 8, 2, 2, 2, 2, 6, 6, 0, 0, 2, 5, 2, 0];
         let kind = usize::from(actor.kind);
-        if kind == 0 || self.zoom > 2 || self.zoom < *MAC_ACTOR_MIN_ZOOM.get(kind)? { return None; }
+        if kind == 0 || self.zoom > 2 || self.zoom < *MAC_ACTOR_MIN_ZOOM.get(kind)? {
+            return None;
+        }
         let (x, y) = (usize::from(actor.tile_x), usize::from(actor.tile_y));
-        if x >= CITY_WIDTH || y >= CITY_HEIGHT { return None; }
+        if x >= CITY_WIDTH || y >= CITY_HEIGHT {
+            return None;
+        }
         let (xv, yv) = super::super::view_navigation::rotate_tile_coords(x, y, self.rotation);
         let unit = 4 << self.zoom;
         let px = self.origin_x + unit * (xv as i32 - yv as i32);
-        let water = city.tile_bits_at(x, y).is_some_and(|bits| bits.raw_bits() & 4 != 0);
-        let height = if water { city.water_height_at(x, y) } else { city.altitude_at(x, y) };
-        let py = self.origin_y + unit / 2 * (xv + yv) as i32
-            - 3 * (1 << self.zoom) * i32::from(height);
+        let water = city
+            .tile_bits_at(x, y)
+            .is_some_and(|bits| bits.raw_bits() & 4 != 0);
+        let height = if water {
+            city.water_height_at(x, y)
+        } else {
+            city.altitude_at(x, y)
+        };
+        let py =
+            self.origin_y + unit / 2 * (xv + yv) as i32 - 3 * (1 << self.zoom) * i32::from(height);
         let above = match kind {
             5 => (i32::from(actor.height) + 6) * unit,
             6 => i32::from(actor.height) * unit,
@@ -228,9 +311,12 @@ impl MacMapRedrawView {
             right: px + unit + half_width,
         };
         let margin = 8 << self.zoom;
-        if bounds.bottom < 0 || bounds.top > self.height
-            || bounds.right < 0 || bounds.left > self.width
-            || self.width - bounds.left < margin || bounds.right < margin
+        if bounds.bottom < 0
+            || bounds.top > self.height
+            || bounds.right < 0
+            || bounds.left > self.width
+            || self.width - bounds.left < margin
+            || bounds.right < margin
         {
             None
         } else {
@@ -239,11 +325,24 @@ impl MacMapRedrawView {
     }
 
     /// Kind-15 bounds before an Auto-Goto changes the camera.
-    pub(super) fn tornado_dirty_bounds(self, city: &City, x: usize, y: usize) -> Option<MacMapClip> {
-        if x >= CITY_WIDTH || y >= CITY_HEIGHT { return None; }
-        self.actor_dirty_bounds(city, &crate::win95_overlay::Win95OverlayRecord {
-            kind: 15, tile_x: x as u8, tile_y: y as u8, ..Default::default()
-        })
+    pub(super) fn tornado_dirty_bounds(
+        self,
+        city: &City,
+        x: usize,
+        y: usize,
+    ) -> Option<MacMapClip> {
+        if x >= CITY_WIDTH || y >= CITY_HEIGHT {
+            return None;
+        }
+        self.actor_dirty_bounds(
+            city,
+            &crate::win95_overlay::Win95OverlayRecord {
+                kind: 15,
+                tile_x: x as u8,
+                tile_y: y as u8,
+                ..Default::default()
+            },
+        )
     }
 
     /// CODE 12 export 174 expands the dirty rectangle, intersects it with
@@ -263,7 +362,16 @@ impl MacMapRedrawView {
             right: dirty.right.min(self.width),
         };
         let mut effects = MacMapRedrawEffects::default();
-        self.redraw_markers_in_clip_with_palette(city, rng, clip, palette, &mut None, None, &mut effects, &mut |_, _, _| {});
+        self.redraw_markers_in_clip_with_palette(
+            city,
+            rng,
+            clip,
+            palette,
+            &mut None,
+            None,
+            &mut effects,
+            &mut |_, _, _| {},
+        );
         effects
     }
 
@@ -291,8 +399,10 @@ impl MacMapRedrawView {
                 let diff = x as i32 - y as i32 + 127;
                 let sum = x as i32 + y as i32;
                 let next = MacActorTileBounds {
-                    min_diff: diff - 5, max_diff: diff + 5,
-                    min_sum: sum - 9, max_sum: sum,
+                    min_diff: diff - 5,
+                    max_diff: diff + 5,
+                    min_sum: sum - 9,
+                    max_sum: sum,
                 };
                 tile_bounds = Some(match tile_bounds {
                     Some(old) => MacActorTileBounds {
@@ -306,7 +416,16 @@ impl MacMapRedrawView {
             }
         }
         let mut effects = MacMapRedrawEffects::default();
-        self.redraw_markers_in_clip_with_palette(city, rng, clip, palette, &mut None, tile_bounds, &mut effects, &mut |_, _, _| {});
+        self.redraw_markers_in_clip_with_palette(
+            city,
+            rng,
+            clip,
+            palette,
+            &mut None,
+            tile_bounds,
+            &mut effects,
+            &mut |_, _, _| {},
+        );
         effects
     }
 
@@ -359,7 +478,12 @@ impl MacMapRedrawView {
         self.redraw_markers_in_clip_with_palette(
             city,
             rng,
-            MacMapClip { top: 0, left: 0, bottom: self.height, right: self.width },
+            MacMapClip {
+                top: 0,
+                left: 0,
+                bottom: self.height,
+                right: self.width,
+            },
             palette,
             &mut None,
             None,
@@ -380,7 +504,12 @@ impl MacMapRedrawView {
         self.redraw_markers_in_clip_with_palette(
             city,
             rng,
-            MacMapClip { top: 0, left: 0, bottom: self.height, right: self.width },
+            MacMapClip {
+                top: 0,
+                left: 0,
+                bottom: self.height,
+                right: self.width,
+            },
             palette,
             dirty,
             None,
@@ -408,18 +537,21 @@ impl MacMapRedrawView {
         let left = clip.left - [24, 48, 128][self.zoom as usize];
         let top = clip.top - [8, 16, 32][self.zoom as usize];
         for diagonal in 0..(CITY_WIDTH + CITY_HEIGHT - 1) {
-            for xv in diagonal.saturating_sub(CITY_HEIGHT - 1)..=diagonal.min(CITY_WIDTH - 1)
-            {
+            for xv in diagonal.saturating_sub(CITY_HEIGHT - 1)..=diagonal.min(CITY_WIDTH - 1) {
                 let yv = diagonal - xv;
                 // The Mac rotates its map planes; CityGame retains canonical
                 // coordinates, so walk the native rotated planes in reverse.
                 let (x, y) = super::super::view_navigation::rotate_tile_coords(
-                    xv, yv, (4 - (self.rotation & 3)) & 3,
+                    xv,
+                    yv,
+                    (4 - (self.rotation & 3)) & 3,
                 );
                 let Some(marker) = city.text_overlay_at(x, y) else {
                     continue;
                 };
-                let actor = marker.checked_sub(0xc9).filter(|&slot| slot < 40)
+                let actor = marker
+                    .checked_sub(0xc9)
+                    .filter(|&slot| slot < 40)
                     .and_then(|slot| city.traffic_overlays()?.get(usize::from(slot)))
                     .filter(|actor| actor.kind <= 16);
                 if actor.is_none() && !(0xfb..=0xff).contains(&marker) {
@@ -439,8 +571,10 @@ impl MacMapRedrawView {
                     // The original walks diff in steps of two. Its signed
                     // division maps alternating diagonals to the next value.
                     let step_diff = diff - (diff - bounds.min_diff).rem_euclid(2);
-                    if sum < bounds.min_sum - 16 || sum > bounds.max_sum + 22
-                        || step_diff < bounds.min_diff - 8 || step_diff > bounds.max_diff
+                    if sum < bounds.min_sum - 16
+                        || sum > bounds.max_sum + 22
+                        || step_diff < bounds.min_diff - 8
+                        || step_diff > bounds.max_diff
                         || (step_diff < bounds.min_diff
                             && step_diff + mac_small_building_width_units(city.building_at(x, y))
                                 <= bounds.min_diff)
@@ -478,9 +612,12 @@ impl MacMapRedrawView {
                     continue;
                 }
                 if let Some(actor) = actor {
-                    if self.zoom < MAC_ACTOR_MIN_ZOOM[usize::from(actor.kind)] { continue; }
+                    if self.zoom < MAC_ACTOR_MIN_ZOOM[usize::from(actor.kind)] {
+                        continue;
+                    }
                     if !matches!(actor.kind, 10 | 11)
-                        && (usize::from(actor.tile_x), usize::from(actor.tile_y)) != (x, y) {
+                        && (usize::from(actor.tile_x), usize::from(actor.tile_y)) != (x, y)
+                    {
                         effects.stale_proxies.push((x, y));
                         continue;
                     }
@@ -488,11 +625,17 @@ impl MacMapRedrawView {
                         effects.kind6_draws += 1;
                         continue;
                     }
-                    if actor.kind != XTHG_TORNADO { continue; }
+                    if actor.kind != XTHG_TORNADO {
+                        continue;
+                    }
                 }
                 observed(x, y, rng.seed());
                 let tornado = actor.is_some();
-                let selection = if tornado || marker >= 0xfd { rng.random_u16() } else { 0 };
+                let selection = if tornado || marker >= 0xfd {
+                    rng.random_u16()
+                } else {
+                    0
+                };
                 rng.random_u16();
                 if !tornado {
                     // CODE 10 export 248 unions the drawn marker sprite into
@@ -513,7 +656,12 @@ impl MacMapRedrawView {
                         _ => unreachable!(),
                     };
                     let left = px + unit - width / 2;
-                    let rect = MacMapClip { top: py - height, left, bottom: py, right: left + width };
+                    let rect = MacMapClip {
+                        top: py - height,
+                        left,
+                        bottom: py,
+                        right: left + width,
+                    };
                     *dirty = Some(dirty.map_or(rect, |old| old.union(rect)));
                 }
             }
@@ -542,24 +690,38 @@ mod tests {
         let view = MacMapRedrawView::from_native_snapshot(624, 425, 312, -42, 0, rotation);
         let mut rng = MacToolboxRng::new(1);
         let mut order = Vec::new();
-        view.redraw_markers_in_clip_with_palette(&city, &mut rng,
-            MacMapClip::from_native_snapshot(0, 0, 425, 624), &mut |_| {}, &mut None, None,
+        view.redraw_markers_in_clip_with_palette(
+            &city,
+            &mut rng,
+            MacMapClip::from_native_snapshot(0, 0, 425, 624),
+            &mut |_| {},
+            &mut None,
+            None,
             &mut MacMapRedrawEffects::default(),
-            &mut |x, y, _| order.push((x, y)));
+            &mut |x, y, _| order.push((x, y)),
+        );
         order
     }
 
     #[test]
     fn rotated_map_redraw_walks_screen_diagonals() {
         let points = [(62, 62), (63, 61), (64, 62), (65, 60), (66, 61)];
-        assert_eq!(record_rotated_marker_order(1, &points),
-            [(62, 62), (64, 62), (63, 61), (66, 61), (65, 60)]);
+        assert_eq!(
+            record_rotated_marker_order(1, &points),
+            [(62, 62), (64, 62), (63, 61), (66, 61), (65, 60)]
+        );
     }
 
     #[test]
     fn marker_walk_below_window_still_consumes_original_random_draws() {
         let mut city = City::new_blank("/tmp/mac-below-window.city", "Order").unwrap();
-        for (x, y, marker) in [(62, 62, 0xfb), (63, 61, 0xfc), (64, 62, 0xfd), (65, 60, 0xfe), (66, 61, 0xff)] {
+        for (x, y, marker) in [
+            (62, 62, 0xfb),
+            (63, 61, 0xfc),
+            (64, 62, 0xfd),
+            (65, 60, 0xfe),
+            (66, 61, 0xff),
+        ] {
             city.set_altm_word(x, y, 4);
             city.set_terrain(x, y, 0);
             city.set_building(x, y, 0);
@@ -573,8 +735,10 @@ mod tests {
     }
 
     fn compare_actor_redraw_fixture(filename: &str, kind: u8, expected_cases: usize) {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join(filename)).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(root.join(filename)).unwrap()).unwrap();
         assert_eq!(rows.len(), expected_cases);
         for row in rows {
             let zoom = row["zoom"].as_u64().unwrap() as u32;
@@ -587,18 +751,42 @@ mod tests {
                 city.set_tile_bits(x, y, TileBits::new(0));
                 city.set_text_overlay(x, y, marker);
             }
-            city.set_mac_object_slot_record(2, crate::win95_overlay::Win95OverlayRecord {
-                kind, lane: 1, tile_x: 64 + u8::from(stale), tile_y: 62,
-                height: 4, sub_x: 8, sub_y: 8, ..Default::default()
-            });
-            let view = MacMapRedrawView::from_native_snapshot(624, 425, 312,
-                row["origin_y"].as_i64().unwrap() as i32, zoom, 0);
+            city.set_mac_object_slot_record(
+                2,
+                crate::win95_overlay::Win95OverlayRecord {
+                    kind,
+                    lane: 1,
+                    tile_x: 64 + u8::from(stale),
+                    tile_y: 62,
+                    height: 4,
+                    sub_x: 8,
+                    sub_y: 8,
+                    ..Default::default()
+                },
+            );
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
+                312,
+                row["origin_y"].as_i64().unwrap() as i32,
+                zoom,
+                0,
+            );
             let mut qd = MacToolboxRng::new(0x48538fb1);
             let mut lfsr = MacAppLfsrRng::new(0xace1);
-            view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {}).apply(&mut city, &mut lfsr);
+            view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {})
+                .apply(&mut city, &mut lfsr);
             assert_eq!(qd.seed(), row["qd_seed"].as_u64().unwrap() as u32, "{row}");
-            assert_eq!(lfsr.state(), row["lfsr_after"].as_u64().unwrap() as u16, "{row}");
-            assert_eq!(city.text_overlay_at(64, 62), Some(row["marker_after"].as_u64().unwrap() as u8), "{row}");
+            assert_eq!(
+                lfsr.state(),
+                row["lfsr_after"].as_u64().unwrap() as u16,
+                "{row}"
+            );
+            assert_eq!(
+                city.text_overlay_at(64, 62),
+                Some(row["marker_after"].as_u64().unwrap() as u8),
+                "{row}"
+            );
         }
     }
 
@@ -611,8 +799,11 @@ mod tests {
     #[test]
     #[ignore = "requires original Mac actor stale-proxy matrix"]
     fn actor_stale_proxy_zoom_gates_match_original_worker() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("actor-stale-matrix.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(root.join("actor-stale-matrix.json")).unwrap())
+                .unwrap();
         assert_eq!(rows.len(), 51);
         for row in rows {
             let kind = row["kind"].as_u64().unwrap() as u8;
@@ -623,17 +814,42 @@ mod tests {
             city.set_building(64, 62, 0);
             city.set_tile_bits(64, 62, TileBits::new(0));
             city.set_text_overlay(64, 62, 0xcb);
-            city.set_mac_object_slot_record(2, crate::win95_overlay::Win95OverlayRecord {
-                kind, lane: 1, tile_x: 65, tile_y: 62, height: 4, sub_x: 8, sub_y: 8,
-                ..Default::default()
-            });
-            let view = MacMapRedrawView::from_native_snapshot(624, 425, 312, 210 - (2 << zoom) * 126, zoom, 0);
+            city.set_mac_object_slot_record(
+                2,
+                crate::win95_overlay::Win95OverlayRecord {
+                    kind,
+                    lane: 1,
+                    tile_x: 65,
+                    tile_y: 62,
+                    height: 4,
+                    sub_x: 8,
+                    sub_y: 8,
+                    ..Default::default()
+                },
+            );
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
+                312,
+                210 - (2 << zoom) * 126,
+                zoom,
+                0,
+            );
             let mut qd = MacToolboxRng::new(1);
             let mut lfsr = MacAppLfsrRng::new(0xace1);
-            view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {}).apply(&mut city, &mut lfsr);
-            assert_eq!(city.text_overlay_at(64, 62), Some(row["marker_after"].as_u64().unwrap() as u8), "{row}");
+            view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {})
+                .apply(&mut city, &mut lfsr);
+            assert_eq!(
+                city.text_overlay_at(64, 62),
+                Some(row["marker_after"].as_u64().unwrap() as u8),
+                "{row}"
+            );
             if !row["rail_stubbed"].as_bool().unwrap() {
-                assert_eq!(lfsr.state(), row["lfsr_after"].as_u64().unwrap() as u16, "{row}");
+                assert_eq!(
+                    lfsr.state(),
+                    row["lfsr_after"].as_u64().unwrap() as u16,
+                    "{row}"
+                );
                 assert_eq!(qd.seed(), 1, "{row}");
             }
         }
@@ -642,8 +858,12 @@ mod tests {
     #[test]
     #[ignore = "requires original Mac actor draw matrix"]
     fn matching_actor_redraw_random_streams_match_original_worker() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("actor-matching-draw-matrix.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(root.join("actor-matching-draw-matrix.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 192);
         for row in rows {
             let n = |key: &str| row[key].as_u64().unwrap();
@@ -655,16 +875,37 @@ mod tests {
             city.set_building(64, 62, 0);
             city.set_tile_bits(64, 62, TileBits::new(0));
             city.set_text_overlay(64, 62, 0xcb);
-            city.set_mac_object_slot_record(2, crate::win95_overlay::Win95OverlayRecord {
-                kind, lane: n("lane") as u8, state: n("state") as u8,
-                tile_x: 64, tile_y: 62, height: 4, sub_x: 8, sub_y: 8,
-                ..Default::default()
-            });
-            let view = MacMapRedrawView::from_native_snapshot(624, 425, 312, 210 - (2 << zoom) * 126, zoom, 0);
+            city.set_mac_object_slot_record(
+                2,
+                crate::win95_overlay::Win95OverlayRecord {
+                    kind,
+                    lane: n("lane") as u8,
+                    state: n("state") as u8,
+                    tile_x: 64,
+                    tile_y: 62,
+                    height: 4,
+                    sub_x: 8,
+                    sub_y: 8,
+                    ..Default::default()
+                },
+            );
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
+                312,
+                210 - (2 << zoom) * 126,
+                zoom,
+                0,
+            );
             let mut qd = MacToolboxRng::new(0x48538fb1);
             let mut lfsr = MacAppLfsrRng::new(0xace1);
-            view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {}).apply(&mut city, &mut lfsr);
-            assert_eq!(city.text_overlay_at(64, 62), Some(n("marker_after") as u8), "{row}");
+            view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {})
+                .apply(&mut city, &mut lfsr);
+            assert_eq!(
+                city.text_overlay_at(64, 62),
+                Some(n("marker_after") as u8),
+                "{row}"
+            );
             assert_eq!(lfsr.state(), n("lfsr_after") as u16, "{row}");
             assert_eq!(qd.seed(), n("qd_after") as u32, "{row}");
         }
@@ -679,24 +920,52 @@ mod tests {
     #[test]
     #[ignore = "requires original Mac renderer rotation replay"]
     fn rotated_map_redraw_order_matches_original_renderer() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("redraw-rotation-order.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(root.join("redraw-rotation-order.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 4);
         for row in rows {
             let rotation = row["rotation"].as_u64().unwrap() as u8;
-            let points: Vec<_> = row["points"].as_array().unwrap().iter().map(|p|
-                (p[0].as_u64().unwrap() as usize, p[1].as_u64().unwrap() as usize)).collect();
-            let actual: Vec<_> = record_rotated_marker_order(rotation, &points).into_iter().map(|(x, y)|
-                super::super::super::view_navigation::rotate_tile_coords(x, y, rotation)).collect();
-            let expected: Vec<_> = row["calls"].as_array().unwrap().iter().map(|p|
-                (p[0].as_u64().unwrap() as usize, p[1].as_u64().unwrap() as usize)).collect();
+            let points: Vec<_> = row["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    (
+                        p[0].as_u64().unwrap() as usize,
+                        p[1].as_u64().unwrap() as usize,
+                    )
+                })
+                .collect();
+            let actual: Vec<_> = record_rotated_marker_order(rotation, &points)
+                .into_iter()
+                .map(|(x, y)| {
+                    super::super::super::view_navigation::rotate_tile_coords(x, y, rotation)
+                })
+                .collect();
+            let expected: Vec<_> = row["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    (
+                        p[0].as_u64().unwrap() as usize,
+                        p[1].as_u64().unwrap() as usize,
+                    )
+                })
+                .collect();
             assert_eq!(actual, expected, "rotation {rotation}");
         }
     }
 
     fn compare_redraw_marker_rng_fixture(filename: &str, expected_cases: usize) {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join(filename)).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(root.join(filename)).unwrap()).unwrap();
         assert_eq!(rows.len(), expected_cases);
         for row in rows {
             let zoom = row["zoom"].as_u64().unwrap() as u32;
@@ -711,23 +980,49 @@ mod tests {
                 city.set_tile_bits(x, y, TileBits::new(0));
                 city.set_text_overlay(x, y, point[2].as_u64().unwrap() as u8);
             }
-            let view = MacMapRedrawView::from_native_snapshot(624, 425,
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
                 row["origin_x"].as_i64().unwrap_or(312) as i32,
-                row["origin_y"].as_i64().unwrap() as i32, zoom, rotation);
+                row["origin_y"].as_i64().unwrap() as i32,
+                zoom,
+                rotation,
+            );
             let mut rng = MacToolboxRng::new(0x48538fb1);
             let mut calls = Vec::new();
-            view.redraw_markers_in_clip_with_palette(&city, &mut rng,
-                MacMapClip::from_native_snapshot(0, 0, 425, 624), &mut |_| {}, &mut None, None,
+            view.redraw_markers_in_clip_with_palette(
+                &city,
+                &mut rng,
+                MacMapClip::from_native_snapshot(0, 0, 425, 624),
+                &mut |_| {},
+                &mut None,
+                None,
                 &mut MacMapRedrawEffects::default(),
                 &mut |x, y, seed| {
-                    let (xv, yv) = super::super::super::view_navigation::rotate_tile_coords(x, y, rotation);
+                    let (xv, yv) =
+                        super::super::super::view_navigation::rotate_tile_coords(x, y, rotation);
                     calls.push((xv, yv, city.text_overlay_at(x, y).unwrap(), seed));
-                });
-            let expected: Vec<_> = row["calls"].as_array().unwrap().iter().map(|p|
-                (p[0].as_u64().unwrap() as usize, p[1].as_u64().unwrap() as usize,
-                 p[2].as_u64().unwrap() as u8, p[3].as_u64().unwrap() as u32)).collect();
+                },
+            );
+            let expected: Vec<_> = row["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    (
+                        p[0].as_u64().unwrap() as usize,
+                        p[1].as_u64().unwrap() as usize,
+                        p[2].as_u64().unwrap() as u8,
+                        p[3].as_u64().unwrap() as u32,
+                    )
+                })
+                .collect();
             assert_eq!(calls, expected, "zoom {zoom}, rotation {rotation}");
-            assert_eq!(rng.seed(), row["seed"].as_u64().unwrap() as u32, "zoom {zoom}, rotation {rotation}");
+            assert_eq!(
+                rng.seed(),
+                row["seed"].as_u64().unwrap() as u32,
+                "zoom {zoom}, rotation {rotation}"
+            );
         }
     }
 
@@ -758,15 +1053,20 @@ mod tests {
         city.set_terrain(65, 61, 0);
         city.set_building(65, 61, 0x51);
         let view = MacMapRedrawView::from_native_snapshot(624, 425, 312, -42, 0, 0);
-        assert_eq!(view.surface_tile_dirty_bounds(&city, 65, 61, 5, Some((5, 8))),
-            Some(MacMapClip::from_native_snapshot(187, 328, 192, 336)));
+        assert_eq!(
+            view.surface_tile_dirty_bounds(&city, 65, 61, 5, Some((5, 8))),
+            Some(MacMapClip::from_native_snapshot(187, 328, 192, 336))
+        );
     }
 
     #[test]
     #[ignore = "requires synthetic original Mac actor-bounds matrix"]
     fn actor_bounds_match_original_kind_zoom_rotation_matrix() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("actor-bounds-matrix.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("actor-bounds-matrix.json")).unwrap())
+                .unwrap();
         let rows = fixture["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 552);
         let mut city = City::new_blank("/tmp/mac-actor-bounds-matrix.city", "Bounds").unwrap();
@@ -775,32 +1075,65 @@ mod tests {
             let n = |key: &str| row[key].as_i64().unwrap();
             let (x, y) = (n("x") as usize, n("y") as usize);
             city.set_altm_word(x, y, 6 | (3 << 5));
-            city.set_tile_bits(x, y, TileBits::new(if row["wet"].as_bool().unwrap() { 4 } else { 0 }));
+            city.set_tile_bits(
+                x,
+                y,
+                TileBits::new(if row["wet"].as_bool().unwrap() { 4 } else { 0 }),
+            );
             let actor = crate::win95_overlay::Win95OverlayRecord {
-                kind: n("kind") as u8, height: n("height") as u8,
-                tile_x: x as u8, tile_y: y as u8, ..Default::default()
+                kind: n("kind") as u8,
+                height: n("height") as u8,
+                tile_x: x as u8,
+                tile_y: y as u8,
+                ..Default::default()
             };
-            let view = MacMapRedrawView::from_native_snapshot(624, 425, n("origin_x") as i32,
-                n("origin_y") as i32, n("zoom") as u32, n("rotation") as u8);
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
+                n("origin_x") as i32,
+                n("origin_y") as i32,
+                n("zoom") as u32,
+                n("rotation") as u8,
+            );
             let bounds = view.actor_dirty_bounds(&city, &actor);
             let a = &row["after"];
-            let expected = MacMapClip::from_native_snapshot(a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32,
-                a[2].as_i64().unwrap() as i32, a[3].as_i64().unwrap() as i32);
+            let expected = MacMapClip::from_native_snapshot(
+                a[0].as_i64().unwrap() as i32,
+                a[1].as_i64().unwrap() as i32,
+                a[2].as_i64().unwrap() as i32,
+                a[3].as_i64().unwrap() as i32,
+            );
             let actual = bounds.unwrap_or(MacMapClip::from_native_snapshot(-1000, -1000, -1, -1));
-            if actual != expected { mismatches.push(format!("{row} actual {actual:?}")); }
+            if actual != expected {
+                mismatches.push(format!("{row} actual {actual:?}"));
+            }
         }
-        assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
     }
 
     #[test]
     #[ignore = "requires original Mac assets and synthetic tile/actor matrix"]
     fn tile_and_actor_bounds_match_original_composition() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
         let pack = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
-        let resources = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCES").unwrap());
+        let resources =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCES").unwrap());
         let mut shapes = crate::mac_shape_table::MacShapeDimensions::from_pack(&pack).unwrap();
-        shapes.set_terrain_shapes(crate::mac_import::terrain_shape_map_from_resources(&resources).unwrap().unwrap());
-        let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("tile-actor-bounds-matrix.json")).unwrap()).unwrap();
+        shapes.set_terrain_shapes(
+            crate::mac_import::terrain_shape_map_from_resources(&resources)
+                .unwrap()
+                .unwrap(),
+        );
+        let fixture: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("tile-actor-bounds-matrix.json")).unwrap(),
+        )
+        .unwrap();
         let rows = fixture["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 96);
         let mut city = City::new_blank("/tmp/mac-tile-actor-bounds.city", "Bounds").unwrap();
@@ -809,49 +1142,94 @@ mod tests {
             let n = |key: &str| row[key].as_i64().unwrap();
             let (x, y) = (n("x") as usize, n("y") as usize);
             city.set_altm_word(x, y, 6 | (3 << 5));
-            city.set_terrain(x, y, 0); city.set_building(x, y, 0);
+            city.set_terrain(x, y, 0);
+            city.set_building(x, y, 0);
             city.set_text_overlay(x, y, 0xcb);
-            city.set_tile_bits(x, y, TileBits::new(if row["wet"].as_bool().unwrap() { 4 } else { 0 }));
-            city.set_mac_object_slot_record(2, crate::win95_overlay::Win95OverlayRecord {
-                kind: n("kind") as u8, height: n("height") as u8,
-                tile_x: x as u8, tile_y: y as u8, ..Default::default()
-            });
-            let view = MacMapRedrawView::from_native_snapshot(624, 425, n("origin_x") as i32,
-                n("origin_y") as i32, n("zoom") as u32, n("rotation") as u8);
+            city.set_tile_bits(
+                x,
+                y,
+                TileBits::new(if row["wet"].as_bool().unwrap() { 4 } else { 0 }),
+            );
+            city.set_mac_object_slot_record(
+                2,
+                crate::win95_overlay::Win95OverlayRecord {
+                    kind: n("kind") as u8,
+                    height: n("height") as u8,
+                    tile_x: x as u8,
+                    tile_y: y as u8,
+                    ..Default::default()
+                },
+            );
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
+                n("origin_x") as i32,
+                n("origin_y") as i32,
+                n("zoom") as u32,
+                n("rotation") as u8,
+            );
             let actual = view.tile_dirty_bounds_from_assets(&city, x, y, &shapes);
             let a = &row["after"];
-            let expected = MacMapClip::from_native_snapshot(a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32,
-                a[2].as_i64().unwrap() as i32, a[3].as_i64().unwrap() as i32);
-            if actual != Some(expected) { mismatches.push(format!("{row} actual {actual:?}")); }
+            let expected = MacMapClip::from_native_snapshot(
+                a[0].as_i64().unwrap() as i32,
+                a[1].as_i64().unwrap() as i32,
+                a[2].as_i64().unwrap() as i32,
+                a[3].as_i64().unwrap() as i32,
+            );
+            if actual != Some(expected) {
+                mismatches.push(format!("{row} actual {actual:?}"));
+            }
         }
-        assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
     }
 
     #[test]
     #[ignore = "requires private original-Mac selector 11 bounds fixture"]
     fn surface_tile_bounds_match_original_selector11_classifier() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("tile-bounds-worker.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tile-bounds-worker.json")).unwrap())
+                .unwrap();
         let view = MacMapRedrawView::from_native_snapshot(624, 425, 312, -32, 0, 0);
         let mut city = City::new_blank("/tmp/mac-bounds-fixture.city", "Bounds").unwrap();
         let rows = fixture["tile_bounds"].as_array().unwrap();
         assert_eq!(rows.len(), 18);
         for row in rows {
             let n = |key: &str| row[key].as_u64().unwrap() as usize;
-            let x = n("x"); let y = n("y");
+            let x = n("x");
+            let y = n("y");
             city.set_altm_word(x, y, n("altm") as u16);
             city.set_terrain(x, y, n("terrain") as u8);
             city.set_building(x, y, n("building") as u8);
             city.set_zone(x, y, n("zone") as u8);
-            let bounds = view.surface_tile_dirty_bounds(&city, x, y, n("terrain_height") as i32,
-                Some((n("building_height") as i32, n("building_width") as i32)));
+            let bounds = view.surface_tile_dirty_bounds(
+                &city,
+                x,
+                y,
+                n("terrain_height") as i32,
+                Some((n("building_height") as i32, n("building_width") as i32)),
+            );
             let clip = |name: &str| {
                 let a = &row[name];
-                MacMapClip::from_native_snapshot(a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32,
-                    a[2].as_i64().unwrap() as i32, a[3].as_i64().unwrap() as i32)
+                MacMapClip::from_native_snapshot(
+                    a[0].as_i64().unwrap() as i32,
+                    a[1].as_i64().unwrap() as i32,
+                    a[2].as_i64().unwrap() as i32,
+                    a[3].as_i64().unwrap() as i32,
+                )
             };
             let previous = clip("before");
-            let actual = if previous.top == -1000 { bounds } else { bounds.map_or(Some(previous), |b| Some(previous.union(b))) };
+            let actual = if previous.top == -1000 {
+                bounds
+            } else {
+                bounds.map_or(Some(previous), |b| Some(previous.union(b)))
+            };
             assert_eq!(actual, Some(clip("after")), "tile {x},{y}");
         }
     }
@@ -859,19 +1237,29 @@ mod tests {
     #[test]
     #[ignore = "requires original Mac assets and selector 11 capture"]
     fn asset_backed_tile_bounds_match_original_selector11_classifier() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
         let pack = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
-        let resources = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCES").unwrap());
+        let resources =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCES").unwrap());
         let ram = std::fs::read(root.join("entry.ram")).unwrap();
         let a5 = u32::from_be_bytes(ram[0x904..0x908].try_into().unwrap()) as usize;
-        let map = crate::mac_import::terrain_shape_map_from_resources(&resources).unwrap().unwrap();
+        let map = crate::mac_import::terrain_shape_map_from_resources(&resources)
+            .unwrap()
+            .unwrap();
         for (index, &id) in map.iter().enumerate() {
             let address = a5 - 0x5082 + index * 2;
-            assert_eq!(id, u16::from_be_bytes(ram[address..address + 2].try_into().unwrap()), "terrain {index}");
+            assert_eq!(
+                id,
+                u16::from_be_bytes(ram[address..address + 2].try_into().unwrap()),
+                "terrain {index}"
+            );
         }
         let mut shapes = crate::mac_shape_table::MacShapeDimensions::from_pack(&pack).unwrap();
         shapes.set_terrain_shapes(map);
-        let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("tile-bounds-worker.json")).unwrap()).unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tile-bounds-worker.json")).unwrap())
+                .unwrap();
         let rows = fixture["tile_bounds"].as_array().unwrap();
         assert_eq!(rows.len(), 18);
         let view = MacMapRedrawView::from_native_snapshot(624, 425, 312, -32, 0, 0);
@@ -886,11 +1274,19 @@ mod tests {
             let bounds = view.surface_tile_dirty_bounds_from_assets(&city, x, y, &shapes);
             let clip = |name: &str| {
                 let a = &row[name];
-                MacMapClip::from_native_snapshot(a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32,
-                    a[2].as_i64().unwrap() as i32, a[3].as_i64().unwrap() as i32)
+                MacMapClip::from_native_snapshot(
+                    a[0].as_i64().unwrap() as i32,
+                    a[1].as_i64().unwrap() as i32,
+                    a[2].as_i64().unwrap() as i32,
+                    a[3].as_i64().unwrap() as i32,
+                )
             };
             let previous = clip("before");
-            let actual = if previous.top == -1000 { bounds } else { bounds.map_or(Some(previous), |b| Some(previous.union(b))) };
+            let actual = if previous.top == -1000 {
+                bounds
+            } else {
+                bounds.map_or(Some(previous), |b| Some(previous.union(b)))
+            };
             assert_eq!(actual, Some(clip("after")), "tile {x},{y}");
         }
     }
@@ -898,12 +1294,20 @@ mod tests {
     #[test]
     #[ignore = "requires original Mac assets and synthetic original-code matrix"]
     fn asset_backed_bounds_match_original_zoom_rotation_matrix() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
         let pack = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
-        let resources = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCES").unwrap());
+        let resources =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_RESOURCES").unwrap());
         let mut shapes = crate::mac_shape_table::MacShapeDimensions::from_pack(&pack).unwrap();
-        shapes.set_terrain_shapes(crate::mac_import::terrain_shape_map_from_resources(&resources).unwrap().unwrap());
-        let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("tile-bounds-matrix.json")).unwrap()).unwrap();
+        shapes.set_terrain_shapes(
+            crate::mac_import::terrain_shape_map_from_resources(&resources)
+                .unwrap()
+                .unwrap(),
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tile-bounds-matrix.json")).unwrap())
+                .unwrap();
         let rows = fixture["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 192);
         let mut city = City::new_blank("/tmp/mac-asset-bounds-matrix.city", "Bounds").unwrap();
@@ -915,16 +1319,33 @@ mod tests {
             city.set_terrain(x, y, n("terrain") as u8);
             city.set_building(x, y, n("building") as u8);
             city.set_zone(x, y, n("zone") as u8);
-            let view = MacMapRedrawView::from_native_snapshot(624, 425, n("origin_x") as i32, n("origin_y") as i32,
-                n("zoom") as u32, n("rotation") as u8);
+            let view = MacMapRedrawView::from_native_snapshot(
+                624,
+                425,
+                n("origin_x") as i32,
+                n("origin_y") as i32,
+                n("zoom") as u32,
+                n("rotation") as u8,
+            );
             let bounds = view.surface_tile_dirty_bounds_from_assets(&city, x, y, &shapes);
             let a = &row["after"];
-            let expected = MacMapClip::from_native_snapshot(a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32,
-                a[2].as_i64().unwrap() as i32, a[3].as_i64().unwrap() as i32);
+            let expected = MacMapClip::from_native_snapshot(
+                a[0].as_i64().unwrap() as i32,
+                a[1].as_i64().unwrap() as i32,
+                a[2].as_i64().unwrap() as i32,
+                a[3].as_i64().unwrap() as i32,
+            );
             let actual = bounds.unwrap_or(MacMapClip::from_native_snapshot(-1000, -1000, -1, -1));
-            if actual != expected { mismatches.push(format!("{row} actual {actual:?}")); }
+            if actual != expected {
+                mismatches.push(format!("{row} actual {actual:?}"));
+            }
         }
-        assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
     }
 
     #[test]
@@ -982,15 +1403,41 @@ mod tests {
     fn destruction_frame_uses_selected_shape_and_clips_marker_redraw() {
         let mut city = City::new_blank("/tmp/mac-destruction-redraw.sc2", "Redraw").unwrap();
         let view = MacMapRedrawView {
-            width: 80, height: 80, origin_x: 40, origin_y: 0, zoom: 0, rotation: 0,
+            width: 80,
+            height: 80,
+            origin_x: 40,
+            origin_y: 0,
+            zoom: 0,
+            rotation: 0,
         };
         let bounds = view.destruction_frame_bounds(5, 5, 0, 0, 0, 0, 1);
-        assert_eq!(bounds, MacMapClip { top: 7, left: 40, bottom: 20, right: 48 });
-        assert_eq!(view.destruction_frame_bounds(5, 5, 0, 1, 1, 0, 0),
-            MacMapClip { top: 3, left: 44, bottom: 20, right: 52 });
-        city.set_mac_object_slot_record(1, crate::win95_overlay::Win95OverlayRecord {
-            kind: XTHG_TORNADO, tile_x: 5, tile_y: 5, ..Default::default()
-        });
+        assert_eq!(
+            bounds,
+            MacMapClip {
+                top: 7,
+                left: 40,
+                bottom: 20,
+                right: 48
+            }
+        );
+        assert_eq!(
+            view.destruction_frame_bounds(5, 5, 0, 1, 1, 0, 0),
+            MacMapClip {
+                top: 3,
+                left: 44,
+                bottom: 20,
+                right: 52
+            }
+        );
+        city.set_mac_object_slot_record(
+            1,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: XTHG_TORNADO,
+                tile_x: 5,
+                tile_y: 5,
+                ..Default::default()
+            },
+        );
         city.set_altitude(5, 5, 0, 0);
         city.set_text_overlay(5, 5, 0xca);
         city.set_text_overlay(20, 5, 0xff); // outside the explosion clip
@@ -1040,14 +1487,21 @@ mod tests {
     #[test]
     fn stale_tornado_proxy_clears_without_drawing() {
         let mut city = City::new_blank("/tmp/mac-stale-tornado.sc2", "Redraw").unwrap();
-        city.set_mac_object_slot_record(1, crate::win95_overlay::Win95OverlayRecord {
-            kind: XTHG_TORNADO, tile_x: 6, tile_y: 5, ..Default::default()
-        });
+        city.set_mac_object_slot_record(
+            1,
+            crate::win95_overlay::Win95OverlayRecord {
+                kind: XTHG_TORNADO,
+                tile_x: 6,
+                tile_y: 5,
+                ..Default::default()
+            },
+        );
         city.set_text_overlay(5, 5, 0xca);
         let view = MacMapRedrawView::from_native_snapshot(80, 80, 40, 0, 0, 0);
         let mut qd = MacToolboxRng::new(1);
         let mut lfsr = MacAppLfsrRng::new(1);
-        view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {}).apply(&mut city, &mut lfsr);
+        view.redraw_markers_with_palette(&city, &mut qd, &mut |_| {})
+            .apply(&mut city, &mut lfsr);
         assert_eq!(city.text_overlay_at(5, 5), Some(0));
         assert_eq!(qd.seed(), 1);
         assert_eq!(lfsr.state(), 1);
@@ -1070,7 +1524,12 @@ mod tests {
         view.redraw_markers_in_clip_with_palette(
             &city,
             &mut actual,
-            MacMapClip { top: 0, left: 0, bottom: 80, right: 44 },
+            MacMapClip {
+                top: 0,
+                left: 0,
+                bottom: 80,
+                right: 44,
+            },
             &mut |_| {},
             &mut None,
             None,
@@ -1086,7 +1545,12 @@ mod tests {
         view.redraw_markers_in_clip_with_palette(
             &city,
             &mut empty,
-            MacMapClip { top: 2, left: 0, bottom: 2, right: 44 },
+            MacMapClip {
+                top: 2,
+                left: 0,
+                bottom: 2,
+                right: 44,
+            },
             &mut |_| panic!("empty rectangles do not enter the walk"),
             &mut None,
             None,
@@ -1108,9 +1572,15 @@ mod tests {
             zoom: 0,
             rotation: 0,
         };
-        assert_eq!(view.tornado_dirty_bounds(&city, 77, 114), Some(MacMapClip {
-            top: 264, left: 96, bottom: 300, right: 136,
-        }));
+        assert_eq!(
+            view.tornado_dirty_bounds(&city, 77, 114),
+            Some(MacMapClip {
+                top: 264,
+                left: 96,
+                bottom: 300,
+                right: 136,
+            })
+        );
         assert_eq!(view.tornado_dirty_bounds(&city, 0, 127), None);
     }
 
@@ -1120,13 +1590,31 @@ mod tests {
         city.set_altitude(5, 5, 0, 0);
         city.set_text_overlay(5, 5, 0xff);
         let view = MacMapRedrawView {
-            width: 80, height: 80, origin_x: 40, origin_y: 0, zoom: 0, rotation: 0,
+            width: 80,
+            height: 80,
+            origin_x: 40,
+            origin_y: 0,
+            zoom: 0,
+            rotation: 0,
         };
-        let mut dirty = Some(MacMapClip { top: 30, left: 1, bottom: 40, right: 10 });
+        let mut dirty = Some(MacMapClip {
+            top: 30,
+            left: 1,
+            bottom: 40,
+            right: 10,
+        });
         let mut rng = MacToolboxRng::new(1);
         view.redraw_markers_recording_dirty(&city, &mut rng, &mut |_| {}, &mut dirty);
         // Seed 1 selects shape 399: 8 pixels wide and 9 high at zoom 0.
-        assert_eq!(dirty, Some(MacMapClip { top: 11, left: 1, bottom: 40, right: 48 }));
+        assert_eq!(
+            dirty,
+            Some(MacMapClip {
+                top: 11,
+                left: 1,
+                bottom: 40,
+                right: 48
+            })
+        );
     }
 
     #[test]

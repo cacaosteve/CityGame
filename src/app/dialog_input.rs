@@ -62,21 +62,26 @@ pub(super) fn handle_modal_pointer_down(
         let screen = state.info_panel_input_point(screen, window_size);
         if matches!(dialog, CityInfoDialog::Newspaper(edition) if !edition.is_mac())
             && state.engine_fidelity.uses_win95()
-            && handle_pe_paper_pointer(state, screen, city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity))
+            && handle_pe_paper_pointer(
+                state,
+                screen,
+                city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity),
+            )
         {
             return true;
         }
         if matches!(dialog, CityInfoDialog::Newspaper(edition) if edition.is_mac())
-            && handle_mac_paper_pointer(state, screen, city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity))
+            && handle_mac_paper_pointer(
+                state,
+                screen,
+                city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity),
+            )
         {
             return true;
         }
-        if let Some(action) = city_info_dialog_hit_test_for_engine(
-            screen,
-            window_size,
-            dialog,
-            state.engine_fidelity,
-        ) {
+        if let Some(action) =
+            city_info_dialog_hit_test_for_engine(screen, window_size, dialog, state.engine_fidelity)
+        {
             if !state.city_info_dialog_action_enabled(action) {
                 return true;
             }
@@ -93,7 +98,10 @@ pub(super) fn handle_modal_pointer_down(
         }
         if state.mac_loop_scheduler.january_budget_review_pending
             || (!state.engine_fidelity.uses_win95() && dialog.holds_mac_simulation())
-            || point_in_float_rect(screen, city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity))
+            || point_in_float_rect(
+                screen,
+                city_info_dialog_rect_for_engine(dialog, window_size, state.engine_fidelity),
+            )
         {
             return true;
         }
@@ -102,13 +110,27 @@ pub(super) fn handle_modal_pointer_down(
 }
 
 /// Dispatch Win95 clicks in the same viewport used by the recovered layout.
-pub(super) fn handle_pe_paper_pointer(state: &mut ViewerState, screen: Vec2, page: FloatRect) -> bool {
+pub(super) fn handle_pe_paper_pointer(
+    state: &mut ViewerState,
+    screen: Vec2,
+    page: FloatRect,
+) -> bool {
     if let Some(article) = state.pe_newspaper_article.as_ref() {
         if point_in_float_rect(screen, newspaper::pe_detail_close_rect(page, &article.body)) {
             state.pe_newspaper_article = None;
-        } else if newspaper::pe_detail_scroll_max(&article.body) > 0 && point_in_float_rect(screen, newspaper::pe_detail_scroll_rect(page, &article.body, false)) {
+        } else if newspaper::pe_detail_scroll_max(&article.body) > 0
+            && point_in_float_rect(
+                screen,
+                newspaper::pe_detail_scroll_rect(page, &article.body, false),
+            )
+        {
             state.scroll_pe_newspaper_article(-3);
-        } else if newspaper::pe_detail_scroll_max(&article.body) > 0 && point_in_float_rect(screen, newspaper::pe_detail_scroll_rect(page, &article.body, true)) {
+        } else if newspaper::pe_detail_scroll_max(&article.body) > 0
+            && point_in_float_rect(
+                screen,
+                newspaper::pe_detail_scroll_rect(page, &article.body, true),
+            )
+        {
             state.scroll_pe_newspaper_article(3);
         }
         return true;
@@ -122,7 +144,9 @@ pub(super) fn handle_pe_paper_pointer(state: &mut ViewerState, screen: Vec2, pag
         for position in hits {
             // Native visits overlapping regions in order. Its article guard
             // prevents opening another dialog after the first successful hit.
-            if state.open_pe_newspaper_article(position) { break; }
+            if state.open_pe_newspaper_article(position) {
+                break;
+            }
         }
         return point_in_float_rect(screen, page);
     }
@@ -134,7 +158,11 @@ pub(super) fn handle_pe_paper_pointer(state: &mut ViewerState, screen: Vec2, pag
 }
 
 /// Handle the lead article and its modal detail before ordinary paper clicks.
-pub(super) fn handle_mac_paper_pointer(state: &mut ViewerState, screen: Vec2, page: FloatRect) -> bool {
+pub(super) fn handle_mac_paper_pointer(
+    state: &mut ViewerState,
+    screen: Vec2,
+    page: FloatRect,
+) -> bool {
     if state.mac_newspaper.detail_open {
         if point_in_float_rect(screen, newspaper::detail_scroll_rect(page, false)) {
             state.scroll_mac_paper_detail(-3);
@@ -154,7 +182,9 @@ pub(super) fn handle_mac_paper_pointer(state: &mut ViewerState, screen: Vec2, pa
         }
         let family = state.mac_newspaper.paint.as_ref().unwrap().family;
         for position in 4..=10 {
-            if newspaper::mac_story_hit_rect(page, family, position).is_some_and(|rect| point_in_float_rect(screen, rect)) {
+            if newspaper::mac_story_hit_rect(page, family, position)
+                .is_some_and(|rect| point_in_float_rect(screen, rect))
+            {
                 // The original leaves the weather and survey boxes inert in layout 2.
                 if family != 2 || (position != 5 && position != 6) {
                     state.open_mac_paper_detail_at(position);
@@ -395,12 +425,7 @@ pub(super) fn city_info_dialog_hit_test(
     window_size: (u32, u32),
     active_dialog: CityInfoDialog,
 ) -> Option<CityInfoDialogAction> {
-    city_info_dialog_hit_test_for_engine(
-        screen,
-        window_size,
-        active_dialog,
-        EngineFidelity::Win95,
-    )
+    city_info_dialog_hit_test_for_engine(screen, window_size, active_dialog, EngineFidelity::Win95)
 }
 
 pub(super) fn city_info_dialog_hit_test_for_engine(
@@ -486,10 +511,15 @@ pub(super) fn city_info_dialog_hit_test_for_engine(
     if active_dialog == CityInfoDialog::Budget {
         if !fidelity.uses_win95() {
             for increase in [false, true] {
-                if point_in_float_rect(screen, budget_window::mac_tax_adjust_rect(dialog, increase)) {
+                if point_in_float_rect(screen, budget_window::mac_tax_adjust_rect(dialog, increase))
+                {
                     return Some(CityInfoDialogAction::AdjustBudgetTax {
                         tax_index: 0,
-                        delta: if increase { BUDGET_TAX_STEP } else { -BUDGET_TAX_STEP },
+                        delta: if increase {
+                            BUDGET_TAX_STEP
+                        } else {
+                            -BUDGET_TAX_STEP
+                        },
                     });
                 }
             }
@@ -501,7 +531,11 @@ pub(super) fn city_info_dialog_hit_test_for_engine(
                     ) {
                         return Some(CityInfoDialogAction::AdjustBudgetFunding {
                             service_index,
-                            delta: if increase { BUDGET_FUNDING_STEP } else { -BUDGET_FUNDING_STEP },
+                            delta: if increase {
+                                BUDGET_FUNDING_STEP
+                            } else {
+                                -BUDGET_FUNDING_STEP
+                            },
                         });
                     }
                 }

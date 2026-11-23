@@ -8545,13 +8545,9 @@ fn mac_industry_autodebt_live_demand_rows_match_quadras_january_2085_inputs() {
     let mut app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x930b);
     city.advance_mac_industry_mix_month(&mut quickdraw, &mut app_lfsr, 2085);
 
-    let demand: [i16; 11] = std::array::from_fn(|row| {
-        city.mac_state_misc_u32_at(0x16c + 12 * row).unwrap() as i16
-    });
-    assert_eq!(
-        demand,
-        [11, 22, 10, 7, 19, 18, 32, 29, 23, 85, 43]
-    );
+    let demand: [i16; 11] =
+        std::array::from_fn(|row| city.mac_state_misc_u32_at(0x16c + 12 * row).unwrap() as i16);
+    assert_eq!(demand, [11, 22, 10, 7, 19, 18, 32, 29, 23, 85, 43]);
     assert_eq!(app_lfsr.state(), 0xbe05);
 }
 
@@ -8644,10 +8640,16 @@ fn mac_story_insert_reports_the_native_immediate_panel_gate() {
 
     city.set_mac_state_misc_u32_at(0x1008, 1);
     for selector in [3, 4, 5, 0x24] {
-        assert!(city.queue_mac_newspaper_story(selector, 5), "selector {selector}");
+        assert!(
+            city.queue_mac_newspaper_story(selector, 5),
+            "selector {selector}"
+        );
     }
     for selector in [1, 6, 0x23, 0x25] {
-        assert!(!city.queue_mac_newspaper_story(selector, 0), "selector {selector}");
+        assert!(
+            !city.queue_mac_newspaper_story(selector, 0),
+            "selector {selector}"
+        );
     }
     city.set_mac_newspaper_suppressed(true);
     assert!(
@@ -8686,10 +8688,8 @@ fn mac_story_queue_on_win_layout_keeps_pe_save_slots_untouched() {
 
 #[test]
 fn blank_city_does_not_adopt_a_backing_file_until_successful_save() {
-    let directory = std::env::temp_dir().join(format!(
-        "citygame-backing-file-{}",
-        std::process::id()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("citygame-backing-file-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let proposed = directory.join("Untitled.sc2");
     let saved = directory.join("chosen.sc2");
@@ -8701,7 +8701,10 @@ fn blank_city_does_not_adopt_a_backing_file_until_successful_save() {
     assert!(city.save(&directory).is_err());
     assert!(!city.has_backing_file());
     assert_eq!(city.path, proposed);
-    assert_eq!(std::fs::read(&proposed).unwrap(), b"existing unrelated file");
+    assert_eq!(
+        std::fs::read(&proposed).unwrap(),
+        b"existing unrelated file"
+    );
 
     city.save(&saved).unwrap();
     assert!(city.has_backing_file());

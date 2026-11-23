@@ -2887,8 +2887,8 @@ fn win95_maptool_epilogue_matches_native_transport_family_fixtures() {
     // underground cases start after the selected center has been cleared;
     // pipe reshaping converts the south neighbor from 0x10 to 0x1e.
     for (xbld, label) in [(0x1d, "road"), (0x2c, "rail"), (0x0e, "power")] {
-        let mut city = City::new_blank("/tmp/pe-maptool-transport-surface.sc2", label)
-            .expect("blank city");
+        let mut city =
+            City::new_blank("/tmp/pe-maptool-transport-surface.sc2", label).expect("blank city");
         for (x, y) in [(20, 19), (20, 18), (20, 21)] {
             city.set_building(x, y, xbld);
         }
@@ -2899,8 +2899,8 @@ fn win95_maptool_epilogue_matches_native_transport_family_fixtures() {
     }
 
     for (kind, original, south_after) in [("subway", 1, 1), ("pipe", 0x10, 0x1e)] {
-        let mut city = City::new_blank("/tmp/pe-maptool-transport-underground.sc2", kind)
-            .expect("blank city");
+        let mut city =
+            City::new_blank("/tmp/pe-maptool-transport-underground.sc2", kind).expect("blank city");
         for (x, y) in [(20, 19), (20, 18), (20, 21)] {
             city.set_underground(x, y, original);
             city.set_tile_bits(x, y, TileBits::new(0x20));
@@ -2910,7 +2910,11 @@ fn win95_maptool_epilogue_matches_native_transport_family_fixtures() {
         assert_eq!(city.underground_at(20, 18), original, "{kind} far north");
         assert_eq!(city.underground_at(20, 21), south_after, "{kind} south");
         for (x, y) in [(20, 19), (20, 18), (20, 21)] {
-            assert_eq!(city.tile_bits_at(x, y).unwrap().raw_bits(), 0x20, "{kind} XBIT");
+            assert_eq!(
+                city.tile_bits_at(x, y).unwrap().raw_bits(),
+                0x20,
+                "{kind} XBIT"
+            );
         }
     }
 }
@@ -2939,8 +2943,16 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
         assert_eq!(city.city_funds(), 75, "{label} cash");
         assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
-        assert_eq!(win95_terrain_plane_fingerprints(&city), NATIVE_PLANES, "{label}");
-        assert_eq!(city.building_at(20, 19), 0, "{label} is cleared by 0x447490");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            NATIVE_PLANES,
+            "{label}"
+        );
+        assert_eq!(
+            city.building_at(20, 19),
+            0,
+            "{label} is cleared by 0x447490"
+        );
     }
 
     let piped_xbit = [
@@ -2964,13 +2976,21 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
         assert_eq!(city.city_funds(), 75, "{label} cash");
         assert_eq!(crt.seed(), 1, "{label} does not consume CRT");
-        assert_eq!(win95_terrain_plane_fingerprints(&city), piped_xbit, "{label}");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            piped_xbit,
+            "{label}"
+        );
         assert_eq!(
             pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
             NATIVE_PLANES[2],
             "{label} XUND"
         );
-        assert_eq!(city.tile_bits_at(20, 19).unwrap().raw_bits(), 0x20, "{label} XBIT");
+        assert_eq!(
+            city.tile_bits_at(20, 19).unwrap().raw_bits(),
+            0x20,
+            "{label} XBIT"
+        );
         assert_eq!(city.pe_xund_occupancy, 0, "{label} occupancy");
     }
 
@@ -2986,12 +3006,15 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
     );
     assert_eq!(edge.city_funds(), 75);
     assert_eq!(crt.seed(), 415_139_642);
-    assert_eq!(win95_terrain_plane_fingerprints(&edge), [
-        0xd772_142a_84e6_8c64,
-        0x63bb_86e7_9d32_d8d9,
-        NATIVE_PLANES[2],
-        NATIVE_PLANES[3],
-    ]);
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&edge),
+        [
+            0xd772_142a_84e6_8c64,
+            0x63bb_86e7_9d32_d8d9,
+            NATIVE_PLANES[2],
+            NATIVE_PLANES[3],
+        ]
+    );
 
     let mut wet_dry = flat_win95_terrain_fixture(CityFileKind::WinSc2);
     wet_dry.pe_w_city_mode = 1;
@@ -3011,12 +3034,15 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
     );
     assert_eq!(wet_dry.city_funds(), 50);
     assert_eq!(crt.seed(), 1);
-    assert_eq!(win95_terrain_plane_fingerprints(&wet_dry), [
-        0x52a1_3c4f_af3e_6ef3,
-        NATIVE_PLANES[1],
-        NATIVE_PLANES[2],
-        NATIVE_PLANES[3],
-    ]);
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&wet_dry),
+        [
+            0x52a1_3c4f_af3e_6ef3,
+            NATIVE_PLANES[1],
+            NATIVE_PLANES[2],
+            NATIVE_PLANES[3],
+        ]
+    );
     assert_eq!(
         pe_density_plane_fingerprint(1, |x, y| wet_dry.underground_at(x, y)),
         NATIVE_PLANES[2]

@@ -4,18 +4,19 @@
 use super::seed_bundled_assets_if_needed;
 use super::title_flow::{MacTitleStartup, mac_tick_count};
 use super::{
-    AppCommand, Win95CloseAction, Win95FileDialog, AssetFolderPurpose, DisasterEffectPlayback, GameCursors, PlacementSound, ViewerState, WINDOW_HEIGHT,
-    WINDOW_WIDTH, app_command_for_menu_command, apply_map_touch_action, arcology_dialog_hit_test,
-    auto_budget_enabled_for_engine, bootstrap_window,
-    configure_linux_video_driver, disaster_effect_playback, ensure_first_run_assets, fit_window_to_usable_display,
+    AppCommand, AssetFolderPurpose, DisasterEffectPlayback, GameCursors, PlacementSound,
+    ViewerState, WINDOW_HEIGHT, WINDOW_WIDTH, Win95CloseAction, Win95FileDialog,
+    app_command_for_menu_command, apply_map_touch_action, arcology_dialog_hit_test,
+    auto_budget_enabled_for_engine, bootstrap_window, configure_linux_video_driver,
+    disaster_effect_playback, ensure_first_run_assets, fit_window_to_usable_display,
     handle_modal_pointer_down, handle_modal_pointer_up, hide_window, input_pixel_scale,
     load_profile_sound, menu_callback, military_base_dialog_hit_test, open_asset_folder_dialog,
     open_city_dialog, open_scenario_dialog, open_tile_set_dialog, pixel_scale,
     play_placement_sound, point_in_float_rect, pop_command, power_plant_dialog_hit_test,
-    push_command, raise_window, reload_asset_profile, run_title_screen, save_city_dialog, save_city_dialog_before_close,
-    show_asset_error, show_window, sync_renderer_to_window, sync_sign_text_input, sync_window,
-    tool_allows_touch_paint_stroke, viewport_center, wait_for_window_pixels, wheel_zoom_factor,
-    win95_file_menu_shortcut, windows_menu_shortcut,
+    push_command, raise_window, reload_asset_profile, run_title_screen, save_city_dialog,
+    save_city_dialog_before_close, show_asset_error, show_window, sync_renderer_to_window,
+    sync_sign_text_input, sync_window, tool_allows_touch_paint_stroke, viewport_center,
+    wait_for_window_pixels, wheel_zoom_factor, win95_file_menu_shortcut, windows_menu_shortcut,
 };
 use crate::asset_profile::{AssetProfile, OriginalMedia, TitleMusicPreference};
 use crate::city::AppMode;
@@ -534,7 +535,8 @@ pub fn run() -> Result<()> {
                 // The native helper polls _Button even when the press happened
                 // before the notice began; it must wait for that release too.
                 input.fiscal_notice_mouse_down = event_pump.mouse_state().left();
-                notice.button_down = input.fiscal_notice_mouse_down || input.touch.finger_count() > 0;
+                notice.button_down =
+                    input.fiscal_notice_mouse_down || input.touch.finger_count() > 0;
             }
             if clock_advance.days > 0
                 || (!mac_budget_review_was_pending
@@ -563,10 +565,15 @@ pub fn run() -> Result<()> {
                     PlacementSound::Disaster,
                 );
             }
-            for event in disaster_effect_playback(mac_effect_reset, state.take_pending_disaster_extra_sounds()) {
+            for event in disaster_effect_playback(
+                mac_effect_reset,
+                state.take_pending_disaster_extra_sounds(),
+            ) {
                 match event {
                     DisasterEffectPlayback::StopEffects => {
-                        if let Some(player) = &sound { player.stop_effects(); }
+                        if let Some(player) = &sound {
+                            player.stop_effects();
+                        }
                     }
                     DisasterEffectPlayback::Play(effect) => {
                         play_placement_sound(state.sound_effects_player(sound.as_ref()), effect);

@@ -554,10 +554,7 @@ mod tests {
                     track_end = Some(calls);
                 }
             }
-            assert!(
-                !engine.has_audio_work(),
-                "cue {id} exceeded refill limit"
-            );
+            assert!(!engine.has_audio_work(), "cue {id} exceeded refill limit");
             eprintln!(
                 "cue {id}: tracks end at {:?}, voices end at {calls}",
                 track_end

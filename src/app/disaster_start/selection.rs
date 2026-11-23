@@ -914,7 +914,9 @@ pub(in crate::app) fn mac_toxic_spill_target_tile<R: AmbientDisasterRandom>(
     city: &City,
     rng: &mut R,
 ) -> Option<(usize, usize)> {
-    toxic_spill_target_tile_scan(city, ToxicSpillScanOrder::ColumnMajor, || rng.random_range(10))
+    toxic_spill_target_tile_scan(city, ToxicSpillScanOrder::ColumnMajor, || {
+        rng.random_range(10)
+    })
 }
 
 pub(in crate::app) fn toxic_spill_target_tile_for_engine<R: AmbientDisasterRandom>(

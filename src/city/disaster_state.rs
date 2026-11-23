@@ -77,13 +77,25 @@ impl City {
     /// CODE 10 FUN_3dc90 keeps the highest-priority affected Mac tile class.
     pub(crate) fn record_mac_disaster_damage_class_at(&mut self, x: usize, y: usize) {
         let tile = self.building_at(x, y);
-        if matches!(tile, 0x3f..=0x42) { return; }
+        if matches!(tile, 0x3f..=0x42) {
+            return;
+        }
         let zone = self.zone_at(x, y).map_or(0, |z| z.raw_bits()) & 0x0f;
-        let candidate = if tile > 0xc5 { if tile == 0xc6 { 10 } else { tile - 0xbd } } else { zone };
+        let candidate = if tile > 0xc5 {
+            if tile == 0xc6 { 10 } else { tile - 0xbd }
+        } else {
+            zone
+        };
         // The Quadra's live A5-0x2f9c table matches the PE table for all 67 entries.
-        const WEIGHTS: [u8; 67] = [0,1,1,1,1,1,1,1,4,8,5,5,5,5,5,5,5,5,5,3,4,4,4,2,2,3,2,4,3,2,3,2,8,8,2,4,8,1,4,1,1,8,1,1,3,8,2,2,2,1,1,4,1,1,2,2,2,1,3,2,5,3,6,6,6,6,6];
+        const WEIGHTS: [u8; 67] = [
+            0, 1, 1, 1, 1, 1, 1, 1, 4, 8, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 4, 4, 4, 2, 2, 3, 2, 4, 3,
+            2, 3, 2, 8, 8, 2, 4, 8, 1, 4, 1, 1, 8, 1, 1, 3, 8, 2, 2, 2, 1, 1, 4, 1, 1, 2, 2, 2, 1,
+            3, 2, 5, 3, 6, 6, 6, 6, 6,
+        ];
         let current = self.mac_disaster_damage_class;
-        if current < 0 || WEIGHTS[usize::from(candidate)] > WEIGHTS[usize::try_from(current).unwrap_or(0)] {
+        if current < 0
+            || WEIGHTS[usize::from(candidate)] > WEIGHTS[usize::try_from(current).unwrap_or(0)]
+        {
             self.mac_disaster_damage_class = i16::from(candidate);
         }
     }

@@ -1481,7 +1481,10 @@ impl ViewerState {
         };
 
         let masthead = if edition.is_mac() {
-            let page = if matches!(edition, NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow) {
+            let page = if matches!(
+                edition,
+                NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
+            ) {
                 self.city
                     .mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET)
                     .unwrap_or(0) as u16 as usize

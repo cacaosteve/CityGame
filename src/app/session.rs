@@ -2207,6 +2207,25 @@ impl ViewerState {
         self.load_city_session(city, window_size, pixel_scale, false)
     }
 
+    pub(super) fn load_confirmed_classic_cty(
+        &mut self,
+        path: &Path,
+        window_size: (u32, u32),
+        pixel_scale: f32,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.engine_fidelity.uses_win95(),
+            "Classic CTY import requires Win95 fidelity"
+        );
+        let city = super::classic_cty_import::load_classic_cty(
+            path,
+            &mut self.pe_process_crt,
+            &mut self.pe_process_game_rand,
+        )
+        .with_context(|| format!("importing Classic CTY {}", path.display()))?;
+        self.load_city_session(city, window_size, pixel_scale, false)
+    }
+
     pub(super) fn load_win_scenario(
         &mut self,
         path: &Path,
@@ -2430,5 +2449,42 @@ impl ViewerState {
         self.fit_map(window_size, pixel_scale);
         self.restore_saved_city_view(window_size, pixel_scale);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod classic_cty_confirmation_tests {
+    use super::*;
+
+    #[test]
+    fn classic_city_open_requires_the_explicitly_confirmed_loader() {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-classic-cty-session-{}.cty",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            vec![0; crate::city::classic_cty::CLASSIC_CTY_FILE_LEN],
+        )
+        .unwrap();
+
+        let original = City::new_blank("/tmp/classic-cty-original.sc2", "Original").unwrap();
+        let mut state = crate::app::tests::test_state(original);
+        state.engine_fidelity = EngineFidelity::Win95;
+        assert!(state.load_city(&path, (800, 600), 1.0).is_err());
+        assert_eq!(state.city.name, "Original");
+
+        state
+            .load_confirmed_classic_cty(&path, (800, 600), 1.0)
+            .unwrap();
+        assert_eq!(state.city.name, path.file_stem().unwrap().to_str().unwrap());
+        assert_eq!(
+            state.city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 1900,
+                month: 1
+            })
+        );
+        let _ = std::fs::remove_file(path);
     }
 }

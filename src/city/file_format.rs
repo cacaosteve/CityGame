@@ -1155,18 +1155,13 @@ pub fn detect_city_kind(path: &Path, bytes: &[u8]) -> Result<CityFileKind> {
         return Err(anyhow!(CityReadEof).context(format!("reading city {}", path.display())));
     }
     let prefix_len = bytes.len().min(4);
-    if prefix_len > 0
-        && bytes[..prefix_len] != b"FORM"[..prefix_len]
-        && bytes.len() != 0x6a70
-    {
+    if prefix_len > 0 && bytes[..prefix_len] != b"FORM"[..prefix_len] && bytes.len() != 0x6a70 {
         return Err(anyhow!(NotIffCityFile).context(format!("reading city {}", path.display())));
     }
     // After reading FORM, the PE swaps and reuses the same word for the
     // type read. A short, nonempty type leaves its final byte as 'F', so it
     // cannot compare equal to SCDH even when its supplied bytes are a prefix.
-    if bytes.len() >= 9
-        && &bytes[..4] == b"FORM"
-        && (bytes.len() < 12 || &bytes[8..12] != b"SCDH")
+    if bytes.len() >= 9 && &bytes[..4] == b"FORM" && (bytes.len() < 12 || &bytes[8..12] != b"SCDH")
     {
         return Err(anyhow!(WrongIffCityType).context(format!("reading city {}", path.display())));
     }

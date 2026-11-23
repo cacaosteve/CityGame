@@ -29,7 +29,9 @@ fn encode_char(ch: char) -> Option<u8> {
 }
 
 pub(crate) fn can_encode(text: &str) -> bool {
-    text.chars().take_while(|&ch| ch != '\0').all(|ch| encode_char(ch).is_some())
+    text.chars()
+        .take_while(|&ch| ch != '\0')
+        .all(|ch| encode_char(ch).is_some())
 }
 
 pub(crate) fn encode(text: &str, limit: usize) -> Vec<u8> {

@@ -295,19 +295,18 @@ impl ViewerState {
         self.cancel_nature_drag();
         self.city_info_dialog = next_dialog;
         if matches!(next_dialog, Some(CityInfoDialog::Newspaper(edition)) if edition.is_mac()) {
-            let page =
-                if matches!(
-                    next_dialog,
-                    Some(CityInfoDialog::Newspaper(
-                        NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
-                    ))
-                ) {
-                    self.city
-                        .mac_state_misc_u32_at(super::MISC_NEWSPAPER_CHOICE_OFFSET)
-                        .unwrap_or(0) as u16 as usize
-                } else {
-                    0
-                };
+            let page = if matches!(
+                next_dialog,
+                Some(CityInfoDialog::Newspaper(
+                    NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
+                ))
+            ) {
+                self.city
+                    .mac_state_misc_u32_at(super::MISC_NEWSPAPER_CHOICE_OFFSET)
+                    .unwrap_or(0) as u16 as usize
+            } else {
+                0
+            };
             let _ = self.city.prepare_mac_newspaper_open_rows(page);
             self.prepare_mac_paper_headline();
             // When the original Mac paper resources are loaded,

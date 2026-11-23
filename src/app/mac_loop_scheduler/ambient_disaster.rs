@@ -34,8 +34,12 @@ fn propose(
     point: &mut Option<(i16, i16)>,
     status: &mut Option<MacStatusMessage>,
 ) -> Option<u16> {
-    let trend = city.mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET).unwrap_or(0) as u8;
-    let growth = city.mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET).unwrap_or(0);
+    let trend = city
+        .mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET)
+        .unwrap_or(0) as u8;
+    let growth = city
+        .mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET)
+        .unwrap_or(0);
     let story = status_story_selector(city, trend, growth, rng);
     *status = if (9..=11).contains(&trend) {
         Some(MacStatusMessage::Weather(trend))
@@ -120,27 +124,59 @@ fn budget_current(city: &City, row: usize) -> i32 {
 }
 
 /// CODE 7's ordered status gates at 0x35652..0x358de.
-fn status_story_selector(city: &City, trend: u8, growth: u32, rng: &mut MacToolboxRng) -> Option<u16> {
-    if trend >= 9 { return None; }
-    if city.mac_power_service_summary() > 98 { return Some(46); }
+fn status_story_selector(
+    city: &City,
+    trend: u8,
+    growth: u32,
+    rng: &mut MacToolboxRng,
+) -> Option<u16> {
+    if trend >= 9 {
+        return None;
+    }
+    if city.mac_power_service_summary() > 98 {
+        return Some(46);
+    }
     let count = |tile| city.mac_xbld_tile_count(tile);
-    let transit = u32::from(count(0xe9)).wrapping_add(u32::from(count(0xed)))
+    let transit = u32::from(count(0xe9))
+        .wrapping_add(u32::from(count(0xed)))
         .wrapping_add(budget_current(city, 10) as u32);
-    if growth / 100 >= transit { return Some(47); }
-    if growth < 1_000 { return None; }
-    if growth / 20_000 >= u32::from(count(0xd2) / 9 + count(0xd8) / 16) { return Some(48); }
-    if growth / 20_000 >= u32::from(count(0xd3) / 9) { return Some(49); }
-    if city.mac_water_service_summary() > 98 { return Some(50); }
-    if growth < 3_000 { return None; }
-    if growth / 25_000 >= u32::from(count(0xd1) / 9) { return Some(51); }
-    if growth / 20_000 >= u32::from(count(0xd6) / 9) { return Some(52); }
+    if growth / 100 >= transit {
+        return Some(47);
+    }
+    if growth < 1_000 {
+        return None;
+    }
+    if growth / 20_000 >= u32::from(count(0xd2) / 9 + count(0xd8) / 16) {
+        return Some(48);
+    }
+    if growth / 20_000 >= u32::from(count(0xd3) / 9) {
+        return Some(49);
+    }
+    if city.mac_water_service_summary() > 98 {
+        return Some(50);
+    }
+    if growth < 3_000 {
+        return None;
+    }
+    if growth / 25_000 >= u32::from(count(0xd1) / 9) {
+        return Some(51);
+    }
+    if growth / 20_000 >= u32::from(count(0xd6) / 9) {
+        return Some(52);
+    }
     if growth >= 8_000 {
         let arcology = city.mac_arcology_resident_total() as i32 / 12;
         let [_, non_network] = city.mac_rci_overlay_cap_counts();
         let seaport = i32::from(count(0xe0).wrapping_add(non_network));
         if seaport < budget_current(city, 2).wrapping_sub(arcology) / 10_000 {
-            let coast = city.mac_state_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET).unwrap_or(0) as u8 != 0;
-            let river = city.mac_state_misc_u32_at(EDIT_MAP_RIVER_MISC_OFFSET).unwrap_or(0) as u8 != 0;
+            let coast = city
+                .mac_state_misc_u32_at(EDIT_MAP_COAST_MISC_OFFSET)
+                .unwrap_or(0) as u8
+                != 0;
+            let river = city
+                .mac_state_misc_u32_at(EDIT_MAP_RIVER_MISC_OFFSET)
+                .unwrap_or(0) as u8
+                != 0;
             return Some(if coast || river { 53 } else { 59 });
         }
         let [network, _] = city.mac_rci_overlay_cap_counts();
@@ -148,12 +184,15 @@ fn status_story_selector(city: &City, trend: u8, growth: u32, rng: &mut MacToolb
         if airport < budget_current(city, 1).wrapping_sub(arcology) / 2_000 {
             // CODE 8 export 240 copies command 8's default mask (1), then
             // sets bit 1 when the airport technology WORD is zero.
-            let date = city.mac_state_misc_u32_at(crate::city::Technology::Airport.misc_offset())
+            let date = city
+                .mac_state_misc_u32_at(crate::city::Technology::Airport.misc_offset())
                 .unwrap_or(0) as u16;
             return Some(if date == 0 { 54 } else { 60 });
         }
     }
-    if recreation_story_due(city, trend, growth) { return Some(55 + (rng.random_u16() & 3)); }
+    if recreation_story_due(city, trend, growth) {
+        return Some(55 + (rng.random_u16() & 3));
+    }
     None
 }
 
@@ -234,7 +273,10 @@ mod tests {
 
     #[test]
     fn captured_natural_tornado_runs_through_citygame_dispatch_and_constructor() {
-        for path in ["natural-tornado-dispatch.city", "natural-tornado-dispatch.sc2"] {
+        for path in [
+            "natural-tornado-dispatch.city",
+            "natural-tornado-dispatch.sc2",
+        ] {
             let mut city = blank_city_layout_fixture(path, "Natural Tornado Dispatch");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x15b8e);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
@@ -255,12 +297,19 @@ mod tests {
             // then let the ordinary paused-mode pending-action poll dispatch it.
             state.run_mac_disaster_chooser();
             assert_eq!(state.city.mac_pending_action(), 7, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, Some((26, 96)), "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point,
+                Some((26, 96)),
+                "{path}"
+            );
             assert_eq!(state.mac_process_rng.seed(), 0x6dc4f9e9, "{path}");
 
             assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert!(scenario_action::mac_scenario_action_active(&state.city), "{path}");
+            assert!(
+                scenario_action::mac_scenario_action_active(&state.city),
+                "{path}"
+            );
             assert_eq!(state.city.mac_state_misc_u32_at(0x1044), Some(7), "{path}");
             assert_eq!(
                 state.city.traffic_overlays().unwrap()[1].to_bytes(),
@@ -270,7 +319,11 @@ mod tests {
             assert_eq!(state.city.text_overlay_at(26, 96), Some(0xca), "{path}");
             assert_eq!(state.city.mac_tornado_actor_counter, 1, "{path}");
             assert_eq!(state.mac_process_rng.seed(), 0x3c60a1c8, "{path}");
-            assert_eq!(state.mac_app_lfsr.state(), MacAppLfsrRng::INITIAL_STATE, "{path}");
+            assert_eq!(
+                state.mac_app_lfsr.state(),
+                MacAppLfsrRng::INITIAL_STATE,
+                "{path}"
+            );
         }
     }
 
@@ -308,7 +361,10 @@ mod tests {
 
     #[test]
     fn captured_natural_tornado_dispatch_matches_native_seed_through_autogoto_redraw() {
-        for path in ["live-natural-tornado-dispatch.city", "live-natural-tornado-dispatch.sc2"] {
+        for path in [
+            "live-natural-tornado-dispatch.city",
+            "live-natural-tornado-dispatch.sc2",
+        ] {
             let mut city = blank_city_layout_fixture(path, "Live Natural Tornado Dispatch");
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.set_altm_word(103, 33, 4);
@@ -343,15 +399,27 @@ mod tests {
             let markers = (0..128)
                 .flat_map(|y| (0..128).map(move |x| (x, y)))
                 .filter_map(|(x, y)| {
-                    state.city.text_overlay_at(x, y)
-                        .filter(|marker| (0xc9..=0xf1).contains(marker) || (0xfb..=0xff).contains(marker))
+                    state
+                        .city
+                        .text_overlay_at(x, y)
+                        .filter(|marker| {
+                            (0xc9..=0xf1).contains(marker) || (0xfb..=0xff).contains(marker)
+                        })
                         .map(|marker| (x, y, marker))
                 })
                 .collect::<Vec<_>>();
             // The constructor consumes three draws. The real Auto-Goto view
             // walk sees this Tornado marker and consumes the remaining pair.
-            assert_eq!(state.mac_process_rng.seed(), 0x2135_dad4, "{path} markers={markers:?}");
-            assert_eq!(state.mac_app_lfsr.state(), MacAppLfsrRng::INITIAL_STATE, "{path}");
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                0x2135_dad4,
+                "{path} markers={markers:?}"
+            );
+            assert_eq!(
+                state.mac_app_lfsr.state(),
+                MacAppLfsrRng::INITIAL_STATE,
+                "{path}"
+            );
         }
     }
 
@@ -378,7 +446,11 @@ mod tests {
             // captured entry seed and proposes the same selector-6 point.
             state.run_mac_disaster_chooser();
             assert_eq!(state.city.mac_pending_action(), 6, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, Some((6, 85)), "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point,
+                Some((6, 85)),
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
             assert_eq!(state.mac_process_rng.seed(), 0x717ec0c6, "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x4067, "{path}");
@@ -387,9 +459,15 @@ mod tests {
             // that dispatcher entry directly so the fixture does not advance a
             // separate frame/action pass beyond the captured event boundary.
             let mut now = 0;
-            assert!(state.consume_mac_pending_action(&mut now, &mut |_| {}), "{path}");
+            assert!(
+                state.consume_mac_pending_action(&mut now, &mut |_| {}),
+                "{path}"
+            );
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
             // CODE 10's selector-6 branch begins the shake prelude here. The
             // worker writes the active-disaster field only after the prelude,
@@ -427,7 +505,10 @@ mod tests {
             // pending Air Crash and makes no coordinate calls.
             assert_eq!(state.mac_process_rng.seed(), 0x075d6db1, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x2770, "{path}");
         }
@@ -439,7 +520,10 @@ mod tests {
             let mut city = blank_city_layout_fixture(path, "Ambient Walk Proposal");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x21885);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
-            city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, u32::from(WEATHER_TREND_BLIZZARD));
+            city.set_mac_state_misc_u32_at(
+                MISC_WEATHER_TREND_OFFSET,
+                u32::from(WEATHER_TREND_BLIZZARD),
+            );
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.prepare_mac_fidelity_from_saved_city();
             city.set_building(20, 20, 0xcd);
@@ -453,7 +537,11 @@ mod tests {
             state.mac_app_lfsr = MacAppLfsrRng::new(0x2770);
             state.mac_loop_scheduler.disaster_point = (13, 14);
             assert_eq!(state.city.mac_pending_action(), 0, "{path} before chooser");
-            assert_eq!(state.city.mac_xbld_tile_count(0xcd), 1, "{path} in ViewerState");
+            assert_eq!(
+                state.city.mac_xbld_tile_count(0xcd),
+                1,
+                "{path} in ViewerState"
+            );
 
             state.run_mac_disaster_chooser();
 
@@ -462,7 +550,10 @@ mod tests {
             // untouched. Seed 1884 supplies chance remainder 0, then slot 10.
             assert_eq!(state.city.mac_pending_action(), 10, "{path}");
             assert_eq!(state.mac_process_rng.seed(), 0x6899c693, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (13, 14), "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x2770, "{path}");
         }
@@ -470,11 +561,17 @@ mod tests {
 
     #[test]
     fn ambient_scatter_selector_publishes_without_replacing_point() {
-        for path in ["ambient-scatter-proposal.city", "ambient-scatter-proposal.sc2"] {
+        for path in [
+            "ambient-scatter-proposal.city",
+            "ambient-scatter-proposal.sc2",
+        ] {
             let mut city = blank_city_layout_fixture(path, "Ambient Scatter Proposal");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x21885);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
-            city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, u32::from(WEATHER_TREND_BLIZZARD));
+            city.set_mac_state_misc_u32_at(
+                MISC_WEATHER_TREND_OFFSET,
+                u32::from(WEATHER_TREND_BLIZZARD),
+            );
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.prepare_mac_fidelity_from_saved_city();
             city.set_building(20, 20, 0xcb);
@@ -493,7 +590,10 @@ mod tests {
             // leaves Point alone; seed 992 selects slot 9 after chance zero.
             assert_eq!(state.city.mac_pending_action(), 9, "{path}");
             assert_eq!(state.mac_process_rng.seed(), 0x3e246662, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (13, 14), "{path}");
         }
     }
@@ -504,7 +604,10 @@ mod tests {
             let mut city = blank_city_layout_fixture(path, "Natural Walk Miss");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x21ec5);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
-            city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, u32::from(WEATHER_TREND_BLIZZARD));
+            city.set_mac_state_misc_u32_at(
+                MISC_WEATHER_TREND_OFFSET,
+                u32::from(WEATHER_TREND_BLIZZARD),
+            );
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             assert_eq!(city.mac_xbld_tile_count(0xcd), 0);
 
@@ -521,7 +624,10 @@ mod tests {
             // zero. Native CODE 7 returns without publishing or changing Point.
             assert_eq!(state.mac_process_rng.seed(), 0x7daa338c, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
         }
     }
@@ -532,7 +638,10 @@ mod tests {
             let mut city = blank_city_layout_fixture(path, "Natural Scatter Miss");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x22bc2);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
-            city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, u32::from(WEATHER_TREND_BLIZZARD));
+            city.set_mac_state_misc_u32_at(
+                MISC_WEATHER_TREND_OFFSET,
+                u32::from(WEATHER_TREND_BLIZZARD),
+            );
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             assert_eq!(city.mac_xbld_tile_count(0xcb), 0);
 
@@ -549,7 +658,10 @@ mod tests {
             // zero, native CODE 7 returns without publishing or changing Point.
             assert_eq!(state.mac_process_rng.seed(), 0x44d16532, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
         }
     }
@@ -560,7 +672,10 @@ mod tests {
             let mut city = blank_city_layout_fixture(path, "Natural Riot Miss");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x221e5);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
-            city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, u32::from(WEATHER_TREND_BLIZZARD));
+            city.set_mac_state_misc_u32_at(
+                MISC_WEATHER_TREND_OFFSET,
+                u32::from(WEATHER_TREND_BLIZZARD),
+            );
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.set_mac_state_misc_u32_at(MAC_RIOT_UNEMPLOYMENT_STATE_OFFSET, 10);
             city.set_mac_state_misc_u32_at(MAC_RIOT_WEATHER_HEAT_STATE_OFFSET, 0x9e);
@@ -579,7 +694,10 @@ mod tests {
             // selector is written after chance and selector draws.
             assert_eq!(state.mac_process_rng.seed(), 0x7c424237, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
         }
     }
@@ -606,7 +724,10 @@ mod tests {
             // below the Flood wrapper's native trend-9 threshold.
             assert_eq!(state.mac_process_rng.seed(), 0x716cae2c, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (6, 85), "{path}");
         }
     }
@@ -620,12 +741,8 @@ mod tests {
             city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 8);
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 0x1446);
-            let row2 = budget_row_misc_offset_for_city(
-                &city,
-                2,
-                BUDGET_SERVICE_CURRENT_FIELD,
-            )
-            .unwrap();
+            let row2 =
+                budget_row_misc_offset_for_city(&city, 2, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
             city.set_budget_misc_u32_values(row2, &[0x096a]);
 
             let mut state = test_state(city);
@@ -644,7 +761,10 @@ mod tests {
             // are no coordinate draws or pending publication.
             assert_eq!(state.mac_process_rng.seed(), 0x5b116e19, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (0, 0), "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x0da1, "{path}");
         }
@@ -652,19 +772,18 @@ mod tests {
 
     #[test]
     fn natural_2047_selector_8_rejects_with_live_growth_and_budget_state() {
-        for path in ["natural-2047-growth-miss.city", "natural-2047-growth-miss.sc2"] {
+        for path in [
+            "natural-2047-growth-miss.city",
+            "natural-2047-growth-miss.sc2",
+        ] {
             let mut city = blank_city_layout_fixture(path, "Natural 2047 Growth Gate");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0xae82);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
             city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 8);
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 0x0140);
-            let row2 = budget_row_misc_offset_for_city(
-                &city,
-                2,
-                BUDGET_SERVICE_CURRENT_FIELD,
-            )
-            .unwrap();
+            let row2 =
+                budget_row_misc_offset_for_city(&city, 2, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
             city.set_budget_misc_u32_values(row2, &[0x0078]);
 
             let mut state = test_state(city);
@@ -682,7 +801,10 @@ mod tests {
             // 45,000 gate; budget row 2 is 120 and remains untouched.
             assert_eq!(state.mac_process_rng.seed(), 0x42c0_0d8a, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (0, 0), "{path}");
             assert_eq!(budget_current(&state.city, 2), 120, "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x2330, "{path}");
@@ -691,19 +813,18 @@ mod tests {
 
     #[test]
     fn captured_natural_selector_13_rejects_below_growth_threshold() {
-        for path in ["natural-riot-growth-miss.city", "natural-riot-growth-miss.sc2"] {
+        for path in [
+            "natural-riot-growth-miss.city",
+            "natural-riot-growth-miss.sc2",
+        ] {
             let mut city = blank_city_layout_fixture(path, "Natural Riot Growth Gate");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x98ed);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
             city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 0);
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 0x131a);
-            let row2 = budget_row_misc_offset_for_city(
-                &city,
-                2,
-                BUDGET_SERVICE_CURRENT_FIELD,
-            )
-            .unwrap();
+            let row2 =
+                budget_row_misc_offset_for_city(&city, 2, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
             city.set_budget_misc_u32_values(row2, &[0x079e]);
 
             let mut state = test_state(city);
@@ -722,7 +843,10 @@ mod tests {
             // coordinate draw, Point update, or pending publication followed.
             assert_eq!(state.mac_process_rng.seed(), 0x5cc3fe07, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (0, 0), "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x995f, "{path}");
         }
@@ -737,12 +861,8 @@ mod tests {
             city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 7);
             city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
             city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 0x155e);
-            let row2 = budget_row_misc_offset_for_city(
-                &city,
-                2,
-                BUDGET_SERVICE_CURRENT_FIELD,
-            )
-            .unwrap();
+            let row2 =
+                budget_row_misc_offset_for_city(&city, 2, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
             city.set_budget_misc_u32_values(row2, &[0x0a3c]);
 
             let mut state = test_state(city);
@@ -762,7 +882,10 @@ mod tests {
             assert_eq!(state.mac_process_rng.seed(), 0x300bfd5e, "{path}");
             assert_eq!(budget_current(&state.city, 2), 0x0a3c, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (0, 0), "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0x61eb, "{path}");
         }
@@ -770,7 +893,10 @@ mod tests {
 
     #[test]
     fn captured_natural_selector_2_rejects_without_coast_or_river() {
-        for path in ["natural-water-option-miss.city", "natural-water-option-miss.sc2"] {
+        for path in [
+            "natural-water-option-miss.city",
+            "natural-water-option-miss.sc2",
+        ] {
             let mut city = blank_city_layout_fixture(path, "Natural Water Option Gate");
             city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 0x7179);
             city.set_mac_state_misc_u32_at(MISC_DIFFICULTY_OFFSET, 1);
@@ -795,17 +921,34 @@ mod tests {
             // coordinate calls or action publication follow.
             assert_eq!(state.mac_process_rng.seed(), 0x64057a19, "{path}");
             assert_eq!(state.city.mac_pending_action(), 0, "{path}");
-            assert_eq!(state.mac_loop_scheduler.pending_action_point, None, "{path}");
+            assert_eq!(
+                state.mac_loop_scheduler.pending_action_point, None,
+                "{path}"
+            );
             assert_eq!(state.mac_loop_scheduler.disaster_point, (0, 0), "{path}");
             assert_eq!(state.mac_app_lfsr.state(), 0xf2e0, "{path}");
         }
     }
 
-    fn status_fixture(path: &str, date: u32, commercial: u32, residential: u32,
-        arcology_share: u32, runway: u16, cross: u16, network: u16) -> City {
+    fn status_fixture(
+        path: &str,
+        date: u32,
+        commercial: u32,
+        residential: u32,
+        arcology_share: u32,
+        runway: u16,
+        cross: u16,
+        network: u16,
+    ) -> City {
         let mut city = blank_city_layout_fixture(path, "Airport status");
-        for (tile, count) in [(0xd2, 9), (0xd3, 9), (0xd1, 9), (0xd6, 9),
-            (0xdd, runway), (0xde, cross)] {
+        for (tile, count) in [
+            (0xd2, 9),
+            (0xd3, 9),
+            (0xd1, 9),
+            (0xd6, 9),
+            (0xdd, runway),
+            (0xde, cross),
+        ] {
             city.set_mac_state_misc_u32_at(0x01f0 + tile * 4, u32::from(count));
         }
         city.prepare_mac_fidelity_from_saved_city();
@@ -815,7 +958,8 @@ mod tests {
         city.set_mac_state_misc_u32_at(0x1050, u32::from(network));
         city.set_mac_state_misc_u32_at(crate::city::Technology::Airport.misc_offset(), date);
         for (row, amount) in [(0, residential), (1, commercial), (2, 0), (10, 81)] {
-            let offset = budget_row_misc_offset_for_city(&city, row, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
+            let offset =
+                budget_row_misc_offset_for_city(&city, row, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
             city.set_budget_misc_u32_values(offset, &[amount]);
         }
         city
@@ -827,7 +971,10 @@ mod tests {
             for (date, expected) in [(0, 54), (1999, 60), (0x10000, 54)] {
                 let city = status_fixture(path, date, 2000, 1000, 0, 0, 0, 0);
                 let mut rng = MacToolboxRng::new(2);
-                assert_eq!(status_story_selector(&city, 0, 8000, &mut rng), Some(expected));
+                assert_eq!(
+                    status_story_selector(&city, 0, 8000, &mut rng),
+                    Some(expected)
+                );
                 assert_eq!(rng.seed(), 2);
             }
         }
@@ -854,19 +1001,39 @@ mod tests {
             state.engine_fidelity = EngineFidelity::Mac68k;
             state.traffic.set_speed(GameSpeed::Turtle);
             state.no_disasters_enabled = true;
-            state.city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 8000);
-            state.city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 0);
+            state
+                .city
+                .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 8000);
+            state
+                .city
+                .set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 0);
             state.run_mac_disaster_chooser();
-            assert_eq!(state.mac_loop_scheduler.status_message, Some(MacStatusMessage::Story(54)));
-            assert_eq!(state.status_panel_notice(), super::super::super::newspaper_stories::pe_health_amenities_newspaper_label(54).unwrap());
+            assert_eq!(
+                state.mac_loop_scheduler.status_message,
+                Some(MacStatusMessage::Story(54))
+            );
+            assert_eq!(
+                state.status_panel_notice(),
+                super::super::super::newspaper_stories::pe_health_amenities_newspaper_label(54)
+                    .unwrap()
+            );
 
-            state.city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 9);
+            state
+                .city
+                .set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 9);
             state.run_mac_disaster_chooser();
-            assert_eq!(state.mac_loop_scheduler.status_message, Some(MacStatusMessage::Weather(9)));
+            assert_eq!(
+                state.mac_loop_scheduler.status_message,
+                Some(MacStatusMessage::Weather(9))
+            );
             assert_eq!(state.status_panel_notice(), "Blizzard conditions");
 
-            state.city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 0);
-            state.city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 999);
+            state
+                .city
+                .set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, 0);
+            state
+                .city
+                .set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, 999);
             state.run_mac_disaster_chooser();
             assert_eq!(state.mac_loop_scheduler.status_message, None);
             assert_eq!(state.status_panel_notice(), "");
@@ -877,17 +1044,36 @@ mod tests {
     #[ignore = "requires private native Mac airport status fixtures"]
     fn airport_status_matches_original_worker() {
         let path = std::env::var_os("CITYGAME_MAC_AIRPORT_STATUS").unwrap();
-        let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let cases: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for row in cases.as_array().unwrap() {
             let value = |key: &str| row[key].as_u64().unwrap() as u32;
             for path in ["airport-status.city", "airport-status.sc2"] {
-                let city = status_fixture(path, value("date"), value("commercial"), value("residential"),
-                    value("arcology_share"), value("runway") as u16, value("cross") as u16,
-                    value("network") as u16);
+                let city = status_fixture(
+                    path,
+                    value("date"),
+                    value("commercial"),
+                    value("residential"),
+                    value("arcology_share"),
+                    value("runway") as u16,
+                    value("cross") as u16,
+                    value("network") as u16,
+                );
                 let mut rng = MacToolboxRng::new(2);
                 let expected = row["selector"].as_u64().map(|value| value as u16);
-                assert_eq!(status_story_selector(&city, 0, 8000, &mut rng), expected, "{row}");
-                assert_eq!(rng.seed(), if matches!(expected, Some(55..=58)) { 33614 } else { 2 });
+                assert_eq!(
+                    status_story_selector(&city, 0, 8000, &mut rng),
+                    expected,
+                    "{row}"
+                );
+                assert_eq!(
+                    rng.seed(),
+                    if matches!(expected, Some(55..=58)) {
+                        33614
+                    } else {
+                        2
+                    }
+                );
             }
         }
     }
@@ -896,12 +1082,16 @@ mod tests {
     #[ignore = "requires private native Mac status chooser fixtures"]
     fn status_chooser_matches_original_decision_tree() {
         let path = std::env::var_os("CITYGAME_MAC_STATUS_CHOOSER").unwrap();
-        let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let cases: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for row in cases.as_array().unwrap() {
             let value = |key: &str| row[key].as_u64().unwrap() as u32;
             for path in ["status-chooser.city", "status-chooser.sc2"] {
                 let mut city = blank_city_layout_fixture(path, "Status chooser");
-                for tile in [0xd1, 0xd2, 0xd3, 0xd5, 0xd6, 0xd7, 0xd8, 0xda, 0xdd, 0xde, 0xe0, 0xe9, 0xed, 0xf8] {
+                for tile in [
+                    0xd1, 0xd2, 0xd3, 0xd5, 0xd6, 0xd7, 0xd8, 0xda, 0xdd, 0xde, 0xe0, 0xe9, 0xed,
+                    0xf8,
+                ] {
                     let count = row["counts"][tile.to_string()].as_u64().unwrap_or(0);
                     city.set_mac_state_misc_u32_at(0x01f0 + tile * 4, count as u32);
                 }
@@ -909,27 +1099,50 @@ mod tests {
                 city.set_mac_power_service_summary(value("power"));
                 city.set_mac_water_service_summary(value("water"));
                 city.set_mac_arcology_resident_total(value("arcology"));
-                for (offset, key) in [(0x1050, "network"), (0x1024, "non_network"),
-                    (EDIT_MAP_COAST_MISC_OFFSET, "coast"), (EDIT_MAP_RIVER_MISC_OFFSET, "river"),
-                    (crate::city::Technology::Airport.misc_offset(), "date")] {
+                for (offset, key) in [
+                    (0x1050, "network"),
+                    (0x1024, "non_network"),
+                    (EDIT_MAP_COAST_MISC_OFFSET, "coast"),
+                    (EDIT_MAP_RIVER_MISC_OFFSET, "river"),
+                    (crate::city::Technology::Airport.misc_offset(), "date"),
+                ] {
                     city.set_mac_state_misc_u32_at(offset, value(key));
                 }
-                for (row_index, key) in [(0, "residential"), (1, "commercial"),
-                    (2, "industrial"), (10, "transit")] {
-                    let offset = budget_row_misc_offset_for_city(&city, row_index, BUDGET_SERVICE_CURRENT_FIELD).unwrap();
+                for (row_index, key) in [
+                    (0, "residential"),
+                    (1, "commercial"),
+                    (2, "industrial"),
+                    (10, "transit"),
+                ] {
+                    let offset = budget_row_misc_offset_for_city(
+                        &city,
+                        row_index,
+                        BUDGET_SERVICE_CURRENT_FIELD,
+                    )
+                    .unwrap();
                     city.set_budget_misc_u32_values(offset, &[value(key)]);
                 }
                 let mut rng = MacToolboxRng::new(value("seed"));
-                let actual = status_story_selector(&city, value("trend") as u8, value("growth"), &mut rng);
-                assert_eq!(actual, row["selector"].as_u64().map(|value| value as u16), "{path} {row}");
+                let actual =
+                    status_story_selector(&city, value("trend") as u8, value("growth"), &mut rng);
+                assert_eq!(
+                    actual,
+                    row["selector"].as_u64().map(|value| value as u16),
+                    "{path} {row}"
+                );
                 assert_eq!(rng.seed(), value("seed_after"), "{path} {row}");
                 if let Some(native_message) = row.get("message_index") {
                     let mut state = test_state(city);
                     state.engine_fidelity = EngineFidelity::Mac68k;
                     state.no_disasters_enabled = true;
                     state.mac_process_rng = MacToolboxRng::new(value("seed"));
-                    state.city.set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, value("trend"));
-                    state.city.set_mac_state_misc_u32_at(MAC_MASS_RIOT_GROWTH_STATE_OFFSET, value("growth"));
+                    state
+                        .city
+                        .set_mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET, value("trend"));
+                    state.city.set_mac_state_misc_u32_at(
+                        MAC_MASS_RIOT_GROWTH_STATE_OFFSET,
+                        value("growth"),
+                    );
                     state.run_mac_disaster_chooser();
                     let actual = match state.mac_loop_scheduler.status_message {
                         Some(MacStatusMessage::Story(selector)) => Some(u64::from(selector - 46)),
@@ -937,7 +1150,11 @@ mod tests {
                         None => None,
                     };
                     assert_eq!(actual, native_message.as_u64(), "{path} {row}");
-                    assert_eq!(state.mac_process_rng.seed(), value("seed_after"), "{path} {row}");
+                    assert_eq!(
+                        state.mac_process_rng.seed(),
+                        value("seed_after"),
+                        "{path} {row}"
+                    );
                 }
             }
         }

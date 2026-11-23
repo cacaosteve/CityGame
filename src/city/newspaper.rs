@@ -25,40 +25,59 @@ impl City {
     pub(crate) fn mac_story_record(&self, index: usize) -> [u32; MAC_STORY_FIELDS] {
         std::array::from_fn(|field| {
             let slot = index * MAC_STORY_FIELDS + field;
-            self.mac_story_runtime.as_ref().map(|table| table[slot]).unwrap_or_else(||
-                self.mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * slot).unwrap_or(0))
+            self.mac_story_runtime
+                .as_ref()
+                .map(|table| table[slot])
+                .unwrap_or_else(|| {
+                    self.mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * slot)
+                        .unwrap_or(0)
+                })
         })
     }
 
     fn write_mac_story_record(&mut self, index: usize, record: [u32; MAC_STORY_FIELDS]) {
         if self.kind.is_win95() {
             if self.mac_story_runtime.is_none() {
-                self.mac_story_runtime = Some(Box::new(std::array::from_fn(|slot|
-                    self.mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * slot).unwrap_or(0))));
+                self.mac_story_runtime = Some(Box::new(std::array::from_fn(|slot| {
+                    self.mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * slot)
+                        .unwrap_or(0)
+                })));
             }
-            self.mac_story_runtime.as_mut().unwrap()[index * MAC_STORY_FIELDS..(index + 1) * MAC_STORY_FIELDS].copy_from_slice(&record);
+            self.mac_story_runtime.as_mut().unwrap()
+                [index * MAC_STORY_FIELDS..(index + 1) * MAC_STORY_FIELDS]
+                .copy_from_slice(&record);
             return;
         }
         for (field, value) in record.into_iter().enumerate() {
-            self.set_mac_state_misc_u32_at(MAC_STORY_QUEUE_OFFSET + 4 * (index * MAC_STORY_FIELDS + field), value);
+            self.set_mac_state_misc_u32_at(
+                MAC_STORY_QUEUE_OFFSET + 4 * (index * MAC_STORY_FIELDS + field),
+                value,
+            );
         }
     }
 
     pub(crate) fn set_mac_story_choices(&mut self, index: usize, choices: [u8; 3]) {
         let mut row = self.mac_story_record(index);
-        for (field, value) in row[3..6].iter_mut().zip(choices) { *field = u32::from(value); }
+        for (field, value) in row[3..6].iter_mut().zip(choices) {
+            *field = u32::from(value);
+        }
         self.write_mac_story_record(index, row);
     }
 
     /// CODE 7 `0x334ce..0x33508`: refresh the weather and opinion story
     /// selectors for this paper, retaining their existing choice caches.
     pub(crate) fn prepare_mac_newspaper_open_rows(&mut self, page: usize) -> Option<()> {
-        if page >= 6 { return None; }
-        let paper_type = self.mac_state_misc_u32_at(MISC_NEWSPAPER_PAPER_LIST_OFFSET + page * 20 + 12)? as u8;
+        if page >= 6 {
+            return None;
+        }
+        let paper_type =
+            self.mac_state_misc_u32_at(MISC_NEWSPAPER_PAPER_LIST_OFFSET + page * 20 + 12)? as u8;
         let selector = *[42u32, 43, 43, 44, 44, 45].get(usize::from(paper_type))?;
         let mut weather = self.mac_story_record(7);
         weather[0] = 0;
-        weather[2] = self.mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET).unwrap_or(0) as u8 as u32;
+        weather[2] = self
+            .mac_state_misc_u32_at(MISC_WEATHER_TREND_OFFSET)
+            .unwrap_or(0) as u8 as u32;
         self.write_mac_story_record(7, weather);
         let mut opinion = self.mac_story_record(8);
         opinion[0] = selector;
@@ -70,35 +89,64 @@ impl City {
     /// CODE 7 export 234 inserts into seven priority-ordered Mac story records
     /// and reports whether this insertion immediately calls export 233.
     pub(crate) fn queue_mac_newspaper_story(&mut self, selector: u16, parameter: u8) -> bool {
-        let Some(&priority) = PE_NEWSPAPER_STORY_PRIORITIES.get(usize::from(selector)) else { return false; };
-        let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] = std::array::from_fn(|i| self.mac_story_record(i));
+        let Some(&priority) = PE_NEWSPAPER_STORY_PRIORITIES.get(usize::from(selector)) else {
+            return false;
+        };
+        let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] =
+            std::array::from_fn(|i| self.mac_story_record(i));
         let mut insert = 6;
         while insert > 0 && (priority as i16) >= (records[insert - 1][1] as u16 as i16) {
-            records[insert] = records[insert - 1]; insert -= 1;
+            records[insert] = records[insert - 1];
+            insert -= 1;
         }
-        records[insert] = [u32::from(selector), u32::from(priority), u32::from(parameter), 255, 255, 255];
-        for (i, record) in records.into_iter().enumerate() { self.write_mac_story_record(i, record); }
+        records[insert] = [
+            u32::from(selector),
+            u32::from(priority),
+            u32::from(parameter),
+            255,
+            255,
+            255,
+        ];
+        for (i, record) in records.into_iter().enumerate() {
+            self.write_mac_story_record(i, record);
+        }
 
         !self.kind.is_win95()
             && !self.mac_newspaper_suppressed()
             && (selector == 2
-                || (self.mac_newspaper_extra_enabled()
-                    && matches!(selector, 3..=5 | 0x24)))
+                || (self.mac_newspaper_extra_enabled() && matches!(selector, 3..=5 | 0x24)))
     }
 
     /// CODE 7 export 235 ages and sorts the seven active records before phase 21 inserts.
     pub(crate) fn age_mac_newspaper_story_queue(&mut self) {
-        let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] = std::array::from_fn(|i| self.mac_story_record(i));
+        let mut records: [[u32; MAC_STORY_FIELDS]; MAC_STORY_ACTIVE] =
+            std::array::from_fn(|i| self.mac_story_record(i));
         for record in &mut records {
             let selector = record[0] as u16 as i16;
-            let Some(decay) = usize::try_from(selector).ok().and_then(|i| PE_NEWSPAPER_STORY_DECAY.get(i)).copied() else { continue; };
+            let Some(decay) = usize::try_from(selector)
+                .ok()
+                .and_then(|i| PE_NEWSPAPER_STORY_DECAY.get(i))
+                .copied()
+            else {
+                continue;
+            };
             let priority = record[1] as u16;
-            record[1] = if decay >= priority { 0 } else { i32::from((priority - decay) as i16) as u32 };
+            record[1] = if decay >= priority {
+                0
+            } else {
+                i32::from((priority - decay) as i16) as u32
+            };
         }
-        for left in 0..6 { for right in left+1..7 {
-            if (records[left][1] as u16 as i16) < (records[right][1] as u16 as i16) { records.swap(left, right); }
-        }}
-        for (i, record) in records.into_iter().enumerate() { self.write_mac_story_record(i, record); }
+        for left in 0..6 {
+            for right in left + 1..7 {
+                if (records[left][1] as u16 as i16) < (records[right][1] as u16 as i16) {
+                    records.swap(left, right);
+                }
+            }
+        }
+        for (i, record) in records.into_iter().enumerate() {
+            self.write_mac_story_record(i, record);
+        }
     }
 
     /// Read the live Win95 newspaper tables without interpreting Mac MISC.
@@ -605,7 +653,9 @@ impl City {
         }
         self.mac_opinion_counts = [0; 7];
         self.mac_opinion_order = [0, 1, 2, 3, 4, 5, 6];
-        if self.mac_state_misc_u32_at(0x102c).unwrap_or(0) < 100 { return; }
+        if self.mac_state_misc_u32_at(0x102c).unwrap_or(0) < 100 {
+            return;
+        }
         const VALUES_PER_SERIES: usize = 52;
         let history = self.chunk_u32_values(
             "XGRP",
@@ -628,15 +678,23 @@ impl City {
         );
         if total != 0 {
             // Mac DIVU.W uses the unsigned total, with signed bucket comparisons.
-            let (approval, counts) = sample_opinion_poll(&weights, || (random_word() % total) as i16);
+            let (approval, counts) =
+                sample_opinion_poll(&weights, || (random_word() % total) as i16);
             self.mac_mayor_approval = approval;
-            self.mac_opinion_order.sort_by_key(|&index| std::cmp::Reverse(counts[usize::from(index)]));
-            self.mac_opinion_counts = self.mac_opinion_order.map(|index| counts[usize::from(index)]);
+            self.mac_opinion_order
+                .sort_by_key(|&index| std::cmp::Reverse(counts[usize::from(index)]));
+            self.mac_opinion_counts = self
+                .mac_opinion_order
+                .map(|index| counts[usize::from(index)]);
         }
     }
 
     pub(crate) fn mac_opinion_poll_results(&self) -> (u16, [u16; 7], [u16; 7]) {
-        (self.mac_mayor_approval, self.mac_opinion_counts, self.mac_opinion_order)
+        (
+            self.mac_mayor_approval,
+            self.mac_opinion_counts,
+            self.mac_opinion_order,
+        )
     }
 
     /// Win95 `RecalculateMayorsHouseStats` (`0x414b40` / thunk `0x40247d`).

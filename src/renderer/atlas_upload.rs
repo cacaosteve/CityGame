@@ -39,24 +39,24 @@ mod tests {
             std::env::var_os("CITYGAME_MAC_SHAPE_PACK").expect("CITYGAME_MAC_SHAPE_PACK"),
         );
         let palette = AnimatedPalette::load(&pack).unwrap();
-        let mut water = RgbaImage::from_pixel(
-            1,
-            1,
-            palette.base_color_for_index(187).to_rgba().into(),
-        );
+        let mut water =
+            RgbaImage::from_pixel(1, 1, palette.base_color_for_index(187).to_rgba().into());
         let water_indices = palette_index_provenance(&water, &palette, false);
         palette.bake_water_sprite_frame(&mut water, 5);
-        assert_eq!(water.get_pixel(0, 0).0, palette.base_color_for_index(79).to_rgba());
+        assert_eq!(
+            water.get_pixel(0, 0).0,
+            palette.base_color_for_index(79).to_rgba()
+        );
         assert_eq!(water_indices.get_pixel(0, 0).0[..2], [187, 255]);
 
-        let mut smoke = RgbaImage::from_pixel(
-            1,
-            1,
-            palette.base_color_for_index(195).to_rgba().into(),
-        );
+        let mut smoke =
+            RgbaImage::from_pixel(1, 1, palette.base_color_for_index(195).to_rgba().into());
         let smoke_indices = palette_index_provenance(&smoke, &palette, false);
         palette.bake_smoke_sprite_frame(&mut smoke, 1201, 0);
-        assert_eq!(smoke.get_pixel(0, 0).0, palette.base_color_for_index(104).to_rgba());
+        assert_eq!(
+            smoke.get_pixel(0, 0).0,
+            palette.base_color_for_index(104).to_rgba()
+        );
         assert_eq!(smoke_indices.get_pixel(0, 0).0[..2], [195, 255]);
     }
 
@@ -82,7 +82,10 @@ mod tests {
             }
         }
         for index in std::iter::once(79).chain(100..=110).chain([171, 187, 195]) {
-            assert!(counts[index] > 0, "palette index {index} absent from source atlases");
+            assert!(
+                counts[index] > 0,
+                "palette index {index} absent from source atlases"
+            );
         }
     }
 }
@@ -92,7 +95,11 @@ impl<'window> Renderer<'window> {
         let started = std::time::Instant::now();
         let mut rgba = source.load_rgba()?;
         let source_indices = self.mac_sprite_pack.then(|| {
-            palette_index_provenance(&rgba, &self.palette, source.name.starts_with("replacement_"))
+            palette_index_provenance(
+                &rgba,
+                &self.palette,
+                source.name.starts_with("replacement_"),
+            )
         });
         let (mut width, mut height) = rgba.dimensions();
         let mut frames: HashMap<u32, AtlasFrame> = source
@@ -178,25 +185,42 @@ impl<'window> Renderer<'window> {
             ],
         });
         let index_bind_group = source_indices.map(|source_indices| {
-            let mut index_pixels = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
+            let mut index_pixels =
+                image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
             image::imageops::replace(&mut index_pixels, &source_indices, 0, 0);
             let index_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("sprite source palette indices"), size: texture_size,
-                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                label: Some("sprite source palette indices"),
+                size: texture_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &index_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &index_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 &index_pixels,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
                 texture_size,
             );
             let index_view = index_texture.create_view(&Default::default());
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("sprite source palette index bind group"), layout: &self.mac_shadow_index_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&index_view) }],
+                label: Some("sprite source palette index bind group"),
+                layout: &self.mac_shadow_index_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&index_view),
+                }],
             })
         });
 

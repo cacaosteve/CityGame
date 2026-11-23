@@ -724,33 +724,39 @@ impl AssetProfile {
 
     /// The four token resources must come from the same imported Macintosh pack.
     pub(crate) fn mac_newspaper_data_paths(&self) -> Option<[PathBuf; 4]> {
-        self.ordered_sources(OriginalMedia::Graphics).into_iter().find_map(|root| {
-            let dir = root.join("catalog/mac-newspaper");
-            let paths = [1000, 1001, 1002, 1003].map(|id| dir.join(format!("{id}.bin")));
-            paths.iter().all(|path| path.is_file()).then_some(paths)
-        })
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
+            .find_map(|root| {
+                let dir = root.join("catalog/mac-newspaper");
+                let paths = [1000, 1001, 1002, 1003].map(|id| dir.join(format!("{id}.bin")));
+                paths.iter().all(|path| path.is_file()).then_some(paths)
+            })
     }
 
     pub(crate) fn mac_newspaper_font_path(&self) -> Option<PathBuf> {
-        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
             .map(|root| root.join("catalog/mac-newspaper/new-york.bin"))
             .find(|path| path.is_file())
     }
 
     pub(crate) fn mac_system_chicago_path(&self) -> Option<PathBuf> {
-        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
             .map(|root| root.join("catalog/mac-system/chicago.bin"))
             .find(|path| path.is_file())
     }
 
     pub(crate) fn mac_newspaper_strings_path(&self) -> Option<PathBuf> {
-        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
             .map(|root| root.join("catalog/mac-newspaper/strs-0.bin"))
             .find(|path| path.is_file())
     }
 
     pub(crate) fn mac_newspaper_picture_index_path(&self) -> Option<PathBuf> {
-        self.ordered_sources(OriginalMedia::Graphics).into_iter()
+        self.ordered_sources(OriginalMedia::Graphics)
+            .into_iter()
             .map(|root| root.join("catalog/mac-newspaper/pictures.bin"))
             .find(|path| path.is_file())
     }

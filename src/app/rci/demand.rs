@@ -223,7 +223,11 @@ pub(in crate::app) fn mac_advance_phase21_pre_weather_event_draws(
     // The native pointers fd7a/fd7e/fd86 address the newest values of
     // traffic, pollution and crime XGRP rows 4, 5 and 7 respectively.
     for (row, high_story, low_story) in [(4, 0x11, 0x3e), (5, 0x12, 0x3f), (7, 0x10, 0x3d)] {
-        let value = city.chunk_u32_values("XGRP", row * 52 * 4, 1).first().copied().unwrap_or(0);
+        let value = city
+            .chunk_u32_values("XGRP", row * 52 * 4, 1)
+            .first()
+            .copied()
+            .unwrap_or(0);
         if u32::from(random_word() & 0x7f) < value {
             city.queue_mac_newspaper_story(high_story, 0);
         }
@@ -238,11 +242,15 @@ pub(in crate::app) fn mac_advance_phase21_pre_weather_event_draws(
     if i32::from(random_word() & 3) > unemployment {
         city.queue_mac_newspaper_story(0x42, 0);
     }
-    for (offset, threshold, below_story, above_story) in [(0x4c, 80, 0x13, 0x40), (0x48, 60, 0x14, 0x41)] {
+    for (offset, threshold, below_story, above_story) in
+        [(0x4c, 80, 0x13, 0x40), (0x48, 60, 0x14, 0x41)]
+    {
         let value = city.mac_state_misc_u32_at(offset).unwrap_or(0);
         let roll = u32::from(random_word()) % threshold;
         if value < threshold {
-            if roll > value { city.queue_mac_newspaper_story(below_story, 0); }
+            if roll > value {
+                city.queue_mac_newspaper_story(below_story, 0);
+            }
         } else if roll < value - threshold {
             city.queue_mac_newspaper_story(above_story, 0);
         }
@@ -266,7 +274,11 @@ pub(in crate::app) fn mac_advance_phase21_pre_weather_event_draws(
         }
 
         // CODE 8 emits selector 4 or 5 before clearing the due date.
-        let (selector, parameter) = if index < 7 { (4, index as u8) } else { (5, (index - 7) as u8) };
+        let (selector, parameter) = if index < 7 {
+            (4, index as u8)
+        } else {
+            (5, (index - 7) as u8)
+        };
         if city.queue_mac_newspaper_story(selector, parameter) {
             continuation.pending_technology = Some(index);
             return MacPhase21EventProgress::Suspended {

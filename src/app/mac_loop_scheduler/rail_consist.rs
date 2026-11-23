@@ -74,7 +74,14 @@ pub(super) fn mac_rail_handler(
     let records = city.traffic_overlays()?;
     let middle = usize::from(records.get(head_slot)?.state);
     let tail = usize::from(records.get(middle)?.state);
-    let sound = mac_rail_handler_suffix(city, head_slot, tail, app_lfsr, quickdraw, app_draw_bound_two)?;
+    let sound = mac_rail_handler_suffix(
+        city,
+        head_slot,
+        tail,
+        app_lfsr,
+        quickdraw,
+        app_draw_bound_two,
+    )?;
     Some((outcome, Some(sound)))
 }
 
@@ -381,11 +388,13 @@ pub(super) fn mac_retire_rail_consist(
         let Some(records) = city.traffic_overlays() else {
             return false;
         };
-        let (Some(&head_record), Some(&slot_zero)) = (records.get(head), records.first())
-        else {
+        let (Some(&head_record), Some(&slot_zero)) = (records.get(head), records.first()) else {
             return false;
         };
-        let (x, y) = (usize::from(head_record.tile_x), usize::from(head_record.tile_y));
+        let (x, y) = (
+            usize::from(head_record.tile_x),
+            usize::from(head_record.tile_y),
+        );
         if x >= CITY_HEIGHT || y >= CITY_WIDTH {
             return false;
         }
@@ -420,7 +429,10 @@ pub(super) fn mac_retire_rail_consist(
         else {
             return false;
         };
-        let (x, y) = (usize::from(head_record.tile_x), usize::from(head_record.tile_y));
+        let (x, y) = (
+            usize::from(head_record.tile_x),
+            usize::from(head_record.tile_y),
+        );
         if x >= CITY_HEIGHT || y >= CITY_WIDTH {
             return false;
         }

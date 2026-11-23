@@ -49,7 +49,11 @@ pub(super) fn create_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Mac palette shadow pipeline layout"),
-        bind_group_layouts: &[Some(atlas_layout), Some(&background_layout), Some(index_layout)],
+        bind_group_layouts: &[
+            Some(atlas_layout),
+            Some(&background_layout),
+            Some(index_layout),
+        ],
         immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -66,8 +70,16 @@ pub(super) fn create_pipeline(
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[
-                Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL }),
-                Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Uint, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Uint,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
             ],
         }),
         primitive: wgpu::PrimitiveState::default(),
@@ -174,19 +186,21 @@ impl ShadowContext<'_> {
             .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
         let index_textures: Vec<_> = (0..2)
-            .map(|_| self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Mac palette index intermediate"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Uint,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            }))
+            .map(|_| {
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Mac palette index intermediate"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Uint,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            })
             .collect();
         let index_views: Vec<_> = index_textures
             .iter()
@@ -296,12 +310,22 @@ impl ShadowContext<'_> {
                     label: Some("Mac palette shadow"),
                     color_attachments: &[
                         Some(wgpu::RenderPassColorAttachment {
-                            view: &views[next], resolve_target: None, depth_slice: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                            view: &views[next],
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
                         }),
                         Some(wgpu::RenderPassColorAttachment {
-                            view: &index_views[next], resolve_target: None, depth_slice: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                            view: &index_views[next],
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
                         }),
                     ],
                     depth_stencil_attachment: None,
@@ -315,7 +339,14 @@ impl ShadowContext<'_> {
                 for (atlas, first, count) in ranges {
                     if let Some(atlas) = self.atlases.get(atlas) {
                         pass.set_bind_group(0, &atlas.bind_group, &[]);
-                        pass.set_bind_group(2, atlas.index_bind_group.as_ref().unwrap_or(self.unknown_index_bind_group), &[]);
+                        pass.set_bind_group(
+                            2,
+                            atlas
+                                .index_bind_group
+                                .as_ref()
+                                .unwrap_or(self.unknown_index_bind_group),
+                            &[],
+                        );
                         pass.draw(first..first + count, 0..1);
                     }
                 }
@@ -417,12 +448,24 @@ impl ShadowContext<'_> {
             label: Some("Mac shadow world segment"),
             color_attachments: &[
                 Some(wgpu::RenderPassColorAttachment {
-                    view: target, resolve_target: None, depth_slice: None,
-                    ops: wgpu::Operations { load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store: wgpu::StoreOp::Store },
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                        store: wgpu::StoreOp::Store,
+                    },
                 }),
                 Some(wgpu::RenderPassColorAttachment {
-                    view: target_indices, resolve_target: None, depth_slice: None,
-                    ops: wgpu::Operations { load: clear.map_or(wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), |_| wgpu::LoadOp::Load), store: wgpu::StoreOp::Store },
+                    view: target_indices,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: clear.map_or(wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), |_| {
+                            wgpu::LoadOp::Load
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
                 }),
             ],
             depth_stencil_attachment: None,
@@ -436,7 +479,14 @@ impl ShadowContext<'_> {
             for (atlas, first, count) in ranges {
                 if let Some(atlas) = self.atlases.get(atlas) {
                     pass.set_bind_group(0, &atlas.bind_group, &[]);
-                    pass.set_bind_group(1, atlas.index_bind_group.as_ref().unwrap_or(self.unknown_index_bind_group), &[]);
+                    pass.set_bind_group(
+                        1,
+                        atlas
+                            .index_bind_group
+                            .as_ref()
+                            .unwrap_or(self.unknown_index_bind_group),
+                        &[],
+                    );
                     pass.draw(first..first + count, 0..1);
                 }
             }
@@ -613,11 +663,21 @@ mod tests {
             ],
         });
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let index_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None,
-            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }] });
-        let (pipeline, background_layout) = create_pipeline(&device, &atlas_layout, &index_layout, format);
+        let index_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let (pipeline, background_layout) =
+            create_pipeline(&device, &atlas_layout, &index_layout, format);
         let extent = wgpu::Extent3d {
             width: 4,
             height: 1,
@@ -646,23 +706,38 @@ mod tests {
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
         let index_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test original sprite indices"), size: extent, mip_level_count: 1,
-            sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            label: Some("test original sprite indices"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let destination_indices = [79, 1, 0, 255, 104, 1, 0, 255, 187, 1, 0, 255, 195, 1, 0, 255];
+        let destination_indices = [
+            79, 1, 0, 255, 104, 1, 0, 255, 187, 1, 0, 255, 195, 1, 0, 255,
+        ];
         let bg_index = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test background palette indices"), size: extent, mip_level_count: 1,
-            sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Uint,
+            label: Some("test background palette indices"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Uint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let out_index = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test output palette indices"), size: extent, mip_level_count: 1,
-            sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Uint,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            label: Some("test output palette indices"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Uint,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let out = texture(
@@ -688,7 +763,9 @@ mod tests {
         let masks = [
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
         ];
-        let indices = [79,255,0,255, 104,255,0,255, 187,255,0,255, 195,255,0,255];
+        let indices = [
+            79, 255, 0, 255, 104, 255, 0, 255, 187, 255, 0, 255, 195, 255, 0, 255,
+        ];
         queue.write_texture(copy_info(&bg), &pixels, layout, extent);
         queue.write_texture(copy_info(&mask), &masks, layout, extent);
         queue.write_texture(copy_info(&index_texture), &indices, layout, extent);
@@ -744,11 +821,20 @@ mod tests {
                     binding: 1,
                     resource: palette.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bg_index_view) },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&bg_index_view),
+                },
             ],
         });
-        let index_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &index_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&index_view) }] });
+        let index_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &index_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&index_view),
+            }],
+        });
         let vertex = |x, y, u, v| Vertex {
             position: [x, y],
             uv: [u, v],
@@ -780,8 +866,24 @@ mod tests {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment { view: &out_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } }),
-                    Some(wgpu::RenderPassColorAttachment { view: &out_index_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &out_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &out_index_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
                 ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -904,22 +1006,57 @@ mod tests {
             label: None,
             source: wgpu::ShaderSource::Wgsl(include_str!("../mac_world.wgsl").into()),
         });
-        let index_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None,
-            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }] });
-        let (shadow_pipeline, shadow_layout) = create_pipeline(&device, &layout, &index_layout, format);
+        let index_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let (shadow_pipeline, shadow_layout) =
+            create_pipeline(&device, &layout, &index_layout, format);
         let mac_world_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[Some(&layout), Some(&index_layout)], immediate_size: 0,
+            label: None,
+            bind_group_layouts: &[Some(&layout), Some(&index_layout)],
+            immediate_size: 0,
         });
         let mac_world_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None, layout: Some(&mac_world_layout),
-            vertex: wgpu::VertexState { module: &mac_world_shader, entry_point: Some("vs_main"), compilation_options: Default::default(), buffers: &[Vertex::layout()] },
-            fragment: Some(wgpu::FragmentState { module: &mac_world_shader, entry_point: Some("fs_main"), compilation_options: Default::default(), targets: &[
-                Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL }),
-                Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Uint, blend: None, write_mask: wgpu::ColorWrites::ALL }),
-            ] }),
-            primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None,
+            label: None,
+            layout: Some(&mac_world_layout),
+            vertex: wgpu::VertexState {
+                module: &mac_world_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Vertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &mac_world_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Uint,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
         });
         let make_atlas = |id: u32, pixels: &[u8], width: u32| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -971,24 +1108,58 @@ mod tests {
                     },
                 ],
             });
-            let index_pixels: Vec<u8> = pixels.chunks_exact(4).flat_map(|pixel| {
-                if pixel[3] == 0 || !matches!(pixel[0], 79 | 100) { [0, 0, 0, 255] }
-                else { [pixel[0], 255, 0, 255] }
-            }).collect();
+            let index_pixels: Vec<u8> = pixels
+                .chunks_exact(4)
+                .flat_map(|pixel| {
+                    if pixel[3] == 0 || !matches!(pixel[0], 79 | 100) {
+                        [0, 0, 0, 255]
+                    } else {
+                        [pixel[0], 255, 0, 255]
+                    }
+                })
+                .collect();
             let index_texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: None, size: wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 },
-                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                label: None,
+                size: wgpu::Extent3d {
+                    width,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
             });
-            queue.write_texture(wgpu::TexelCopyTextureInfo { texture: &index_texture, mip_level: 0,
-                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &index_pixels,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(1) },
-                wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &index_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &index_pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
             let index_view = index_texture.create_view(&Default::default());
-            let index_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None,
-                layout: &index_layout, entries: &[wgpu::BindGroupEntry { binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&index_view) }] });
+            let index_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &index_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&index_view),
+                }],
+            });
             let frame = AtlasFrame {
                 file: String::new(),
                 index: 0,
@@ -1042,15 +1213,27 @@ mod tests {
             AnimatedPalette::load(std::env::temp_dir().join("citygame-missing-neutral-palette"))
                 .unwrap();
         let unknown_index = device.create_texture(&wgpu::TextureDescriptor {
-            label: None, size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         let unknown_index_view = unknown_index.create_view(&Default::default());
         let unknown_index_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &index_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&unknown_index_view) }],
+            label: None,
+            layout: &index_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&unknown_index_view),
+            }],
         });
         let context = ShadowContext {
             device: &device,

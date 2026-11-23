@@ -70,7 +70,11 @@ pub(super) fn start(
     begin_action(city, HURRICANE_ACTION);
 }
 
-pub(super) fn start_flood(city: &mut City, point: &mut (i16, i16), lfsr: &mut MacAppLfsrRng) -> bool {
+pub(super) fn start_flood(
+    city: &mut City,
+    point: &mut (i16, i16),
+    lfsr: &mut MacAppLfsrRng,
+) -> bool {
     if !seed_flood(city, point, lfsr) {
         return false;
     }

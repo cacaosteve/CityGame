@@ -208,15 +208,23 @@ pub const WIN95_NEWSPAPER_PICTURE_BASE: u32 = 71_000;
 pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>> {
     let mut atlas = RgbaImage::new(640, 936);
     let mut frames = Vec::new();
-    let pictures = (400..=411u32).map(|id| (id, false, id - 400))
+    let pictures = (400..=411u32)
+        .map(|id| (id, false, id - 400))
         .chain((400..=411u32).map(|id| (id, true, 12 + id - 400)))
         .chain((700..=711u32).map(|id| (id, false, 24 + id - 700)));
     for (picture, win95, index) in pictures {
-        let find = |windows: bool| roots.iter().map(|root| if windows {
-            root.join(format!("bitmaps_png/{picture}.png"))
-        } else {
-            root.join(format!("pict/PICT_{picture:05}.png"))
-        }).find(|path| path.is_file());
+        let find = |windows: bool| {
+            roots
+                .iter()
+                .map(|root| {
+                    if windows {
+                        root.join(format!("bitmaps_png/{picture}.png"))
+                    } else {
+                        root.join(format!("pict/PICT_{picture:05}.png"))
+                    }
+                })
+                .find(|path| path.is_file())
+        };
         let path = find(win95).or_else(|| find(!win95));
         let Some(path) = path else { continue };
         let image = image::open(&path)
@@ -231,7 +239,11 @@ pub fn load_newspaper_pictures(roots: &[PathBuf]) -> Result<Option<AtlasSource>>
         image::imageops::overlay(&mut atlas, &image, i64::from(x), i64::from(y));
         frames.push(AtlasFrame {
             index,
-            id: if win95 { WIN95_NEWSPAPER_PICTURE_BASE } else { NEWSPAPER_PICTURE_BASE } + picture,
+            id: if win95 {
+                WIN95_NEWSPAPER_PICTURE_BASE
+            } else {
+                NEWSPAPER_PICTURE_BASE
+            } + picture,
             file: path.to_string_lossy().into_owned(),
             source_offset: 0,
             x,
@@ -301,16 +313,35 @@ pub fn load_ui_palette_sources(asset_root: impl AsRef<Path>) -> Result<Vec<Atlas
     let classic_city = if original_city_path.is_file() {
         let image = image::open(&original_city_path)?.to_rgba8();
         if image.dimensions() == (71, 312) {
-            let image = image::imageops::resize(&image, 568, 2496, image::imageops::FilterType::Nearest);
-            AtlasSource::from_rgba("classic_city_toolbar", image, vec![AtlasFrame {
-                file: original_city_path.to_string_lossy().into_owned(), index: 0, id: 1,
-                source_offset: 0, x: 0, y: 0, w: 568, h: 2496, logical_size: None, anchor: None,
-            }])
+            let image =
+                image::imageops::resize(&image, 568, 2496, image::imageops::FilterType::Nearest);
+            AtlasSource::from_rgba(
+                "classic_city_toolbar",
+                image,
+                vec![AtlasFrame {
+                    file: original_city_path.to_string_lossy().into_owned(),
+                    index: 0,
+                    id: 1,
+                    source_offset: 0,
+                    x: 0,
+                    y: 0,
+                    w: 568,
+                    h: 2496,
+                    logical_size: None,
+                    anchor: None,
+                }],
+            )
         } else {
-            bundled("classic_city_toolbar", include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"))?
+            bundled(
+                "classic_city_toolbar",
+                include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"),
+            )?
         }
     } else {
-        bundled("classic_city_toolbar", include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"))?
+        bundled(
+            "classic_city_toolbar",
+            include_bytes!("../assets/ui/citygame-toolbar/city-classic.png"),
+        )?
     };
     Ok(vec![
         city,

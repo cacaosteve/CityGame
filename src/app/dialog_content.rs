@@ -47,7 +47,10 @@ pub(super) enum NewspaperEdition {
 
 impl NewspaperEdition {
     pub(super) fn is_mac(self) -> bool {
-        matches!(self, Self::MacStandard | Self::MacDisaster | Self::MacStoryWindow)
+        matches!(
+            self,
+            Self::MacStandard | Self::MacDisaster | Self::MacStoryWindow
+        )
     }
 
     pub(super) fn label(self) -> &'static str {

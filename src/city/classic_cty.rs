@@ -2,13 +2,12 @@
 //!
 //! The retail PE seeks to `0x0bc0`, reads a 240-byte WORD-swapped header, then
 //! reads 12,000 big-endian tile WORDs. It places those tiles in the 100×120
-//! interior in row-major order, with source rows vertically reversed. This
-//! module decodes that input contract only; tile conversion and Win95 open-state
-//! initialization belong to the caller because they consume live game RNG.
+//! interior in row-major order, with source rows vertically reversed. The app
+//! layer applies the shared Win95 tile converter with its process-owned RNG.
 
-use crate::city::{City, TileBits};
-use crate::win95_random::Win95CrtRand;
-use anyhow::{Result, bail};
+use crate::city::CityDate;
+use anyhow::{Context, Result, bail};
+use std::path::Path;
 
 pub(crate) const CLASSIC_CTY_FILE_LEN: usize = 0x6a70;
 const CLASSIC_CTY_HEADER_OFFSET: usize = 0x0bc0;
@@ -37,6 +36,17 @@ pub(crate) struct ClassicCtyFile {
 }
 
 impl ClassicCtyFile {
+    pub(crate) fn has_legacy_import_size(path: impl AsRef<Path>) -> bool {
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.len() == CLASSIC_CTY_FILE_LEN as u64)
+    }
+
+    pub(crate) fn read(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("reading Classic CTY {}", path.display()))?;
+        Self::parse(&bytes).with_context(|| format!("parsing Classic CTY {}", path.display()))
+    }
+
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != CLASSIC_CTY_FILE_LEN {
             bail!(
@@ -71,103 +81,27 @@ impl ClassicCtyFile {
             tiles,
         })
     }
-}
 
-/// Apply the retail converter cases currently ported for tile IDs through `0x3f`.
-/// This remains a converter building block, not a complete CTY import: later IDs
-/// use additional tables, neighboring-tile rules, and both Win95 random streams.
-pub(crate) fn apply_supported_tile(
-    city: &mut City,
-    crt: &mut Win95CrtRand,
-    tile: ClassicCtyTile,
-) -> Result<()> {
-    if tile.id > 0x3f {
-        bail!(
-            "Classic CTY tile {:#x} is outside the ported converter range",
-            tile.id
-        );
+    /// Decode the retail calendar field at header byte offset `0x10`.
+    ///
+    /// The reader first swaps each WORD, then `FUN_0042a8e0` swaps the two
+    /// WORDs in this signed dword. It stores the absolute value as four units
+    /// per month, twelve months per year, based at 1900; values above 32,000
+    /// use the retail fallback value 4,800.
+    pub(crate) fn date(&self) -> CityDate {
+        const DATE_WORD_INDEX: usize = 8;
+        let word_swapped = (u32::from(self.header_words[DATE_WORD_INDEX + 1]) << 16)
+            | u32::from(self.header_words[DATE_WORD_INDEX]);
+        let units = word_swapped.rotate_left(16) as i32;
+        let units = units.unsigned_abs();
+        let units = if units > 32_000 { 4_800 } else { units };
+        let year = 1_900 + units / 48;
+        let month = ((units / 4) % 12 + 1) as u8;
+        CityDate {
+            year: year as u16,
+            month,
+        }
     }
-    let x = usize::from(tile.x);
-    let y = usize::from(tile.y);
-    if x >= 128 || y >= 128 {
-        bail!("Classic CTY tile coordinate ({x},{y}) is outside the city map");
-    }
-
-    // FUN_00483250 routes `0x34` through DestroyBuilding(0) before placing
-    // the rubble tile. Until the importer can provide that complete footprint
-    // operation, reject occupied cells before changing even the common ALTM
-    // prelude. Empty cells take the verified PlaceTile-only path.
-    if tile.id == 0x34 && city.building_at(x, y) != 0 {
-        bail!("Classic CTY rubble tile requires Win95 DestroyBuilding state");
-    }
-
-    // FUN_00483250 applies this ALTM mask before dispatching every tile ID.
-    city.set_altm_word(x, y, (altm_word(city, x, y) & 0xfc5f) | 0x0040);
-
-    match tile.id {
-        0..=1 | 0x2c..=0x2f => {}
-        2..=0x14 => {
-            // FUN_00484320: retain the existing XBIT flags while marking the
-            // water-surface bit, adjust ALTM, and set XTER to 0x10.
-            let bits = city.tile_bits_at(x, y).unwrap_or_default();
-            city.set_tile_bits(x, y, TileBits::new(bits.raw_bits() | 0x04));
-            city.set_altm_word(x, y, (altm_word(city, x, y) & 0xffe1) | 1);
-            city.set_terrain(x, y, 0x10);
-        }
-        0x15..=0x24 => {
-            let replacement = ((crt.random_u15() & 3) + 6) as u8;
-            place_win95_tile(city, x, y, replacement);
-        }
-        0x25..=0x2b => {
-            let replacement = ((crt.random_u15() & 3) + 9) as u8;
-            place_win95_tile(city, x, y, replacement);
-        }
-        0x30..=0x33 => {
-            // FUN_00483250 installs the tornado marker and sets the active
-            // disaster BSS (`0x4c9ee8`) and type (`0x4ca93c`) to 2.
-            city.set_pe_dw_disaster_active(1);
-            city.set_pe_w_current_disaster_type(2);
-            city.set_text_overlay(x, y, 0xfc);
-        }
-        0x34 => place_win95_tile(city, x, y, 5),
-        0x35..=0x37 => {
-            // Native avoids both rand() and PlaceTile when a building is
-            // already present at this coordinate.
-            if city.building_at(x, y) == 0 {
-                let replacement = ((crt.random_u15() & 3) + 1) as u8;
-                place_win95_tile(city, x, y, replacement);
-            }
-        }
-        0x38..=0x3f => {
-            // FUN_00483250 sets the active disaster BSS/type to 1 and marks
-            // this cell with the native XTXT sentinel.
-            city.set_pe_w_current_disaster_type(1);
-            city.set_pe_dw_disaster_active(1);
-            city.set_text_overlay(x, y, 0xff);
-        }
-        _ => unreachable!("range checked above"),
-    }
-    Ok(())
-}
-
-fn altm_word(city: &City, x: usize, y: usize) -> u16 {
-    let sample = city.altm_at(x, y);
-    u16::from(sample.land)
-        | (u16::from(sample.water) << 5)
-        | (u16::from(sample.tunnel_levels) << 10)
-}
-
-fn place_win95_tile(city: &mut City, x: usize, y: usize, replacement: u8) {
-    let old = city.building_at(x, y);
-    if city.zone_at(x, y).is_some_and(|zone| zone.zone_id() == 7) {
-        city.pe_adjust_military_tile_count_441f86(old, replacement);
-    } else {
-        city.pe_dw_tile_count[usize::from(old)] =
-            city.pe_dw_tile_count[usize::from(old)].wrapping_sub(1);
-        city.pe_dw_tile_count[usize::from(replacement)] =
-            city.pe_dw_tile_count[usize::from(replacement)].wrapping_add(1);
-    }
-    city.set_building(x, y, replacement);
 }
 
 #[cfg(test)]
@@ -236,186 +170,50 @@ mod tests {
     }
 
     #[test]
-    fn native_low_tile_range_updates_planes_and_consumes_crt_draws() {
-        use crate::city::City;
-
-        let mut city = City::new_blank("classic-prefix.sc2", "Classic prefix").unwrap();
-        // The loaded Win95 document's native tile census already includes
-        // every tile; mirror the all-empty map returned by this constructor.
-        city.pe_dw_tile_count[0] = 128 * 128;
-        let mut crt = Win95CrtRand::new(1);
-        let mut reference_crt = crt;
-
-        city.set_altm_word(14, 123, 0x3fff);
-        city.set_tile_bits(14, 123, TileBits::new(0x21));
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 14,
-                y: 123,
-                id: 2,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.tile_bits_at(14, 123).unwrap().raw_bits(), 0x25);
-        assert_eq!(city.altm_at(14, 123).land, 1);
-        assert_eq!(city.terrain_at(14, 123), 0x10);
-        assert_eq!(city.text_overlay_at(14, 123), Some(0));
-        assert_eq!(city.building_at(14, 123), 0);
-
-        let expected_building = ((reference_crt.random_u15() & 3) + 6) as u8;
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 15,
-                y: 123,
-                id: 0x15,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.building_at(15, 123), expected_building);
-        assert_eq!(crt, reference_crt);
-        assert_eq!(city.pe_dw_tile_count[0], 128 * 128 - 1);
-        assert_eq!(city.pe_dw_tile_count[usize::from(expected_building)], 1);
-
-        let expected_building = ((reference_crt.random_u15() & 3) + 9) as u8;
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 16,
-                y: 123,
-                id: 0x25,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.building_at(16, 123), expected_building);
-        assert_eq!(crt, reference_crt);
-        assert_eq!(city.pe_dw_tile_count[0], 128 * 128 - 2);
-    }
-
-    #[test]
-    fn applies_native_disaster_markers_and_conditional_tile_draws() {
-        use crate::city::City;
-
-        let mut city = City::new_blank("classic-prefix.sc2", "Classic prefix").unwrap();
-        let mut crt = Win95CrtRand::new(7);
-        let original_crt = crt;
-
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 14,
-                y: 123,
-                id: 0x31,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.text_overlay_at(14, 123), Some(0xfc));
-        assert_eq!(city.pe_w_current_disaster_type(), 2);
-        assert_eq!(city.pe_dw_disaster_active(), 1);
-        assert_eq!(crt, original_crt);
-
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 15,
-                y: 123,
-                id: 0x38,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.text_overlay_at(15, 123), Some(0xff));
-        assert_eq!(city.pe_w_current_disaster_type(), 1);
-        assert_eq!(city.pe_dw_disaster_active(), 1);
-        assert_eq!(crt, original_crt);
-
-        city.set_building(16, 123, 5);
-        let before_occupied_rubble = city.clone();
-        assert!(
-            apply_supported_tile(
-                &mut city,
-                &mut crt,
-                ClassicCtyTile {
-                    x: 16,
-                    y: 123,
-                    id: 0x34,
-                },
-            )
-            .is_err()
-        );
+    fn decodes_native_four_units_per_month_calendar_and_fallback() {
+        let mut bytes = vec![0; CLASSIC_CTY_FILE_LEN];
+        let date_offset = CLASSIC_CTY_HEADER_OFFSET + 0x10;
+        // FUN_0042a8e0's halfword swap yields 4,324, or 90 years + 1 month.
+        bytes[date_offset..date_offset + 4].copy_from_slice(&[0, 0, 0x10, 0xe4]);
+        let city = ClassicCtyFile::parse(&bytes).unwrap();
         assert_eq!(
-            city.altm_at(16, 123),
-            before_occupied_rubble.altm_at(16, 123)
+            city.date(),
+            CityDate {
+                year: 1_990,
+                month: 2
+            }
         );
-        assert_eq!(crt, original_crt);
 
-        let mut expected_crt = crt;
-        let expected = ((expected_crt.random_u15() & 3) + 1) as u8;
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 17,
-                y: 123,
-                id: 0x35,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.building_at(17, 123), expected);
-        assert_eq!(crt, expected_crt);
-
-        let after_empty_rubble = crt;
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 17,
-                y: 123,
-                id: 0x36,
-            },
-        )
-        .unwrap();
-        assert_eq!(crt, after_empty_rubble, "occupied tile must skip CRT rand");
-
-        apply_supported_tile(
-            &mut city,
-            &mut crt,
-            ClassicCtyTile {
-                x: 18,
-                y: 123,
-                id: 0x34,
-            },
-        )
-        .unwrap();
-        assert_eq!(city.building_at(18, 123), 5);
+        // BAZ.CTY's source field at 0x10 is outside the accepted calendar
+        // range, so the retail loader clamps it to 4,800 units (January 2000).
+        bytes[date_offset..date_offset + 4].copy_from_slice(&[0x4c, 0xcc, 0x00, 0x04]);
+        let baz = ClassicCtyFile::parse(&bytes).unwrap();
+        assert_eq!(
+            baz.date(),
+            CityDate {
+                year: 2_000,
+                month: 1
+            }
+        );
     }
 
     #[test]
-    fn rejects_unported_tile_ids_before_mutating_city_or_rng() {
-        use crate::city::City;
+    fn decodes_berns_nonfallback_native_calendar_field_at_header_0x10() {
+        let mut bytes = vec![0; CLASSIC_CTY_FILE_LEN];
+        let header = CLASSIC_CTY_HEADER_OFFSET;
+        // The archived BERN.CTY calendar field is 3,734 four-unit months.
+        // Its adjacent header dword at 0x0c is unrelated and very large.
+        bytes[header + 0x0c..header + 0x10].copy_from_slice(&0xfa24_05dcu32.to_be_bytes());
+        bytes[header + 0x10..header + 0x14].copy_from_slice(&3_734u32.to_be_bytes());
 
-        let mut city = City::new_blank("classic-prefix.sc2", "Classic prefix").unwrap();
-        let before = city.clone();
-        let mut crt = Win95CrtRand::new(7);
-        assert!(
-            apply_supported_tile(
-                &mut city,
-                &mut crt,
-                ClassicCtyTile {
-                    x: 14,
-                    y: 123,
-                    id: 0x40,
-                },
-            )
-            .is_err()
+        let city = ClassicCtyFile::parse(&bytes).unwrap();
+
+        assert_eq!(
+            city.date(),
+            CityDate {
+                year: 1_977,
+                month: 10
+            }
         );
-        assert_eq!(city.altm_at(14, 123), before.altm_at(14, 123));
-        assert_eq!(city.building_at(14, 123), before.building_at(14, 123));
-        assert_eq!(crt, Win95CrtRand::new(7));
     }
 }

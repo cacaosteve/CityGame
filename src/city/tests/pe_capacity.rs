@@ -4605,7 +4605,10 @@ fn mac_monthly_random_xmic_dispatch_follows_interleaved_record_slots() {
         )
     );
     assert_eq!(city.mac_monthly_arrest_total(), expected_arrests);
-    assert_eq!(city.mac_state_misc_u32_at(1038 * 4), Some(u32::from(expected_arrests)));
+    assert_eq!(
+        city.mac_state_misc_u32_at(1038 * 4),
+        Some(u32::from(expected_arrests))
+    );
     assert_eq!(city.mac_state_misc_u32_at(91 * 4), Some(2));
     assert_eq!(city.mac_state_misc_u32_at(1039 * 4), Some(1));
     assert_eq!(actual_rng.random_u16(), next_expected);
@@ -6079,17 +6082,16 @@ fn mac_d8_saved_carry_explains_phase0_native_one_unit_delta() {
     // stat3=15. Its saved-context CGMS input has MISC slot 1038 = 0x008b
     // (139), so restoring the actual saved carry raises the raw candidate from
     // 1548 to 1687 and the per-hundred field from 15 to 16.
-    let mut city = City::new_blank("/tmp/mac-prison-carry-alignment.city", "Prison")
-        .expect("blank Mac city");
+    let mut city =
+        City::new_blank("/tmp/mac-prison-carry-alignment.city", "Prison").expect("blank Mac city");
     city.kind = CityFileKind::MacCity;
     city.set_mac_state_misc_u32_at(0x102c, 0x22ba); // 8,890: native cap inputs.
     city.set_mac_state_misc_u32_at(1038 * 4, 0x008b);
     city.set_mac_state_misc_u32_at(MAC_XBLD_CENSUS_MISC_OFFSET + 0xd8 * 4, 4);
     city.mac_monthly_arrest_total = 0x008b;
 
-    let slot = usize::from(
-        city.provision_microsim_for_building(0xd8).unwrap() - MIN_SIM_TEXT_ENTRIES,
-    );
+    let slot =
+        usize::from(city.provision_microsim_for_building(0xd8).unwrap() - MIN_SIM_TEXT_ENTRIES);
     city.set_microsim_stat0(slot, 0x23);
     city.set_microsim_stat1(slot, 2_064);
     city.set_microsim_stat2(slot, 0);
@@ -6101,7 +6103,11 @@ fn mac_d8_saved_carry_explains_phase0_native_one_unit_delta() {
     let prison = city.microsim_at(slot).unwrap();
     assert_eq!(prison.stat0, 0);
     assert_eq!([prison.stat1, prison.stat2, prison.stat3], [444, 74, 16]);
-    assert_eq!(rng.seed(), 1_441_282_327, "this row stays below the random overflow gate");
+    assert_eq!(
+        rng.seed(),
+        1_441_282_327,
+        "this row stays below the random overflow gate"
+    );
 }
 
 #[test]

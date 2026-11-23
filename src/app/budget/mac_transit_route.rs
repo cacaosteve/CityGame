@@ -324,7 +324,14 @@ where
     R: FnMut() -> i16,
 {
     mac_transit_route_search_with_root_cost(
-        x, y, zone_category, coefficient, cost_limit, 0, cell_at, random_i16,
+        x,
+        y,
+        zone_category,
+        coefficient,
+        cost_limit,
+        0,
+        cell_at,
+        random_i16,
     )
 }
 

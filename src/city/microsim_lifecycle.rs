@@ -807,8 +807,8 @@ impl City {
             "Library System",
             "Marina",
         ]
-            .into_iter()
-            .enumerate()
+        .into_iter()
+        .enumerate()
         {
             let text_id = MIN_SIM_TEXT_ENTRIES.saturating_add((index + 1) as u8);
             self.clear_pe_label_backing_row(text_id);

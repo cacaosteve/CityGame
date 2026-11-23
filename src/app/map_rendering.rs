@@ -480,29 +480,53 @@ impl ViewerState {
 
         let mac_sprite_mode = !self.engine_fidelity.uses_win95() && renderer.uses_mac_sprite_pack();
         if mac_sprite_mode {
-            let actor = self.city.text_overlay_at(x, y)
+            let actor = self
+                .city
+                .text_overlay_at(x, y)
                 .and_then(crate::win95_overlay::xthg_slot_for_proxy)
                 .and_then(|slot| self.city.traffic_overlays()?.get(slot).copied())
-                .filter(|record| (usize::from(record.tile_x), usize::from(record.tile_y)) == (x, y));
-            let native_zoom = ((self.zoom.max(0.25).log2() + 2.0).round() as i32).clamp(0, 2) as u32;
+                .filter(|record| {
+                    (usize::from(record.tile_x), usize::from(record.tile_y)) == (x, y)
+                });
+            let native_zoom =
+                ((self.zoom.max(0.25).log2() + 2.0).round() as i32).clamp(0, 2) as u32;
             if let Some(record) = actor
-                && let Some((sprite_id, flip_x)) = mac_aircraft_sprite(&record, native_zoom, self.camera_rotation)
+                && let Some((sprite_id, flip_x)) =
+                    mac_aircraft_sprite(&record, native_zoom, self.camera_rotation)
                 && let Some(atlas) = renderer.atlas_for_sprite(sprite_id)
             {
                 let sprite_scale = ctx.zoom * 4.0 / (1 << native_zoom) as f32;
-                let offset = mac_aircraft_offset(&record, native_zoom, self.camera_rotation) * sprite_scale;
-                let wet = self.city.tile_bits_at(x, y).is_some_and(|bits| bits.raw_bits() & 4 != 0);
+                let offset =
+                    mac_aircraft_offset(&record, native_zoom, self.camera_rotation) * sprite_scale;
+                let wet = self
+                    .city
+                    .tile_bits_at(x, y)
+                    .is_some_and(|bits| bits.raw_bits() & 4 != 0);
                 let anchor = (if wet { water_anchor } else { land_anchor }) + offset;
                 if let Some(shadow_y) = mac_aircraft_shadow_offset(&record, native_zoom, building) {
                     bucket.push(RenderSprite {
-                        atlas, sprite_id, anchor: anchor + Vec2::new(0.0, shadow_y as f32 * sprite_scale),
-                        scale: sprite_scale, depth: sprite_depth(sx, sy, DEPTH_BUILDING, 19),
-                        tint: [1.0; 4], flip_x, bottom_left_anchor: false,
+                        atlas,
+                        sprite_id,
+                        anchor: anchor + Vec2::new(0.0, shadow_y as f32 * sprite_scale),
+                        scale: sprite_scale,
+                        depth: sprite_depth(sx, sy, DEPTH_BUILDING, 19),
+                        tint: [1.0; 4],
+                        flip_x,
+                        bottom_left_anchor: false,
                         effect: SpriteEffect::MacPaletteShadow,
                     });
                 }
-                push_sprite_to_atlas(renderer, bucket, atlas, sprite_id, anchor, sprite_scale,
-                    sprite_depth(sx, sy, DEPTH_BUILDING, 20), tint, flip_x);
+                push_sprite_to_atlas(
+                    renderer,
+                    bucket,
+                    atlas,
+                    sprite_id,
+                    anchor,
+                    sprite_scale,
+                    sprite_depth(sx, sy, DEPTH_BUILDING, 20),
+                    tint,
+                    flip_x,
+                );
             }
         }
 
@@ -619,34 +643,56 @@ impl ViewerState {
 
 /// CODE 6 export 110's aircraft and Maxis Man shape selection.
 fn mac_aircraft_sprite(
-    actor: &crate::win95_overlay::Win95OverlayRecord, zoom: u32, rotation: u8,
+    actor: &crate::win95_overlay::Win95OverlayRecord,
+    zoom: u32,
+    rotation: u8,
 ) -> Option<(u32, bool)> {
-    if zoom > 2 || actor.lane >= 8 { return None; }
+    if zoom > 2 || actor.lane >= 8 {
+        return None;
+    }
     let heading = usize::from(actor.lane.wrapping_add((rotation & 3) * 2) & 7);
     if actor.kind == 16 {
         return (zoom == 2).then_some((1495, heading >= 4));
     }
-    let base = match actor.kind { 1 => 359, 2 if zoom >= 2 => 364, 3 => 369, _ => return None };
+    let base = match actor.kind {
+        1 => 359,
+        2 if zoom >= 2 => 364,
+        3 => 369,
+        _ => return None,
+    };
     const OFFSET: [u32; 8] = [1, 2, 3, 4, 3, 2, 1, 0];
     const FLIP: [bool; 8] = [false, false, false, false, true, true, true, false];
     Some((base + OFFSET[heading] + 500 * zoom, FLIP[heading]))
 }
 
 /// Offset from the native tile anchor in pixels of the selected zoom bank.
-fn mac_aircraft_offset(actor: &crate::win95_overlay::Win95OverlayRecord, zoom: u32, rotation: u8) -> Vec2 {
+fn mac_aircraft_offset(
+    actor: &crate::win95_overlay::Win95OverlayRecord,
+    zoom: u32,
+    rotation: u8,
+) -> Vec2 {
     let x_divisor = [4_i32, 2, 1][zoom as usize];
     let y_divisor = [8_i32, 4, 2][zoom as usize];
     let x = i32::from(actor.sub_x) - 8;
     let y = i32::from(actor.sub_y) - 8;
     let (x, y) = match rotation & 3 {
-        0 => (x, y), 1 => (-y, x), 2 => (-x, -y), _ => (y, -x),
+        0 => (x, y),
+        1 => (-y, x),
+        2 => (-x, -y),
+        _ => (y, -x),
     };
     let (x, y) = (x + 8, y + 8);
-    Vec2::new(((x - y) / x_divisor) as f32,
-        ((x + y) / y_divisor - i32::from(actor.height) * (2 << zoom)) as f32)
+    Vec2::new(
+        ((x - y) / x_divisor) as f32,
+        ((x + y) / y_divisor - i32::from(actor.height) * (2 << zoom)) as f32,
+    )
 }
 
-fn mac_aircraft_shadow_offset(actor: &crate::win95_overlay::Win95OverlayRecord, zoom: u32, building: u8) -> Option<i32> {
+fn mac_aircraft_shadow_offset(
+    actor: &crate::win95_overlay::Win95OverlayRecord,
+    zoom: u32,
+    building: u8,
+) -> Option<i32> {
     (matches!(actor.kind, 1 | 2 | 16) && building < 0x70 && zoom <= 2)
         .then(|| (i32::from(actor.height) - 2) * (2 << zoom))
 }
@@ -658,36 +704,62 @@ mod mac_actor_visual_tests {
     #[test]
     #[ignore = "requires original Mac actor projection matrix"]
     fn rotated_actor_projection_matches_equivalent_native_records() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("actor-rotated-projection.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(root.join("actor-rotated-projection.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 72);
         for row in rows {
             let n = |key: &str| row[key].as_u64().unwrap();
             let actor = crate::win95_overlay::Win95OverlayRecord {
-                kind: n("kind") as u8, lane: n("lane") as u8, height: 4,
-                sub_x: n("sub_x") as u8, sub_y: n("sub_y") as u8, ..Default::default()
+                kind: n("kind") as u8,
+                lane: n("lane") as u8,
+                height: 4,
+                sub_x: n("sub_x") as u8,
+                sub_y: n("sub_y") as u8,
+                ..Default::default()
             };
             let zoom = n("zoom") as u32;
             let rotation = n("rotation") as u8;
             let graphics = row["graphics"].as_array().unwrap();
             let selection = mac_aircraft_sprite(&actor, zoom, rotation);
-            if graphics.is_empty() { assert_eq!(selection, None, "{row}"); continue; }
+            if graphics.is_empty() {
+                assert_eq!(selection, None, "{row}");
+                continue;
+            }
             assert_eq!(graphics.len(), 1, "{row}");
             let entry = &graphics[0];
             let value = |i: usize| entry[i].as_u64().unwrap() as u16;
-            assert_eq!(selection, Some((u32::from(value(1)), value(4) != 0)), "{row}");
+            assert_eq!(
+                selection,
+                Some((u32::from(value(1)), value(4) != 0)),
+                "{row}"
+            );
             let unit = 4_i32 << zoom;
             let offset = mac_aircraft_offset(&actor, zoom, rotation);
-            let left = row["origin_x"].as_i64().unwrap() as i32 + unit * 3 + offset.x as i32 - i32::from(value(6)) / 2;
+            let left = row["origin_x"].as_i64().unwrap() as i32 + unit * 3 + offset.x as i32
+                - i32::from(value(6)) / 2;
             let top = row["origin_y"].as_i64().unwrap() as i32 + unit / 2 * 126
-                - 4 * 3 * (1 << zoom) + offset.y as i32 - i32::from(value(7));
-            assert_eq!((left, top), (i32::from(value(2) as i16), i32::from(value(3) as i16)), "{row}");
+                - 4 * 3 * (1 << zoom)
+                + offset.y as i32
+                - i32::from(value(7));
+            assert_eq!(
+                (left, top),
+                (i32::from(value(2) as i16), i32::from(value(3) as i16)),
+                "{row}"
+            );
         }
     }
 
     #[test]
     fn mac_actor_subtile_position_rotates_with_view() {
-        let actor = crate::win95_overlay::Win95OverlayRecord { sub_x: 3, sub_y: 12, ..Default::default() };
+        let actor = crate::win95_overlay::Win95OverlayRecord {
+            sub_x: 3,
+            sub_y: 12,
+            ..Default::default()
+        };
         assert_eq!(mac_aircraft_offset(&actor, 2, 0), Vec2::new(-9.0, 7.0));
         assert_eq!(mac_aircraft_offset(&actor, 2, 1), Vec2::new(1.0, 3.0));
         assert_eq!(mac_aircraft_offset(&actor, 2, 2), Vec2::new(9.0, 8.0));
@@ -696,7 +768,12 @@ mod mac_actor_visual_tests {
 
     #[test]
     fn maxis_man_is_visible_only_at_closest_mac_zoom() {
-        let actor = crate::win95_overlay::Win95OverlayRecord { kind: 16, lane: 3, height: 4, ..Default::default() };
+        let actor = crate::win95_overlay::Win95OverlayRecord {
+            kind: 16,
+            lane: 3,
+            height: 4,
+            ..Default::default()
+        };
         assert_eq!(mac_aircraft_sprite(&actor, 1, 0), None);
         assert_eq!(mac_aircraft_sprite(&actor, 2, 0), Some((1495, false)));
         assert_eq!(mac_aircraft_sprite(&actor, 2, 1), Some((1495, true)));
@@ -707,30 +784,49 @@ mod mac_actor_visual_tests {
     #[test]
     #[ignore = "requires original Mac kind-16 draw matrix"]
     fn maxis_man_shapes_and_shadow_match_original_worker() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("kind16-draw-matrix.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(root.join("kind16-draw-matrix.json")).unwrap())
+                .unwrap();
         assert_eq!(rows.len(), 432);
         for row in rows {
             let n = |key: &str| row[key].as_u64().unwrap();
             let actor = crate::win95_overlay::Win95OverlayRecord {
-                kind: 16, lane: n("lane") as u8, height: n("height") as u8,
-                state: n("state") as u8, ..Default::default()
+                kind: 16,
+                lane: n("lane") as u8,
+                height: n("height") as u8,
+                state: n("state") as u8,
+                ..Default::default()
             };
             let zoom = n("zoom") as u32;
             let graphics = row["graphics"].as_array().unwrap();
-            let body = graphics.iter().find(|entry| entry[0].as_u64() == Some(0x55a));
-            let shadow = graphics.iter().find(|entry| entry[0].as_u64() == Some(0x582));
+            let body = graphics
+                .iter()
+                .find(|entry| entry[0].as_u64() == Some(0x55a));
+            let shadow = graphics
+                .iter()
+                .find(|entry| entry[0].as_u64() == Some(0x582));
             match (mac_aircraft_sprite(&actor, zoom, 0), body) {
                 (None, None) => assert!(shadow.is_none(), "{row}"),
                 (Some((shape, flip)), Some(body)) => {
-                    assert_eq!((body[1].as_u64().unwrap(), body[4].as_u64().unwrap()), (u64::from(shape), u64::from(flip)), "{row}");
+                    assert_eq!(
+                        (body[1].as_u64().unwrap(), body[4].as_u64().unwrap()),
+                        (u64::from(shape), u64::from(flip)),
+                        "{row}"
+                    );
                     let offset = mac_aircraft_shadow_offset(&actor, zoom, n("building") as u8);
                     assert_eq!(offset.is_some(), shadow.is_some(), "{row}");
                     if let (Some(offset), Some(shadow)) = (offset, shadow) {
-                        let signed = |value: &serde_json::Value| i32::from(value.as_u64().unwrap() as u16 as i16);
+                        let signed = |value: &serde_json::Value| {
+                            i32::from(value.as_u64().unwrap() as u16 as i16)
+                        };
                         assert_eq!(signed(&shadow[3]) - signed(&body[3]), offset, "{row}");
-                        assert_eq!((shadow[1].as_u64(), shadow[2].as_u64(), shadow[4].as_u64()),
-                            (body[1].as_u64(), body[2].as_u64(), body[4].as_u64()), "{row}");
+                        assert_eq!(
+                            (shadow[1].as_u64(), shadow[2].as_u64(), shadow[4].as_u64()),
+                            (body[1].as_u64(), body[2].as_u64(), body[4].as_u64()),
+                            "{row}"
+                        );
                     }
                 }
                 _ => panic!("body mismatch: {row}"),
@@ -740,7 +836,11 @@ mod mac_actor_visual_tests {
 
     #[test]
     fn aircraft_bank_follows_zoom_gate_and_rotated_heading() {
-        let mut actor = crate::win95_overlay::Win95OverlayRecord { kind: 2, lane: 1, ..Default::default() };
+        let mut actor = crate::win95_overlay::Win95OverlayRecord {
+            kind: 2,
+            lane: 1,
+            ..Default::default()
+        };
         assert_eq!(mac_aircraft_sprite(&actor, 1, 0), None);
         assert_eq!(mac_aircraft_sprite(&actor, 2, 0), Some((1366, false)));
         assert_eq!(mac_aircraft_sprite(&actor, 2, 2), Some((1366, true)));
@@ -751,23 +851,36 @@ mod mac_actor_visual_tests {
     #[test]
     fn centered_mac_actor_is_below_terrain_anchor() {
         let actor = crate::win95_overlay::Win95OverlayRecord {
-            kind: 1, sub_x: 8, sub_y: 8, ..Default::default()
+            kind: 1,
+            sub_x: 8,
+            sub_y: 8,
+            ..Default::default()
         };
         for zoom in 0..=2 {
-            assert_eq!(mac_aircraft_offset(&actor, zoom, 0), Vec2::new(0.0, (2 << zoom) as f32));
+            assert_eq!(
+                mac_aircraft_offset(&actor, zoom, 0),
+                Vec2::new(0.0, (2 << zoom) as f32)
+            );
         }
     }
 
     #[test]
     #[ignore = "requires original Mac aircraft shadow draw matrix"]
     fn aircraft_shadow_gate_and_offset_match_original_worker() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("aircraft-shadow-matrix.json")).unwrap()).unwrap();
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(root.join("aircraft-shadow-matrix.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 54);
         for row in rows {
             let n = |key: &str| row[key].as_u64().unwrap();
             let actor = crate::win95_overlay::Win95OverlayRecord {
-                kind: n("kind") as u8, lane: 1, height: n("height") as u8, ..Default::default()
+                kind: n("kind") as u8,
+                lane: 1,
+                height: n("height") as u8,
+                ..Default::default()
             };
             let zoom = n("zoom") as u32;
             let graphics = row["graphics"].as_array().unwrap();
@@ -776,14 +889,27 @@ mod mac_actor_visual_tests {
                 continue;
             }
             let shadow = mac_aircraft_shadow_offset(&actor, zoom, n("building") as u8);
-            let original = graphics.iter().find(|entry| entry[0].as_u64() == Some(0x582));
+            let original = graphics
+                .iter()
+                .find(|entry| entry[0].as_u64() == Some(0x582));
             assert_eq!(shadow.is_some(), original.is_some(), "{row}");
             if let (Some(offset), Some(original)) = (shadow, original) {
-                let body = graphics.iter().find(|entry| entry[0].as_u64() == Some(0x55a)).unwrap();
-                let signed = |value: &serde_json::Value| i32::from(value.as_u64().unwrap() as u16 as i16);
+                let body = graphics
+                    .iter()
+                    .find(|entry| entry[0].as_u64() == Some(0x55a))
+                    .unwrap();
+                let signed =
+                    |value: &serde_json::Value| i32::from(value.as_u64().unwrap() as u16 as i16);
                 assert_eq!(signed(&original[3]) - signed(&body[3]), offset, "{row}");
-                assert_eq!((original[1].as_u64(), original[2].as_u64(), original[4].as_u64()),
-                    (body[1].as_u64(), body[2].as_u64(), body[4].as_u64()), "{row}");
+                assert_eq!(
+                    (
+                        original[1].as_u64(),
+                        original[2].as_u64(),
+                        original[4].as_u64()
+                    ),
+                    (body[1].as_u64(), body[2].as_u64(), body[4].as_u64()),
+                    "{row}"
+                );
             }
         }
     }
@@ -791,15 +917,25 @@ mod mac_actor_visual_tests {
     #[test]
     #[ignore = "requires original Mac terrain and aircraft redraw capture"]
     fn aircraft_position_relative_to_ground_matches_original_redraw() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
         let pack = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
         let dimensions = crate::mac_shape_table::MacShapeDimensions::from_pack(&pack).unwrap();
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("aircraft-ground-compare.json")).unwrap()).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(root.join("aircraft-ground-compare.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 3);
         for row in rows {
             let zoom = row["zoom"].as_u64().unwrap() as u32;
             let actor = crate::win95_overlay::Win95OverlayRecord {
-                kind: 1, lane: 1, tile_x: 64, tile_y: 62, sub_x: 8, sub_y: 8, ..Default::default()
+                kind: 1,
+                lane: 1,
+                tile_x: 64,
+                tile_y: 62,
+                sub_x: 8,
+                sub_y: 8,
+                ..Default::default()
             };
             let (sprite, _) = mac_aircraft_sprite(&actor, zoom, 0).unwrap();
             let (actor_width, actor_height) = dimensions.dimensions(sprite).unwrap();
@@ -808,48 +944,80 @@ mod mac_actor_visual_tests {
             let ground = row["raw_blits"].as_array().unwrap();
             assert_eq!((blits.len(), ground.len()), (1, 1), "{row}");
             let signed = |v: &serde_json::Value| i32::from(v.as_u64().unwrap() as u16 as i16);
-            let actor_x = signed(&blits[0][1]); let actor_y = signed(&blits[0][2]);
-            let ground_x = signed(&ground[0][2]); let ground_y = signed(&ground[0][3]);
+            let actor_x = signed(&blits[0][1]);
+            let actor_y = signed(&blits[0][2]);
+            let ground_x = signed(&ground[0][2]);
+            let ground_y = signed(&ground[0][3]);
             let expected = Vec2::new(
                 (actor_x + actor_width as i32 / 2 - ground_x - ground_width as i32 / 2) as f32,
                 (actor_y + actor_height as i32 - ground_y - ground_height as i32) as f32,
             );
-            assert_eq!(mac_aircraft_offset(&actor, zoom, 0), expected, "zoom {zoom}");
+            assert_eq!(
+                mac_aircraft_offset(&actor, zoom, 0),
+                expected,
+                "zoom {zoom}"
+            );
         }
     }
 
     #[test]
     #[ignore = "requires original Mac aircraft draw matrix"]
     fn aircraft_shapes_and_positions_match_original_worker() {
-        let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SELECTOR11_ACCEPTED").unwrap());
         let pack = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
         let dimensions = crate::mac_shape_table::MacShapeDimensions::from_pack(&pack).unwrap();
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(root.join("aircraft-sprite-matrix.json")).unwrap()).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(root.join("aircraft-sprite-matrix.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 72);
         for row in rows {
             let n = |key: &str| row[key].as_u64().unwrap();
             let zoom = n("zoom") as u32;
             let actor = crate::win95_overlay::Win95OverlayRecord {
-                kind: n("kind") as u8, lane: n("lane") as u8, tile_x: 64, tile_y: 62,
-                height: 4, sub_x: 3, sub_y: 12, ..Default::default()
+                kind: n("kind") as u8,
+                lane: n("lane") as u8,
+                tile_x: 64,
+                tile_y: 62,
+                height: 4,
+                sub_x: 3,
+                sub_y: 12,
+                ..Default::default()
             };
             let expected = row["graphics"].as_array().unwrap();
             let selected = mac_aircraft_sprite(&actor, zoom, 0);
-            if expected.is_empty() { assert_eq!(selected, None, "{row}"); continue; }
+            if expected.is_empty() {
+                assert_eq!(selected, None, "{row}");
+                continue;
+            }
             assert_eq!(expected.len(), 1, "{row}");
             let entry = &expected[0];
             let value = |i: usize| entry[i].as_u64().unwrap() as u16;
             let (sprite, flip) = selected.unwrap();
-            assert_eq!((sprite, flip), (u32::from(value(1)), value(4) != 0), "{row}");
-            assert_eq!(dimensions.dimensions(sprite), Some((u32::from(value(6)), u32::from(value(7)))), "{row}");
+            assert_eq!(
+                (sprite, flip),
+                (u32::from(value(1)), value(4) != 0),
+                "{row}"
+            );
+            assert_eq!(
+                dimensions.dimensions(sprite),
+                Some((u32::from(value(6)), u32::from(value(7)))),
+                "{row}"
+            );
             let unit = 4_i32 << zoom;
             let offset = mac_aircraft_offset(&actor, zoom, 0);
-            let left = row["origin_x"].as_i64().unwrap() as i32 + unit * 2 + unit
-                + offset.x as i32 - i32::from(value(6)) / 2;
+            let left = row["origin_x"].as_i64().unwrap() as i32 + unit * 2 + unit + offset.x as i32
+                - i32::from(value(6)) / 2;
             let top = row["origin_y"].as_i64().unwrap() as i32 + unit / 2 * 126
                 - 4 * 3 * (1 << zoom)
-                + offset.y as i32 - i32::from(value(7));
-            assert_eq!((left, top), (i32::from(value(2) as i16), i32::from(value(3) as i16)), "{row}");
+                + offset.y as i32
+                - i32::from(value(7));
+            assert_eq!(
+                (left, top),
+                (i32::from(value(2) as i16), i32::from(value(3) as i16)),
+                "{row}"
+            );
         }
     }
 }

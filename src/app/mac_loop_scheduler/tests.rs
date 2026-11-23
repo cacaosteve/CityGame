@@ -7790,8 +7790,7 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
                 manual.mac_loop_scheduler.mac_earthquake_shake_phase(),
                 Some(phase)
             );
-            quake_sound_requests +=
-                usize::from(manual.take_pending_mac_earthquake_sound());
+            quake_sound_requests += usize::from(manual.take_pending_mac_earthquake_sound());
             assert_eq!(
                 manual.view_camera().x - manual.camera.x,
                 if phase & 1 == 0 { 16.0 } else { 0.0 }
@@ -7846,8 +7845,8 @@ fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
     // earthquake-live-armed-r4-20261117/trace.csv. The first CODE 10 scan
     // Random call occurs at offset 136.
     const SOUND_TICKS: [u32; 24] = [
-        2, 8, 13, 18, 23, 28, 34, 39, 45, 51, 57, 63, 68, 74, 79, 85, 91, 96, 101, 107,
-        113, 120, 125, 131,
+        2, 8, 13, 18, 23, 28, 34, 39, 45, 51, 57, 63, 68, 74, 79, 85, 91, 96, 101, 107, 113, 120,
+        125, 131,
     ];
     const FIRST_SCAN_TICK: u32 = 136;
 
@@ -7876,7 +7875,10 @@ fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
         let elapsed = duration_at_tick(tick) - duration_at_tick(previous_tick);
         assert_eq!(state.advance_frame_simulation(elapsed).days, 0);
         assert_eq!(state.mac_loop_scheduler.current_tick(), tick);
-        assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), Some(phase as u8));
+        assert_eq!(
+            state.mac_loop_scheduler.mac_earthquake_shake_phase(),
+            Some(phase as u8)
+        );
         assert!(state.take_pending_mac_earthquake_sound());
         assert_eq!(state.mac_process_rng.seed(), prelude_seed);
         previous_tick = tick;
@@ -8176,10 +8178,12 @@ fn mac_earthquake_november_2026_worker_and_action_match_live_snapshots() {
         .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_SOURCE_CITY to the original Maxis Land city");
     let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_ENTRY_CGMS")
         .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_ENTRY_CGMS to the live entry snapshot");
-    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_WORKER_CGMS")
-        .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_WORKER_CGMS to the native worker-return snapshot");
-    let action_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_ACTION_CGMS")
-        .expect("set CITYGAME_MAC_EARTHQUAKE_NOV18_ACTION_CGMS to the native action-pass return snapshot");
+    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_WORKER_CGMS").expect(
+        "set CITYGAME_MAC_EARTHQUAKE_NOV18_WORKER_CGMS to the native worker-return snapshot",
+    );
+    let action_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_NOV18_ACTION_CGMS").expect(
+        "set CITYGAME_MAC_EARTHQUAKE_NOV18_ACTION_CGMS to the native action-pass return snapshot",
+    );
     let source = crate::city::City::load(source_path).expect("load original Maxis Land city");
     assert_eq!(source.misc_u32_at(0x10b0), Some(0));
     assert_eq!(source.misc_u32_at(0x10b4), Some(0));
@@ -8188,7 +8192,8 @@ fn mac_earthquake_november_2026_worker_and_action_match_live_snapshots() {
     )
     .unwrap();
     let native_worker = std::fs::read(worker_path).expect("read native worker-return snapshot");
-    let native_action = std::fs::read(action_path).expect("read native action-pass return snapshot");
+    let native_action =
+        std::fs::read(action_path).expect("read native action-pass return snapshot");
     city.prepare_mac_fidelity_from_saved_city();
     city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
     city.set_mac_pending_action(6);
@@ -8319,10 +8324,12 @@ fn mac_earthquake_r14_autodebt_worker_matches_live_snapshot_and_rng() {
 fn mac_earthquake_r14_third_autodebt_scan_matches_live_at_menu_derived_point() {
     let source_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_SOURCE_CITY")
         .expect("set CITYGAME_MAC_EARTHQUAKE_R14_SOURCE_CITY to the original AutoDebt city");
-    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_THIRD_ENTRY_CGMS")
-        .expect("set CITYGAME_MAC_EARTHQUAKE_R14_THIRD_ENTRY_CGMS to the third live entry snapshot");
-    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_THIRD_RETURN_CGMS")
-        .expect("set CITYGAME_MAC_EARTHQUAKE_R14_THIRD_RETURN_CGMS to the third live return snapshot");
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_THIRD_ENTRY_CGMS").expect(
+        "set CITYGAME_MAC_EARTHQUAKE_R14_THIRD_ENTRY_CGMS to the third live entry snapshot",
+    );
+    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R14_THIRD_RETURN_CGMS").expect(
+        "set CITYGAME_MAC_EARTHQUAKE_R14_THIRD_RETURN_CGMS to the third live return snapshot",
+    );
     let source = City::load(source_path).expect("load original AutoDebt city");
     assert_eq!(source.misc_u32_at(0x10b0), Some(0));
     assert_eq!(source.misc_u32_at(0x10b4), Some(0));
@@ -8357,7 +8364,10 @@ fn mac_earthquake_r14_third_autodebt_scan_matches_live_at_menu_derived_point() {
         menu_state.city.mac_pending_action(),
         u32::from(scenario_action::EARTHQUAKE_ACTION)
     );
-    assert_eq!(menu_state.mac_loop_scheduler.pending_action_point, Some((27, 24)));
+    assert_eq!(
+        menu_state.mac_loop_scheduler.pending_action_point,
+        Some((27, 24))
+    );
     assert_eq!(menu_state.mac_process_rng.seed(), 0x2c9b_3a2b);
 
     let mut state = test_state(city);
@@ -10047,7 +10057,8 @@ fn mac_january_budget_review_auto_dismisses_after_native_tickcount_timeout() {
 
 #[test]
 fn mac_january_budget_review_timeout_waits_while_done_button_is_held() {
-    let mut state = mac_phase24_fixture("mac-annual-review-held-done.sc2", WEATHER_TREND_BLIZZARD, 1);
+    let mut state =
+        mac_phase24_fixture("mac-annual-review-held-done.sc2", WEATHER_TREND_BLIZZARD, 1);
     let start = 0xffff_ff00;
     state.mac_loop_scheduler.start_captured_clock(start);
     state.mac_loop_scheduler.january_budget_review_pending = true;
@@ -10096,9 +10107,8 @@ fn mac_january_budget_review_resumes_while_query_dialog_is_open() {
 #[test]
 #[ignore = "requires private ZooAge January 3577 Quadra RAM and CGMS captures"]
 fn mac_january_3577_zoo_xmic_matches_native_ordered_annual_dispatch() {
-    let root = std::path::PathBuf::from(
-        std::env::var_os("CITYGAME_MAC_ZOO_ANNUAL_CAPTURE_DIR").unwrap(),
-    );
+    let root =
+        std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_ZOO_ANNUAL_CAPTURE_DIR").unwrap());
     let input_cgms = std::fs::read(root.join("rust-341.cgms")).unwrap();
     let mut city = crate::city::city_from_cgms_v4_for_test(&input_cgms).unwrap();
     assert_eq!(city.kind, crate::city::CityFileKind::MacCity);
@@ -10184,7 +10194,10 @@ fn mac_january_3577_zoo_xmic_matches_native_ordered_annual_dispatch() {
     );
     assert_eq!(native_worker_game_seed, 0x0113_bbfc);
     assert_eq!(
-        state.city.microsim_at(16).map(|row| (row.stat0, row.stat1, row.stat2, row.stat3)),
+        state
+            .city
+            .microsim_at(16)
+            .map(|row| (row.stat0, row.stat1, row.stat2, row.stat3)),
         Some((0x22, 0x51, 0x11, 0x0a)),
         "captured zoo XMIC row after its four game-LCG draws"
     );
@@ -11959,11 +11972,9 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         });
         assert_eq!(
             state
-                .finish_mac_frame_calendar_phase_with_tick_refresh(
-                    Duration::ZERO,
-                    waits,
-                    || Duration::from_millis(17),
-                )
+                .finish_mac_frame_calendar_phase_with_tick_refresh(Duration::ZERO, waits, || {
+                    Duration::from_millis(17)
+                },)
                 .days,
             1
         );

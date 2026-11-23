@@ -1063,8 +1063,8 @@ fn simulation_day22_advances_only_one_progression_level_per_pass() {
 
 #[test]
 fn simulation_day22_level_six_rebuilds_tech_unlocks_and_grants_arcologies() {
-    let mut city = City::new_blank("/tmp/citygame-level-six-arcology.sc2", "LevelSix")
-        .expect("blank city");
+    let mut city =
+        City::new_blank("/tmp/citygame-level-six-arcology.sc2", "LevelSix").expect("blank city");
     city.pe_w_city_progression = 5;
     city.set_pe_dw_city_population(120_001);
     city.set_pe_zone_pops([0; 3]);
@@ -1100,8 +1100,8 @@ fn opening_win95_city_rebuilds_tech_unlocks_from_saved_schedule() {
     }
     city.save(&path).expect("save city fixture");
 
-    let initial = City::new_blank("/tmp/citygame-tech-open-initial.sc2", "Initial")
-        .expect("initial city");
+    let initial =
+        City::new_blank("/tmp/citygame-tech-open-initial.sc2", "Initial").expect("initial city");
     let mut state = test_state(initial);
     state.load_city(&path, (1280, 800), 1.0).expect("open city");
 

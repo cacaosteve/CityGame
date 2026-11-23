@@ -68,6 +68,10 @@ pub(super) enum AppCommand {
     Win95FileDialogResult(Win95FileDialog, Option<PathBuf>),
     OpenPath(PathBuf),
     OpenConfirmedCityPath(PathBuf),
+    OpenConfirmedClassicCityPath {
+        path: PathBuf,
+        title_tail: bool,
+    },
     OpenScenarioPath(PathBuf),
     OpenTitleScenarioPath(PathBuf),
     StartMacScenario(PathBuf),
@@ -189,7 +193,12 @@ pub(super) fn win95_file_menu_shortcut(
     use sdl3::keyboard::Mod;
     if !modifiers.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
         || modifiers.intersects(
-            Mod::LSHIFTMOD | Mod::RSHIFTMOD | Mod::LALTMOD | Mod::RALTMOD | Mod::LGUIMOD | Mod::RGUIMOD,
+            Mod::LSHIFTMOD
+                | Mod::RSHIFTMOD
+                | Mod::LALTMOD
+                | Mod::RALTMOD
+                | Mod::LGUIMOD
+                | Mod::RGUIMOD,
         )
     {
         return None;
@@ -267,7 +276,9 @@ pub(super) fn app_command_for_menu_command(command: i32) -> Option<AppCommand> {
         70 => AppCommand::ToggleNewspaperSubscription,
         71 => AppCommand::OpenCityInfo(CityInfoDialog::Newspaper(NewspaperEdition::Courier)),
         72 => AppCommand::ToggleNewspaperExtra,
-        menu_model::CMD_MAC_PAPER_FIRST..=145 => AppCommand::OpenMacPaper((command - menu_model::CMD_MAC_PAPER_FIRST) as u8),
+        menu_model::CMD_MAC_PAPER_FIRST..=145 => {
+            AppCommand::OpenMacPaper((command - menu_model::CMD_MAC_PAPER_FIRST) as u8)
+        }
         80 => AppCommand::OpenCityInfo(CityInfoDialog::Help),
         81 => AppCommand::ToggleBalloonHelp,
         90 => AppCommand::OpenImportOriginalAssetsDialog,

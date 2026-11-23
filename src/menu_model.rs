@@ -91,7 +91,14 @@ pub const CMD_APPEARANCE_SYSTEM: i32 = 130;
 pub const CMD_APPEARANCE_LIGHT: i32 = 131;
 pub const CMD_APPEARANCE_DARK: i32 = 132;
 pub const CMD_MAC_PAPER_FIRST: i32 = 140;
-pub const MAC_PAPER_NAMES: [&str; 6] = ["Picayune", "Courier", "Herald", "Journal", "Times", "Chronicle"];
+pub const MAC_PAPER_NAMES: [&str; 6] = [
+    "Picayune",
+    "Courier",
+    "Herald",
+    "Journal",
+    "Times",
+    "Chronicle",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuEntry {
@@ -117,7 +124,8 @@ pub fn visible_items(menu: &MenuDef, checks: MenuCheckState) -> Vec<MenuEntry> {
         // Win95 menu resource 3. Preserve the shared command IDs so that the
         // visible rows and their hit targets use the same command routing.
         let command = |id| {
-            *menu.items
+            *menu
+                .items
                 .iter()
                 .find(|item| matches!(item, MenuEntry::Command { id: actual, .. } if *actual == id))
                 .expect("missing File command")
@@ -141,11 +149,18 @@ pub fn visible_items(menu: &MenuDef, checks: MenuCheckState) -> Vec<MenuEntry> {
             },
         ];
     }
-    if menu.title != "Newspaper" || !checks.mac_newspaper { return menu.items.to_vec(); }
+    if menu.title != "Newspaper" || !checks.mac_newspaper {
+        return menu.items.to_vec();
+    }
     let mut items = menu.items[..3].to_vec();
     for i in 0..usize::from(checks.mac_paper_count.min(6)) {
         if let Some(&label) = MAC_PAPER_NAMES.get(usize::from(checks.mac_paper_names[i])) {
-            items.push(MenuEntry::Command { id: CMD_MAC_PAPER_FIRST + i as i32, label, accel: None, checkable: true });
+            items.push(MenuEntry::Command {
+                id: CMD_MAC_PAPER_FIRST + i as i32,
+                label,
+                accel: None,
+                checkable: true,
+            });
         }
     }
     items
@@ -782,8 +797,9 @@ impl Default for MenuCheckState {
 
 impl MenuCheckState {
     pub fn item_checked(self, id: i32) -> bool {
-        if (CMD_MAC_PAPER_FIRST..CMD_MAC_PAPER_FIRST+6).contains(&id) {
-            return self.mac_newspaper && id - CMD_MAC_PAPER_FIRST == i32::from(self.mac_paper_selected);
+        if (CMD_MAC_PAPER_FIRST..CMD_MAC_PAPER_FIRST + 6).contains(&id) {
+            return self.mac_newspaper
+                && id - CMD_MAC_PAPER_FIRST == i32::from(self.mac_paper_selected);
         }
         match id {
             CMD_APPEARANCE_SYSTEM => {

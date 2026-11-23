@@ -16,16 +16,34 @@ impl std::fmt::Display for PeArchiveOpenError {
 }
 
 impl std::error::Error for PeArchiveOpenError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.error) }
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 /// Date and price selected by the PE's paper paint routine at 0x477d8f.
 /// The newspaper prints a fictional Sunday day number, not the simulation
 /// day shown in the status bar. Out-of-range native table indices are rejected.
 pub(crate) fn pe_newspaper_header(founded: u16, age: u32, wording: u8) -> Option<(String, u32)> {
-    const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December"];
-    if founded > i16::MAX as u16 || age > i32::MAX as u32 || age / 300 > i16::MAX as u32 || wording > 2 {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    if founded > i16::MAX as u16
+        || age > i32::MAX as u32
+        || age / 300 > i16::MAX as u32
+        || wording > 2
+    {
         return None;
     }
     let month = (age / 25 % 12) as i32;
@@ -34,25 +52,61 @@ pub(crate) fn pe_newspaper_header(founded: u16, age: u32, wording: u8) -> Option
     let year = i32::from(founded) + elapsed;
     let day = (year + month + season) % 7 + 1;
     let era = ((i32::from(founded) - 1900) / 50 + elapsed / 50).min(4);
-    if era < 0 { return None; }
-    Some((format!("Sunday {day}, {} {year}", MONTHS[month as usize]),
-        377 + u32::from(wording) * 5 + era as u32))
+    if era < 0 {
+        return None;
+    }
+    Some((
+        format!("Sunday {day}, {} {year}", MONTHS[month as usize]),
+        377 + u32::from(wording) * 5 + era as u32,
+    ))
 }
 
 pub(crate) fn pe_newspaper_price(resource: u32) -> Option<&'static str> {
-    const PRICES: [&str; 15] = ["One Cent", "Five Cents", "Twenty-Five Cents", "One Dollar", "Five Dollars",
-        "A Single Penny", "Only A Nickel", "Still A Quarter", "Just A Dollar", "Merely Five Bucks",
-        "Price 1¢", "Price 5¢", "Price 25¢", "Price $1", "Price $5"];
+    const PRICES: [&str; 15] = [
+        "One Cent",
+        "Five Cents",
+        "Twenty-Five Cents",
+        "One Dollar",
+        "Five Dollars",
+        "A Single Penny",
+        "Only A Nickel",
+        "Still A Quarter",
+        "Just A Dollar",
+        "Merely Five Bucks",
+        "Price 1¢",
+        "Price 5¢",
+        "Price 25¢",
+        "Price $1",
+        "Price $5",
+    ];
     PRICES.get(resource.checked_sub(377)? as usize).copied()
 }
 
 /// Resource indices in bytes 4 and 3 of each five-byte paper record.
-pub(crate) fn pe_newspaper_tail_labels(weather: u8, opinion: u8) -> Option<(&'static str, &'static str)> {
-    const WEATHER: [&str; 6] = ["Weather Corner", "Weather Report", "Today's Weather",
-        "Weather with Merle", "Weather Forecast", "Weather Talk"];
-    const OPINION: [&str; 6] = ["Fred's Opinion", "Editor's Corner", "Commentary",
-        "Opinion Poll", "Survey", "MisSim's Advice"];
-    Some((*WEATHER.get(usize::from(weather))?, *OPINION.get(usize::from(opinion))?))
+pub(crate) fn pe_newspaper_tail_labels(
+    weather: u8,
+    opinion: u8,
+) -> Option<(&'static str, &'static str)> {
+    const WEATHER: [&str; 6] = [
+        "Weather Corner",
+        "Weather Report",
+        "Today's Weather",
+        "Weather with Merle",
+        "Weather Forecast",
+        "Weather Talk",
+    ];
+    const OPINION: [&str; 6] = [
+        "Fred's Opinion",
+        "Editor's Corner",
+        "Commentary",
+        "Opinion Poll",
+        "Survey",
+        "MisSim's Advice",
+    ];
+    Some((
+        *WEATHER.get(usize::from(weather))?,
+        *OPINION.get(usize::from(opinion))?,
+    ))
 }
 
 /// PE `0x47b400` formats the live heat, wind, and humidity bytes.
@@ -60,14 +114,35 @@ pub(crate) fn pe_newspaper_weather_line(heat: u8, wind: u8, humidity: u8) -> Str
     format!("{}°F {wind}mph {humidity}mm", i32::from(heat) - 100)
 }
 
-pub(crate) fn pe_newspaper_opinion_lines(kind: u8, approval: u16, counts: [u16; 7], order: [u16; 7]) -> Vec<String> {
+pub(crate) fn pe_newspaper_opinion_lines(
+    kind: u8,
+    approval: u16,
+    counts: [u16; 7],
+    order: [u16; 7],
+) -> Vec<String> {
     if kind <= 2 {
-        return if approval == 0 { Vec::new() } else { vec![format!("Mayor Rated {approval}%")] };
+        return if approval == 0 {
+            Vec::new()
+        } else {
+            vec![format!("Mayor Rated {approval}%")]
+        };
     }
-    if kind > 4 { return Vec::new(); }
-    const ISSUES: [&str; 7] = ["Traffic", "Pollute", "Crime", "Taxes", "Unemp.", "Educate", "Health"];
-    counts.into_iter().zip(order).take(4).take_while(|(count, _)| *count != 0)
-        .filter_map(|(count, index)| ISSUES.get(usize::from(index)).map(|label| format!("{label} {count}%")))
+    if kind > 4 {
+        return Vec::new();
+    }
+    const ISSUES: [&str; 7] = [
+        "Traffic", "Pollute", "Crime", "Taxes", "Unemp.", "Educate", "Health",
+    ];
+    counts
+        .into_iter()
+        .zip(order)
+        .take(4)
+        .take_while(|(count, _)| *count != 0)
+        .filter_map(|(count, index)| {
+            ISSUES
+                .get(usize::from(index))
+                .map(|label| format!("{label} {count}%"))
+        })
         .collect()
 }
 
@@ -147,18 +222,42 @@ const PE_ARTICLE_RECTS: [[[i32; 4]; 7]; 3] = [
 /// Masthead, date, price and illustration rectangles initialized immediately
 /// before the seven clickable article rectangles by PE 0x476ff0.
 const PE_HEADER_RECTS: [[[i32; 4]; 4]; 3] = [
-    [[0, 6, 640, 36], [5, 16, 218, 31], [315, 16, 635, 31], [243, 76, 456, 176]],
-    [[0, 37, 640, 73], [421, 53, 635, 68], [5, 53, 218, 68], [178, 186, 434, 286]],
-    [[0, 0, 384, 30], [0, 0, 635, 12], [0, 12, 635, 24], [128, 30, 256, 240]],
+    [
+        [0, 6, 640, 36],
+        [5, 16, 218, 31],
+        [315, 16, 635, 31],
+        [243, 76, 456, 176],
+    ],
+    [
+        [0, 37, 640, 73],
+        [421, 53, 635, 68],
+        [5, 53, 218, 68],
+        [178, 186, 434, 286],
+    ],
+    [
+        [0, 0, 384, 30],
+        [0, 0, 635, 12],
+        [0, 12, 635, 24],
+        [128, 30, 256, 240],
+    ],
 ];
 
 pub(crate) fn pe_newspaper_layout_rect(style: u8, position: u16) -> Option<NewspaperRect> {
     let raw = if position < 4 {
-        *PE_HEADER_RECTS.get(usize::from(style))?.get(usize::from(position))?
+        *PE_HEADER_RECTS
+            .get(usize::from(style))?
+            .get(usize::from(position))?
     } else {
-        *PE_ARTICLE_RECTS.get(usize::from(style))?.get(usize::from(position - 4))?
+        *PE_ARTICLE_RECTS
+            .get(usize::from(style))?
+            .get(usize::from(position - 4))?
     };
-    Some(NewspaperRect { left: raw[0], top: raw[1], right: raw[2], bottom: raw[3] })
+    Some(NewspaperRect {
+        left: raw[0],
+        top: raw[1],
+        right: raw[2],
+        bottom: raw[3],
+    })
 }
 
 /// Positions for which the native handler calls its article worker. The
@@ -258,7 +357,11 @@ pub(crate) fn pe_truncate_headline_ascii(
     if width < 0 || text.contains(&0) {
         return None;
     }
-    let mut result: Vec<_> = text.iter().copied().map(crate::win95_oem::oem_to_ansi).collect();
+    let mut result: Vec<_> = text
+        .iter()
+        .copied()
+        .map(crate::win95_oem::oem_to_ansi)
+        .collect();
     while measure(&result) > width {
         if result.is_empty() {
             return None;
@@ -266,7 +369,12 @@ pub(crate) fn pe_truncate_headline_ascii(
         let cut = result.iter().rposition(|&c| c == b' ').unwrap_or(0);
         result.truncate(cut);
     }
-    Some(result.into_iter().map(crate::win95_oem::ansi_to_oem).collect())
+    Some(
+        result
+            .into_iter()
+            .map(crate::win95_oem::ansi_to_oem)
+            .collect(),
+    )
 }
 
 /// Native picture-resource lookup for newspaper story IDs 0..=66. Zero
@@ -636,15 +744,22 @@ impl PeNewspaperData {
 
     pub(crate) fn load(data: &std::path::Path, index: &std::path::Path) -> Result<Self> {
         use std::io::Read;
-        let open = |path: &std::path::Path| std::fs::File::open(path).map_err(|error| PeArchiveOpenError {
-            path: path.to_path_buf(), error,
-        });
+        let open = |path: &std::path::Path| {
+            std::fs::File::open(path).map_err(|error| PeArchiveOpenError {
+                path: path.to_path_buf(),
+                error,
+            })
+        };
         let mut data_file = open(data)?;
         let mut index_file = open(index)?;
         let mut bytes = Vec::new();
         let mut directory = Vec::new();
-        index_file.read_to_end(&mut directory).with_context(|| format!("reading {}", index.display()))?;
-        data_file.read_to_end(&mut bytes).with_context(|| format!("reading {}", data.display()))?;
+        index_file
+            .read_to_end(&mut directory)
+            .with_context(|| format!("reading {}", index.display()))?;
+        data_file
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading {}", data.display()))?;
         Self::from_bytes(&bytes, &directory)
     }
 
@@ -1043,10 +1158,20 @@ impl PeNewspaperData {
                             None => &mut state.city,
                             Some(index) => state.labels.get_mut(index)?.as_mut()?,
                         };
-                        let converted: Vec<u8> = value.iter().copied().map(crate::win95_oem::ansi_to_oem).collect();
-                        *value = converted.iter().copied().map(crate::win95_oem::oem_to_ansi).collect();
+                        let converted: Vec<u8> = value
+                            .iter()
+                            .copied()
+                            .map(crate::win95_oem::ansi_to_oem)
+                            .collect();
+                        *value = converted
+                            .iter()
+                            .copied()
+                            .map(crate::win95_oem::oem_to_ansi)
+                            .collect();
                         output.extend_from_slice(&converted);
-                        if output.len() > 32_000 { return None; }
+                        if output.len() > 32_000 {
+                            return None;
+                        }
                         continue;
                     }
                     let value = match byte {
@@ -1082,7 +1207,9 @@ fn format_pe_headline_ascii(text: &mut [u8]) -> Option<()> {
             *byte = b'\'';
         }
     }
-    for byte in text.iter_mut() { *byte = crate::win95_oem::oem_to_ansi(*byte); }
+    for byte in text.iter_mut() {
+        *byte = crate::win95_oem::oem_to_ansi(*byte);
+    }
     let mut inside_word = false;
     for index in 0..processed {
         let byte = text[index];
@@ -1097,7 +1224,9 @@ fn format_pe_headline_ascii(text: &mut [u8]) -> Option<()> {
             inside_word = crate::win95_oem::is_alnum(byte);
         }
     }
-    for byte in text.iter_mut() { *byte = crate::win95_oem::ansi_to_oem(*byte); }
+    for byte in text.iter_mut() {
+        *byte = crate::win95_oem::ansi_to_oem(*byte);
+    }
     Some(())
 }
 
@@ -1160,12 +1289,16 @@ pub(crate) struct PeHeadlineContextState {
 impl PeHeadlineContextState {
     pub(crate) fn from_city(city: &crate::city::City) -> Option<Self> {
         fn ansi(text: &str) -> Option<Vec<u8>> {
-            if !crate::city::win1252::can_encode(text) || text.contains('\0') { return None; }
+            if !crate::city::win1252::can_encode(text) || text.contains('\0') {
+                return None;
+            }
             Some(crate::city::win1252::encode(text, usize::MAX))
         }
         Some(Self {
             city: ansi(&city.name)?,
-            labels: (0..=u8::MAX).map(|index| city.label_at(index).and_then(ansi)).collect(),
+            labels: (0..=u8::MAX)
+                .map(|index| city.label_at(index).and_then(ansi))
+                .collect(),
         })
     }
 
@@ -1309,61 +1442,109 @@ mod tests {
 
     #[test]
     fn archive_opens_data_before_index_and_reports_the_failed_open() {
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("citygame-pe-archive-{}-{nonce}", std::process::id()));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "citygame-pe-archive-{}-{nonce}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let data = root.join("DATA_USA.DAT");
         let index = root.join("DATA_USA.IDX");
-        let error = match PeNewspaperData::load(&data, &index) { Err(e) => e, Ok(_) => panic!("missing files loaded") };
-        assert_eq!(error.downcast_ref::<PeArchiveOpenError>().unwrap().path, data);
+        let error = match PeNewspaperData::load(&data, &index) {
+            Err(e) => e,
+            Ok(_) => panic!("missing files loaded"),
+        };
+        assert_eq!(
+            error.downcast_ref::<PeArchiveOpenError>().unwrap().path,
+            data
+        );
         std::fs::write(&data, []).unwrap();
-        let error = match PeNewspaperData::load(&data, &index) { Err(e) => e, Ok(_) => panic!("missing index loaded") };
-        assert_eq!(error.downcast_ref::<PeArchiveOpenError>().unwrap().path, index);
+        let error = match PeNewspaperData::load(&data, &index) {
+            Err(e) => e,
+            Ok(_) => panic!("missing index loaded"),
+        };
+        assert_eq!(
+            error.downcast_ref::<PeArchiveOpenError>().unwrap().path,
+            index
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn archive_opens_index_before_attempting_data_read() {
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("citygame-pe-archive-order-{}-{nonce}", std::process::id()));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "citygame-pe-archive-order-{}-{nonce}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let index = root.join("missing.idx");
         // A directory can be opened on Unix, but cannot be read as a file.
-        let error = match PeNewspaperData::load(&root, &index) { Err(e) => e, Ok(_) => panic!("directory loaded") };
-        assert_eq!(error.downcast_ref::<PeArchiveOpenError>().unwrap().path, index);
+        let error = match PeNewspaperData::load(&root, &index) {
+            Err(e) => e,
+            Ok(_) => panic!("directory loaded"),
+        };
+        assert_eq!(
+            error.downcast_ref::<PeArchiveOpenError>().unwrap().path,
+            index
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn pe_paper_header_uses_sunday_and_paper_price_wording() {
-        assert_eq!(pe_newspaper_header(1900, 0, 2), Some(("Sunday 4, January 1900".into(), 387)));
+        assert_eq!(
+            pe_newspaper_header(1900, 0, 2),
+            Some(("Sunday 4, January 1900".into(), 387))
+        );
         assert_eq!(pe_newspaper_price(387), Some("Price 1¢"));
-        assert_eq!(pe_newspaper_header(1950, 300, 0), Some(("Sunday 6, January 1951".into(), 378)));
+        assert_eq!(
+            pe_newspaper_header(1950, 300, 0),
+            Some(("Sunday 6, January 1951".into(), 378))
+        );
         assert_eq!(pe_newspaper_header(1900, 0, 3), None);
     }
 
     #[test]
     fn pe_paper_tail_uses_saved_headings_and_weather_bytes() {
-        assert_eq!(pe_newspaper_tail_labels(3, 4), Some(("Weather with Merle", "Survey")));
+        assert_eq!(
+            pe_newspaper_tail_labels(3, 4),
+            Some(("Weather with Merle", "Survey"))
+        );
         assert_eq!(pe_newspaper_tail_labels(6, 0), None);
         assert_eq!(pe_newspaper_weather_line(150, 10, 15), "50°F 10mph 15mm");
         assert_eq!(pe_newspaper_weather_line(0, 0, 0), "-100°F 0mph 0mm");
-        assert_eq!(pe_newspaper_opinion_lines(1, 65, [0; 7], [0; 7]), ["Mayor Rated 65%"]);
-        assert_eq!(pe_newspaper_opinion_lines(4, 0, [30, 20, 0, 9, 0, 0, 0], [2, 0, 1, 3, 4, 5, 6]),
-            ["Crime 30%", "Traffic 20%"]);
+        assert_eq!(
+            pe_newspaper_opinion_lines(1, 65, [0; 7], [0; 7]),
+            ["Mayor Rated 65%"]
+        );
+        assert_eq!(
+            pe_newspaper_opinion_lines(4, 0, [30, 20, 0, 9, 0, 0, 0], [2, 0, 1, 3, 4, 5, 6]),
+            ["Crime 30%", "Traffic 20%"]
+        );
     }
 
     #[test]
     #[ignore = "requires private original-executable weather corpus"]
     fn pe_paper_weather_line_matches_native_x86() {
         let file = std::env::var_os("CITYGAME_PE_NEWSPAPER_WEATHER").unwrap();
-        let cases: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
         assert_eq!(cases.len(), 54);
         for case in cases {
             let byte = |key: &str| case[key].as_u64().unwrap() as u8;
-            assert_eq!(pe_newspaper_weather_line(byte("heat"), byte("wind"), byte("humidity")),
-                case["text_latin1"].as_str().unwrap(), "{case}");
+            assert_eq!(
+                pe_newspaper_weather_line(byte("heat"), byte("wind"), byte("humidity")),
+                case["text_latin1"].as_str().unwrap(),
+                "{case}"
+            );
         }
     }
 
@@ -1371,16 +1552,41 @@ mod tests {
     #[ignore = "requires private original-executable header corpus"]
     fn pe_paper_header_matches_native_x86() {
         let file = std::env::var_os("CITYGAME_PE_NEWSPAPER_HEADERS").unwrap();
-        let cases: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
-        let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        let months = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
         assert_eq!(cases.len(), 216);
         for case in cases {
             let number = |key: &str| case[key].as_u64().unwrap();
             let founded = number("founded");
             let year = founded + number("elapsed_years");
-            let expected = format!("Sunday {}, {} {year}", number("day"), months[number("month") as usize]);
-            assert_eq!(pe_newspaper_header(founded as u16, number("age") as u32, number("wording") as u8),
-                Some((expected, number("price_resource") as u32)), "{case}");
+            let expected = format!(
+                "Sunday {}, {} {year}",
+                number("day"),
+                months[number("month") as usize]
+            );
+            assert_eq!(
+                pe_newspaper_header(
+                    founded as u16,
+                    number("age") as u32,
+                    number("wording") as u8
+                ),
+                Some((expected, number("price_resource") as u32)),
+                "{case}"
+            );
         }
     }
 
@@ -2345,14 +2551,23 @@ mod tests {
     fn pe_newspaper_all_layout_rectangles_match_native_x86() {
         let cases: serde_json::Value = serde_json::from_slice(
             &std::fs::read(std::env::var_os("CITYGAME_PE_NEWSPAPER_ALL_RECTS").unwrap()).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         for (style, rows) in cases.as_array().unwrap().iter().enumerate() {
             assert_eq!(rows.as_array().unwrap().len(), 11);
             for (position, row) in rows.as_array().unwrap().iter().enumerate() {
-                let values: Vec<i32> = row.as_array().unwrap().iter().map(|v| v.as_i64().unwrap() as i32).collect();
+                let values: Vec<i32> = row
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_i64().unwrap() as i32)
+                    .collect();
                 let actual = pe_newspaper_layout_rect(style as u8, position as u16).unwrap();
-                assert_eq!([actual.left, actual.top, actual.right, actual.bottom], values.as_slice(),
-                    "style={style} position={position}");
+                assert_eq!(
+                    [actual.left, actual.top, actual.right, actual.bottom],
+                    values.as_slice(),
+                    "style={style} position={position}"
+                );
             }
         }
         assert_eq!(cases.as_array().unwrap().len(), 3);
@@ -2526,31 +2741,77 @@ mod tests {
     #[ignore = "requires private native lossy-conversion corpus and original DATA"]
     fn pe_lossy_substitutions_match_native_x86() {
         let dir = std::path::PathBuf::from(std::env::var_os("CITYGAME_WIN95_DATA_DIR").unwrap());
-        let archive = PeNewspaperData::load(&dir.join("data_usa.dat"), &dir.join("data_usa.idx")).unwrap();
-        let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(std::env::var_os("CITYGAME_PE_LOSSY_CORPUS").unwrap()).unwrap()).unwrap();
-        let bytes = |hex: &str| -> Vec<u8> { hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect() };
+        let archive =
+            PeNewspaperData::load(&dir.join("data_usa.dat"), &dir.join("data_usa.idx")).unwrap();
+        let cases: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(std::env::var_os("CITYGAME_PE_LOSSY_CORPUS").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let bytes = |hex: &str| -> Vec<u8> {
+            hex.as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        };
         for case in cases.as_array().unwrap() {
             let before = case["before"].as_array().unwrap();
             let mut labels = vec![None; 256];
             for (slot, value) in [0, 251, 252, 253, 254, 255].into_iter().zip(&before[1..]) {
                 labels[slot] = Some(bytes(value.as_str().unwrap()));
             }
-            let state = std::cell::RefCell::new(PeHeadlineContextState { city: bytes(before[0].as_str().unwrap()), labels });
-            let context = PeHeadlineContext { city_name_oem: &[], labels_oem: &[], mutable_state: Some(&state) };
+            let state = std::cell::RefCell::new(PeHeadlineContextState {
+                city: bytes(before[0].as_str().unwrap()),
+                labels,
+            });
+            let context = PeHeadlineContext {
+                city_name_oem: &[],
+                labels_oem: &[],
+                mutable_state: Some(&state),
+            };
             let mut crt = Win95CrtRand::new(123);
-            let mut story = PeHeadlineState { param: 0, choice_b: 255, choice_a: 255, number: 255 };
+            let mut story = PeHeadlineState {
+                param: 0,
+                choice_b: 255,
+                choice_a: 255,
+                number: 255,
+            };
             let id = case["id"].as_u64().unwrap() as usize;
-            let text = archive.expand_headline_with_cache(id, &mut crt, &mut story, Some(&context), &mut PeTextChoiceCache::default()).unwrap();
+            let text = archive
+                .expand_headline_with_cache(
+                    id,
+                    &mut crt,
+                    &mut story,
+                    Some(&context),
+                    &mut PeTextChoiceCache::default(),
+                )
+                .unwrap();
             assert_eq!(text, bytes(case["output"].as_str().unwrap()), "output {id}");
-            assert_eq!(u64::from(crt.seed()), case["crt"].as_u64().unwrap(), "crt {id}");
+            assert_eq!(
+                u64::from(crt.seed()),
+                case["crt"].as_u64().unwrap(),
+                "crt {id}"
+            );
             let after = case["after"].as_array().unwrap();
             let state = state.into_inner();
             assert_eq!(state.city, bytes(after[0].as_str().unwrap()), "city {id}");
             for (slot, value) in [0, 251, 252, 253, 254, 255].into_iter().zip(&after[1..]) {
-                assert_eq!(state.labels[slot].as_ref().unwrap(), &bytes(value.as_str().unwrap()), "label {slot} in {id}");
+                assert_eq!(
+                    state.labels[slot].as_ref().unwrap(),
+                    &bytes(value.as_str().unwrap()),
+                    "label {slot} in {id}"
+                );
             }
-            let row: Vec<u8> = case["row"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u8).collect();
-            assert_eq!([story.param, story.choice_b, story.choice_a, story.number].as_slice(), row, "row {id}");
+            let row: Vec<u8> = case["row"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_u64().unwrap() as u8)
+                .collect();
+            assert_eq!(
+                [story.param, story.choice_b, story.choice_a, story.number].as_slice(),
+                row,
+                "row {id}"
+            );
         }
         assert_eq!(cases.as_array().unwrap().len(), 261);
     }
@@ -2575,28 +2836,63 @@ mod tests {
     #[ignore = "requires private OEM-aware native corpus and original DATA"]
     fn pe_oem_story_callers_match_native_x86() {
         let dir = std::path::PathBuf::from(std::env::var_os("CITYGAME_WIN95_DATA_DIR").unwrap());
-        let archive = PeNewspaperData::load(&dir.join("data_usa.dat"), &dir.join("data_usa.idx")).unwrap();
-        let cases: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(
-            std::env::var_os("CITYGAME_PE_OEM_CALLERS").unwrap()).unwrap()).unwrap();
+        let archive =
+            PeNewspaperData::load(&dir.join("data_usa.dat"), &dir.join("data_usa.idx")).unwrap();
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(std::env::var_os("CITYGAME_PE_OEM_CALLERS").unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(cases.len(), 414);
         for case in cases {
             let ctx = &case["context"];
             let name = crate::win95_oem::encode_lossless(ctx["city"].as_str().unwrap()).unwrap();
             let mut owned = vec![None; 256];
-            for (slot, value) in [0, 251, 252, 253, 254, 255].into_iter().zip(ctx["labels"].as_array().unwrap()) {
-                owned[slot] = Some(crate::win95_oem::encode_lossless(value.as_str().unwrap()).unwrap());
+            for (slot, value) in [0, 251, 252, 253, 254, 255]
+                .into_iter()
+                .zip(ctx["labels"].as_array().unwrap())
+            {
+                owned[slot] =
+                    Some(crate::win95_oem::encode_lossless(value.as_str().unwrap()).unwrap());
             }
             let labels: Vec<_> = owned.iter().map(|value| value.as_deref()).collect();
-            let context = PeHeadlineContext { city_name_oem: &name, labels_oem: &labels, mutable_state: None };
-            let mut story = PeHeadlineState { param: 0, choice_b: 255, choice_a: 255, number: 255 };
+            let context = PeHeadlineContext {
+                city_name_oem: &name,
+                labels_oem: &labels,
+                mutable_state: None,
+            };
+            let mut story = PeHeadlineState {
+                param: 0,
+                choice_b: 255,
+                choice_a: 255,
+                number: 255,
+            };
             let mut crt = Win95CrtRand::new(0);
-            let seed = PeNewspaperSeed { days: 0, startup_tick: 123, paper: 0, slot: 0 };
+            let seed = PeNewspaperSeed {
+                days: 0,
+                startup_tick: 123,
+                paper: 0,
+                slot: 0,
+            };
             let id = case["story"].as_u64().unwrap() as usize;
-            let (headline, body) = archive.render_seeded_story_ascii(id, seed, &mut crt, &mut story, Some(&context)).unwrap();
+            let (headline, body) = archive
+                .render_seeded_story_ascii(id, seed, &mut crt, &mut story, Some(&context))
+                .unwrap();
             let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-            assert_eq!(hex(&headline), case["debug_output_hex"].as_str().unwrap(), "headline story {id} context {ctx}");
-            assert_eq!(hex(&body), case["body"]["debug_output_hex"].as_str().unwrap(), "body story {id} context {ctx}");
-            assert_eq!(crt.seed() as u64, case["body"]["final_crt"].as_u64().unwrap(), "story {id}");
+            assert_eq!(
+                hex(&headline),
+                case["debug_output_hex"].as_str().unwrap(),
+                "headline story {id} context {ctx}"
+            );
+            assert_eq!(
+                hex(&body),
+                case["body"]["debug_output_hex"].as_str().unwrap(),
+                "body story {id} context {ctx}"
+            );
+            assert_eq!(
+                crt.seed() as u64,
+                case["body"]["final_crt"].as_u64().unwrap(),
+                "story {id}"
+            );
         }
     }
 
@@ -3089,7 +3385,7 @@ mod tests {
             let context = PeHeadlineContext {
                 city_name_oem: source["city"].as_str().unwrap().as_bytes(),
                 labels_oem: &labels,
-            mutable_state: None,
+                mutable_state: None,
             };
             let mut crt = Win95CrtRand::new(case["seed"].as_u64().unwrap() as u32);
             let mut story = PeHeadlineState {

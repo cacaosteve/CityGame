@@ -22,9 +22,13 @@ fn tile_screen(state: &ViewerState, tile: (usize, usize)) -> Vec2 {
     for radius in 0_i32..=48 {
         for dy in -radius..=radius {
             for dx in -radius..=radius {
-                if dx.abs().max(dy.abs()) != radius { continue; }
+                if dx.abs().max(dy.abs()) != radius {
+                    continue;
+                }
                 let screen = anchor + Vec2::new(dx as f32, dy as f32);
-                if state.tile_at_screen(screen, WINDOW, SCALE) == Some(tile) { return screen; }
+                if state.tile_at_screen(screen, WINDOW, SCALE) == Some(tile) {
+                    return screen;
+                }
             }
         }
     }

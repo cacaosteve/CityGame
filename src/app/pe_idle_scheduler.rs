@@ -216,10 +216,11 @@ impl ViewerState {
         if !self.engine_fidelity.uses_win95() {
             return;
         }
-        let admitted = self.pe_idle_scheduler.external_modal || matches!(
-            self.city_info_dialog,
-            Some(CityInfoDialog::Budget | CityInfoDialog::Newspaper(_))
-        );
+        let admitted = self.pe_idle_scheduler.external_modal
+            || matches!(
+                self.city_info_dialog,
+                Some(CityInfoDialog::Budget | CityInfoDialog::Newspaper(_))
+            );
         let mut raw = native_speed(self.traffic.speed());
         match (self.pe_idle_scheduler.modal.active(), admitted) {
             (false, true) => {
@@ -245,7 +246,8 @@ impl ViewerState {
     pub(super) fn advance_pe_common_dialog_timers(&mut self, elapsed: Duration) {
         if self.engine_fidelity.uses_win95() {
             let mode = self.pe_idle_city_mode();
-            self.pe_idle_scheduler.advance_timers(elapsed, self.traffic.speed(), mode);
+            self.pe_idle_scheduler
+                .advance_timers(elapsed, self.traffic.speed(), mode);
         }
     }
 
@@ -282,7 +284,11 @@ impl ViewerState {
                 })
             } else {
                 at.month() == 1
-                    && self.city.misc_u32_at(super::MISC_YEAR_END_OFFSET).unwrap_or(0) != 0
+                    && self
+                        .city
+                        .misc_u32_at(super::MISC_YEAR_END_OFFSET)
+                        .unwrap_or(0)
+                        != 0
             },
         };
         // Native 0x413520 publishes the new age/month/year before phase 0;
@@ -503,7 +509,12 @@ mod tests {
         state.set_pe_external_modal(true);
         assert!(state.pe_modal_active());
         assert_eq!(state.traffic.speed(), GameSpeed::Paused);
-        assert_eq!(state.advance_frame_simulation(Duration::from_millis(600)).days, 0);
+        assert_eq!(
+            state
+                .advance_frame_simulation(Duration::from_millis(600))
+                .days,
+            0
+        );
         assert_eq!(state.pe_idle_scheduler.cycle, 3);
         state.set_pe_external_modal(false);
         assert!(!state.pe_modal_active());

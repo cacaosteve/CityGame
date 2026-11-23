@@ -14,7 +14,9 @@ impl std::fmt::Display for CityOpenIoError {
 }
 
 impl std::error::Error for CityOpenIoError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
 }
 
 pub(super) fn city_name_from_chunks(
@@ -53,10 +55,12 @@ pub(super) fn city_name_from_chunks(
 impl City {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = fs::File::open(&path).map_err(CityOpenIoError)
+        let mut file = fs::File::open(&path)
+            .map_err(CityOpenIoError)
             .with_context(|| format!("reading city {}", path.display()))?;
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).with_context(|| format!("reading city {}", path.display()))?;
+        file.read_to_end(&mut bytes)
+            .with_context(|| format!("reading city {}", path.display()))?;
         let kind = detect_city_kind(&path, &bytes)?;
         let chunks = parse_scdh_chunks(&bytes)?;
         let mac_budget_book = if kind == CityFileKind::MacCity {

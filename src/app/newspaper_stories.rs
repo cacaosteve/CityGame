@@ -110,9 +110,7 @@ pub(super) fn pe_fund_education_headline(edition: NewspaperEdition) -> String {
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
         | NewspaperEdition::MacDisaster
-        | NewspaperEdition::MacStoryWindow => {
-            "Schools need funding".to_string()
-        }
+        | NewspaperEdition::MacStoryWindow => "Schools need funding".to_string(),
     }
 }
 
@@ -130,9 +128,7 @@ pub(super) fn pe_prison_overcrowded_headline(edition: NewspaperEdition) -> Strin
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
         | NewspaperEdition::MacDisaster
-        | NewspaperEdition::MacStoryWindow => {
-            "Prisons overcrowded".to_string()
-        }
+        | NewspaperEdition::MacStoryWindow => "Prisons overcrowded".to_string(),
     }
 }
 
@@ -148,9 +144,7 @@ pub(super) fn pe_bridge_collapse_headline(edition: NewspaperEdition) -> String {
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
         | NewspaperEdition::MacDisaster
-        | NewspaperEdition::MacStoryWindow => {
-            "Bridge collapse disrupts traffic".to_string()
-        }
+        | NewspaperEdition::MacStoryWindow => "Bridge collapse disrupts traffic".to_string(),
     }
 }
 
@@ -207,9 +201,7 @@ pub(super) fn pe_health_amenities_newspaper_headline(
         | NewspaperEdition::Founding
         | NewspaperEdition::MacStandard
         | NewspaperEdition::MacDisaster
-        | NewspaperEdition::MacStoryWindow => {
-            label.to_string()
-        }
+        | NewspaperEdition::MacStoryWindow => label.to_string(),
     }
 }
 

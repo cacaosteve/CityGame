@@ -98,8 +98,11 @@ fn mac_native_leaf_cgms_differential_probe() {
                 }
             }
             if std::env::var_os("SC2K_MAC_CGMS_CALENDAR_XMIC_DIR").is_some() {
-                std::fs::write(phase_dir.join("live_xmic.bin"), encode_probe_xmic(&state.city))
-                    .expect("write Rust calendar-month live XMIC");
+                std::fs::write(
+                    phase_dir.join("live_xmic.bin"),
+                    encode_probe_xmic(&state.city),
+                )
+                .expect("write Rust calendar-month live XMIC");
             }
             println!(
                 "RUST_CALENDAR_MONTH {phase} date={}-{:02}-{:02} quickdraw={} game_lcg={}",
@@ -252,8 +255,8 @@ fn mac_native_leaf_cgms_differential_probe() {
         state.mac_process_rng = MacToolboxRng::new(quickdraw.seed());
         state.mac_game_rng = MacGameLcgRng::new(game_rng.state());
         state.sim_calendar_day21_demand_and_graphs();
-        let snapshot = cgms_v4_from_city_for_test(&state.city)
-            .expect("encode Rust post-phase-21 CGMS v4");
+        let snapshot =
+            cgms_v4_from_city_for_test(&state.city).expect("encode Rust post-phase-21 CGMS v4");
         std::fs::write(path, snapshot).expect("write Rust phase-21 CGMS v4");
         println!(
             "RUST_PHASE21_DONE quickdraw={} population_balances={:?} class_two={} demands={:?} industry_populations={:?} cohort_summary={:?} cohort_lanes={:?}",
@@ -262,7 +265,10 @@ fn mac_native_leaf_cgms_differential_probe() {
             state.city.mac_rci_counter(7),
             state.city.misc_i32_values(0x0718, 3),
             (0..11)
-                .map(|row| state.city.mac_state_misc_u32_at(0x016c + row * 12 + 8).unwrap_or(0))
+                .map(|row| state
+                    .city
+                    .mac_state_misc_u32_at(0x016c + row * 12 + 8)
+                    .unwrap_or(0))
                 .collect::<Vec<_>>(),
             state.city.misc_u32_values(0x0044, 3),
             state.city.misc_u32_values(0x007c, 60),

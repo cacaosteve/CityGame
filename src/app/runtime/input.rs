@@ -2,14 +2,14 @@
 
 use super::super::CityInfoDialog;
 use super::super::dialog_content::CityInfoDialogAction;
-use crate::app::dialogs::{
-    apply_city_info_dialog_action, city_info_dialog_rect_for_engine,
-    mac_budget_review_action_for_release,
-};
 use super::super::map_interaction::{
     handle_map_left_pointer_down, release_map_tools, update_map_paint_pointer_motion,
 };
 use super::*;
+use crate::app::dialogs::{
+    apply_city_info_dialog_action, city_info_dialog_rect_for_engine,
+    mac_budget_review_action_for_release,
+};
 
 pub(super) struct InputState {
     pub(super) running: bool,
@@ -57,7 +57,11 @@ impl InputState {
     }
 
     pub(super) fn holds_pe_idle_for_common_dialog(&self) -> bool {
-        self.close_save_pending.is_some() || matches!(self.win95_file_dialog_pending, Some(Win95FileDialog::City | Win95FileDialog::SaveAs))
+        self.close_save_pending.is_some()
+            || matches!(
+                self.win95_file_dialog_pending,
+                Some(Win95FileDialog::City | Win95FileDialog::SaveAs)
+            )
     }
 
     pub(super) fn mac_budget_review_pointer_is_down(&self) -> bool {
@@ -104,8 +108,23 @@ impl InputState {
 }
 
 impl InputState {
-    fn begin_info_preview(&mut self, state: &mut ViewerState, action: UiAction, screen: Vec2, tools_origin: Vec2, size: Vec2) {
-        if matches!(action, UiAction::OpenCityMap | UiAction::OpenCityGraphs | UiAction::OpenCityPopulation | UiAction::OpenCityIndustry | UiAction::OpenCityNeighbors) && state.city_info_dialog.is_some() {
+    fn begin_info_preview(
+        &mut self,
+        state: &mut ViewerState,
+        action: UiAction,
+        screen: Vec2,
+        tools_origin: Vec2,
+        size: Vec2,
+    ) {
+        if matches!(
+            action,
+            UiAction::OpenCityMap
+                | UiAction::OpenCityGraphs
+                | UiAction::OpenCityPopulation
+                | UiAction::OpenCityIndustry
+                | UiAction::OpenCityNeighbors
+        ) && state.city_info_dialog.is_some()
+        {
             let origin = Vec2::new(tools_origin.x + size.x + 8.0, screen.y - 12.0);
             state.info_panel_origin = Some(origin);
             state.info_panel_scale = 0.5;
@@ -116,18 +135,31 @@ impl InputState {
     fn move_info_preview(&mut self, state: &mut ViewerState, screen: Vec2) -> bool {
         if let Some((start, origin, toolbar, size, ref mut detached)) = self.info_preview {
             let delta = screen - start;
-            let outside = screen.x < toolbar.x || screen.y < toolbar.y || screen.x >= toolbar.x + size.x || screen.y >= toolbar.y + size.y;
-            if outside && delta.length() > 8.0 { *detached = true; }
-            if *detached { state.info_panel_origin = Some(origin + delta); }
+            let outside = screen.x < toolbar.x
+                || screen.y < toolbar.y
+                || screen.x >= toolbar.x + size.x
+                || screen.y >= toolbar.y + size.y;
+            if outside && delta.length() > 8.0 {
+                *detached = true;
+            }
+            if *detached {
+                state.info_panel_origin = Some(origin + delta);
+            }
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     fn end_info_preview(&mut self, state: &mut ViewerState) -> bool {
         if let Some((_, _, _, _, detached)) = self.info_preview.take() {
-            if !detached { state.close_city_info_dialog(); }
+            if !detached {
+                state.close_city_info_dialog();
+            }
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 }
 
@@ -144,17 +176,35 @@ mod preview_tests {
         let mut input = InputState::new();
         let start = Vec2::new(100.0, 200.0);
         state.city_info_dialog = Some(CityInfoDialog::Graphs);
-        input.begin_info_preview(&mut state, UiAction::OpenCityGraphs, start, Vec2::ZERO, Vec2::new(140.0, 624.0));
+        input.begin_info_preview(
+            &mut state,
+            UiAction::OpenCityGraphs,
+            start,
+            Vec2::ZERO,
+            Vec2::new(140.0, 624.0),
+        );
         assert_eq!(state.info_panel_origin, Some(Vec2::new(148.0, 188.0)));
         assert!(input.end_info_preview(&mut state));
         assert_eq!(state.city_info_dialog, None);
         state.city_info_dialog = Some(CityInfoDialog::Graphs);
-        input.begin_info_preview(&mut state, UiAction::OpenCityGraphs, start, Vec2::ZERO, Vec2::new(140.0, 624.0));
+        input.begin_info_preview(
+            &mut state,
+            UiAction::OpenCityGraphs,
+            start,
+            Vec2::ZERO,
+            Vec2::new(140.0, 624.0),
+        );
         assert!(input.move_info_preview(&mut state, start + Vec2::new(70.0, 20.0)));
         assert!(input.end_info_preview(&mut state));
         assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Graphs));
         state.city_info_dialog = Some(CityInfoDialog::Budget);
-        input.begin_info_preview(&mut state, UiAction::OpenBudget, start, Vec2::ZERO, Vec2::new(140.0, 624.0));
+        input.begin_info_preview(
+            &mut state,
+            UiAction::OpenBudget,
+            start,
+            Vec2::ZERO,
+            Vec2::new(140.0, 624.0),
+        );
         assert!(!input.end_info_preview(&mut state));
         assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
         state.city_info_dialog = None;
@@ -167,8 +217,7 @@ mod preview_tests {
 
     #[test]
     fn mac_budget_review_pointer_dispatch_activates_on_matching_release() {
-        let city =
-            City::new_blank("/tmp/mac-budget-pointer-dispatch.sc2", "Budget").unwrap();
+        let city = City::new_blank("/tmp/mac-budget-pointer-dispatch.sc2", "Budget").unwrap();
         let mut state = test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.city_info_dialog = Some(CityInfoDialog::Budget);
@@ -223,9 +272,10 @@ mod preview_tests {
     fn palette_music_service_uses_the_mac_game_stream_in_city_and_editor() {
         let city = City::new_blank("/tmp/palette-music-service.sc2", "Palette music").unwrap();
         let mut state = test_state(city);
-        let profile = crate::asset_profile::AssetProfile::load_from(
-            std::env::temp_dir().join(format!("citygame-palette-music-{}.json", std::process::id())),
-        ).unwrap();
+        let profile = crate::asset_profile::AssetProfile::load_from(std::env::temp_dir().join(
+            format!("citygame-palette-music-{}.json", std::process::id()),
+        ))
+        .unwrap();
         let mut music = None;
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.music_enabled = true;
@@ -250,7 +300,9 @@ mod preview_tests {
 /// Feed one SDL input to the native-style fiscal notice. Returns true for
 /// input events consumed by the notice, including events it does not dismiss.
 pub(super) fn handle_mac_fiscal_notice_input(state: &mut ViewerState, event: &Event) -> bool {
-    let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() else { return false; };
+    let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() else {
+        return false;
+    };
     match event {
         Event::KeyDown { repeat: false, .. } => notice.dismissed = true,
         Event::MouseButtonDown { .. } | Event::FingerDown { .. } => {
@@ -258,8 +310,12 @@ pub(super) fn handle_mac_fiscal_notice_input(state: &mut ViewerState, event: &Ev
             notice.button_down = true;
         }
         Event::MouseButtonUp { .. } | Event::FingerUp { .. } => notice.button_down = false,
-        Event::KeyDown { .. } | Event::MouseMotion { .. } | Event::MouseWheel { .. }
-        | Event::FingerMotion { .. } | Event::KeyUp { .. } | Event::TextInput { .. } => {}
+        Event::KeyDown { .. }
+        | Event::MouseMotion { .. }
+        | Event::MouseWheel { .. }
+        | Event::FingerMotion { .. }
+        | Event::KeyUp { .. }
+        | Event::TextInput { .. } => {}
         _ => return false,
     }
     true
@@ -267,13 +323,11 @@ pub(super) fn handle_mac_fiscal_notice_input(state: &mut ViewerState, event: &Ev
 
 /// Keep physical touch bookkeeping current while the modal notice consumes
 /// gestures, including fingers that were already down when it opened.
-fn handle_mac_fiscal_notice_touch(
-    state: &mut ViewerState,
-    input: &mut InputState,
-    event: &Event,
-) {
+fn handle_mac_fiscal_notice_touch(state: &mut ViewerState, input: &mut InputState, event: &Event) {
     match event {
-        Event::FingerDown { finger_id, x, y, .. } => {
+        Event::FingerDown {
+            finger_id, x, y, ..
+        } => {
             input.touch.on_down(*finger_id, Vec2::new(*x, *y));
         }
         Event::FingerUp { finger_id, .. } => {
@@ -316,8 +370,10 @@ pub(super) fn consume_mac_fiscal_notice_event(
         _ => {}
     }
     handle_mac_fiscal_notice_touch(state, input, event);
-    if matches!(event, Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. })
-        && let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut()
+    if matches!(
+        event,
+        Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
+    ) && let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut()
     {
         notice.button_down = input.fiscal_notice_mouse_down || input.touch.finger_count() != 0;
     }
@@ -326,8 +382,13 @@ pub(super) fn consume_mac_fiscal_notice_event(
 
 /// Native menu callbacks bypass SDL input, but the Mac notice consumes the
 /// click or key before the main event dispatcher can execute the command.
-pub(super) fn handle_mac_fiscal_notice_command(state: &mut ViewerState, command: &AppCommand) -> bool {
-    let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() else { return false; };
+pub(super) fn handle_mac_fiscal_notice_command(
+    state: &mut ViewerState,
+    command: &AppCommand,
+) -> bool {
+    let Some(notice) = state.mac_loop_scheduler.fiscal_notice.as_mut() else {
+        return false;
+    };
     let _ = command;
     notice.dismissed = true;
     true
@@ -337,12 +398,23 @@ pub(super) fn handle_mac_fiscal_notice_command(state: &mut ViewerState, command:
 /// after the notice rather than interpreting them as a new click or key.
 pub(super) fn mac_fiscal_notice_defers_command(command: &AppCommand) -> bool {
     #[cfg(target_os = "ios")]
-    if matches!(command, AppCommand::DocumentSaved { .. }) { return true; }
-    matches!(command, AppCommand::OpenPath(_) | AppCommand::OpenConfirmedCityPath(_) | AppCommand::OpenTitlePath(_)
-        | AppCommand::OpenTitleDialogPath(_) | AppCommand::OpenScenarioPath(_)
-        | AppCommand::OpenTitleScenarioPath(_) | AppCommand::SaveToPath(_)
-        | AppCommand::LoadTileSet(_) | AppCommand::ImportOriginalAssets(_)
-        | AppCommand::SetOriginalAssets(_) | AppCommand::SetReplacementAssets(_))
+    if matches!(command, AppCommand::DocumentSaved { .. }) {
+        return true;
+    }
+    matches!(
+        command,
+        AppCommand::OpenPath(_)
+            | AppCommand::OpenConfirmedCityPath(_)
+            | AppCommand::OpenTitlePath(_)
+            | AppCommand::OpenTitleDialogPath(_)
+            | AppCommand::OpenScenarioPath(_)
+            | AppCommand::OpenTitleScenarioPath(_)
+            | AppCommand::SaveToPath(_)
+            | AppCommand::LoadTileSet(_)
+            | AppCommand::ImportOriginalAssets(_)
+            | AppCommand::SetOriginalAssets(_)
+            | AppCommand::SetReplacementAssets(_)
+    )
 }
 
 pub(super) fn handle_event(
@@ -357,10 +429,16 @@ pub(super) fn handle_event(
     if input.blocking_file_dialog()
         && matches!(
             &event,
-            Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
-                | Event::MouseMotion { .. } | Event::MouseWheel { .. }
-                | Event::FingerDown { .. } | Event::FingerMotion { .. } | Event::FingerUp { .. }
-                | Event::KeyDown { .. } | Event::KeyUp { .. } | Event::TextInput { .. }
+            Event::MouseButtonDown { .. }
+                | Event::MouseButtonUp { .. }
+                | Event::MouseMotion { .. }
+                | Event::MouseWheel { .. }
+                | Event::FingerDown { .. }
+                | Event::FingerMotion { .. }
+                | Event::FingerUp { .. }
+                | Event::KeyDown { .. }
+                | Event::KeyUp { .. }
+                | Event::TextInput { .. }
         )
     {
         return Ok(());
@@ -394,7 +472,8 @@ pub(super) fn handle_event(
         match event {
             Event::Quit { .. } | Event::AppTerminating { .. } => input.running = false,
             event @ (Event::AppDidEnterBackground { .. }
-            | Event::AppWillEnterForeground { .. } | Event::Window { .. }) => {
+            | Event::AppWillEnterForeground { .. }
+            | Event::Window { .. }) => {
                 handle_window_event(event, &mut windows, state, input, sound, city_music);
             }
             _ => {}
@@ -408,7 +487,12 @@ pub(super) fn handle_event(
         | Event::MouseMotion { which, .. }
         | Event::MouseWheel { which, .. }
             if touch_input::is_touch_synthesized_mouse(which) => {}
-        Event::Quit { .. } if cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95() => push_command(AppCommand::Quit),
+        Event::Quit { .. }
+            if cfg!(not(any(target_os = "android", target_os = "ios")))
+                && state.engine_fidelity.uses_win95() =>
+        {
+            push_command(AppCommand::Quit)
+        }
         Event::Quit { .. } | Event::AppTerminating { .. } => input.running = false,
         event @ (Event::AppDidEnterBackground { .. }
         | Event::AppWillEnterForeground { .. }
@@ -422,11 +506,27 @@ pub(super) fn handle_event(
         | Event::MouseButtonUp { .. }
         | Event::MouseMotion { .. }
         | Event::MouseWheel { .. }) => {
-            handle_mouse_event(event, &mut windows, state, input, sound, city_music, asset_profile)?;
+            handle_mouse_event(
+                event,
+                &mut windows,
+                state,
+                input,
+                sound,
+                city_music,
+                asset_profile,
+            )?;
         }
         event
         @ (Event::FingerDown { .. } | Event::FingerMotion { .. } | Event::FingerUp { .. }) => {
-            handle_touch_event(event, &windows, state, input, sound, city_music, asset_profile);
+            handle_touch_event(
+                event,
+                &windows,
+                state,
+                input,
+                sound,
+                city_music,
+                asset_profile,
+            );
         }
         _ => {}
     }
@@ -524,7 +624,9 @@ fn handle_window_event(
             win_event: WindowEvent::CloseRequested,
             ..
         } if window_id == window.id() => {
-            if cfg!(not(any(target_os = "android", target_os = "ios"))) && state.engine_fidelity.uses_win95() {
+            if cfg!(not(any(target_os = "android", target_os = "ios")))
+                && state.engine_fidelity.uses_win95()
+            {
                 push_command(AppCommand::Quit);
             } else {
                 input.running = false;
@@ -679,19 +781,37 @@ fn handle_keyboard_event(
     }
     if let Some(setup) = state.win95_new_city_setup.as_mut() {
         match event {
-            Event::KeyDown { keycode: Some(Keycode::Return | Keycode::KpEnter), .. } => {
+            Event::KeyDown {
+                keycode: Some(Keycode::Return | Keycode::KpEnter),
+                ..
+            } => {
                 state.commit_win95_new_city_setup();
                 push_command(AppCommand::FinishWin95Charter);
                 video.text_input().stop(window);
             }
-            Event::KeyDown { keycode: Some(Keycode::Backspace), .. } => {
-                if setup.selected { setup.name.clear(); setup.selected = false; } else { setup.name.pop(); }
+            Event::KeyDown {
+                keycode: Some(Keycode::Backspace),
+                ..
+            } => {
+                if setup.selected {
+                    setup.name.clear();
+                    setup.selected = false;
+                } else {
+                    setup.name.pop();
+                }
             }
             Event::TextInput { text, .. } => {
-                if setup.selected { setup.name.clear(); setup.selected = false; }
+                if setup.selected {
+                    setup.name.clear();
+                    setup.selected = false;
+                }
                 for ch in text.chars() {
-                    if setup.name.chars().count() >= 31 { break; }
-                    if !ch.is_control() { setup.name.push(ch); }
+                    if setup.name.chars().count() >= 31 {
+                        break;
+                    }
+                    if !ch.is_control() {
+                        setup.name.push(ch);
+                    }
                 }
             }
             _ => {}
@@ -700,10 +820,26 @@ fn handle_keyboard_event(
     }
     if state.pe_newspaper_article.is_some() {
         match event {
-            Event::KeyDown { keycode: Some(Keycode::Escape), .. } => state.pe_newspaper_article = None,
-            Event::KeyDown { keycode: Some(Keycode::Up), .. } => { state.scroll_pe_newspaper_article(-1); }
-            Event::KeyDown { keycode: Some(Keycode::Down), .. } => { state.scroll_pe_newspaper_article(1); }
-            Event::KeyUp { keycode: Some(Keycode::LShift | Keycode::RShift), .. } => input.shift_down = false,
+            Event::KeyDown {
+                keycode: Some(Keycode::Escape),
+                ..
+            } => state.pe_newspaper_article = None,
+            Event::KeyDown {
+                keycode: Some(Keycode::Up),
+                ..
+            } => {
+                state.scroll_pe_newspaper_article(-1);
+            }
+            Event::KeyDown {
+                keycode: Some(Keycode::Down),
+                ..
+            } => {
+                state.scroll_pe_newspaper_article(1);
+            }
+            Event::KeyUp {
+                keycode: Some(Keycode::LShift | Keycode::RShift),
+                ..
+            } => input.shift_down = false,
             _ => {}
         }
         return;
@@ -773,10 +909,18 @@ fn handle_keyboard_event(
             keycode: Some(Keycode::Backspace),
             ..
         } if state.sign_dialog.is_some() => state.backspace_sign_dialog_text(),
-        Event::KeyDown { keycode: Some(Keycode::Left), .. }
-            if state.sign_dialog.is_some() && !state.engine_fidelity.uses_win95() => state.move_sign_dialog_caret(false),
-        Event::KeyDown { keycode: Some(Keycode::Right), .. }
-            if state.sign_dialog.is_some() && !state.engine_fidelity.uses_win95() => state.move_sign_dialog_caret(true),
+        Event::KeyDown {
+            keycode: Some(Keycode::Left),
+            ..
+        } if state.sign_dialog.is_some() && !state.engine_fidelity.uses_win95() => {
+            state.move_sign_dialog_caret(false)
+        }
+        Event::KeyDown {
+            keycode: Some(Keycode::Right),
+            ..
+        } if state.sign_dialog.is_some() && !state.engine_fidelity.uses_win95() => {
+            state.move_sign_dialog_caret(true)
+        }
         Event::KeyDown { .. } if state.sign_dialog.is_some() => {}
         Event::TextInput {
             window_id, text, ..
@@ -789,7 +933,8 @@ fn handle_keyboard_event(
             ..
         } if MenubarUi::is_enabled()
             && state.engine_fidelity.uses_win95()
-            && win95_file_menu_shortcut(key, keymod).is_some() => {
+            && win95_file_menu_shortcut(key, keymod).is_some() =>
+        {
             push_command(
                 win95_file_menu_shortcut(key, keymod).expect("matched Win95 File shortcut"),
             );
@@ -934,10 +1079,16 @@ fn handle_keyboard_event(
         {
             push_command(AppCommand::SaveCity);
         }
-        Event::KeyDown { keycode: Some(Keycode::Up), .. } if state.mac_newspaper.detail_open => {
+        Event::KeyDown {
+            keycode: Some(Keycode::Up),
+            ..
+        } if state.mac_newspaper.detail_open => {
             state.scroll_mac_paper_detail(-1);
         }
-        Event::KeyDown { keycode: Some(Keycode::Down), .. } if state.mac_newspaper.detail_open => {
+        Event::KeyDown {
+            keycode: Some(Keycode::Down),
+            ..
+        } if state.mac_newspaper.detail_open => {
             state.scroll_mac_paper_detail(1);
         }
         Event::KeyDown {
@@ -1021,7 +1172,14 @@ fn handle_mouse_event(
     let palette_logical_size = &mut *windows.palette_logical_size;
     let single_window = windows.single_window;
     if state.win95_new_city_setup.is_some() {
-        if let Event::MouseButtonDown { window_id, mouse_btn: MouseButton::Left, x, y, .. } = event {
+        if let Event::MouseButtonDown {
+            window_id,
+            mouse_btn: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             if window_id == window.id() {
                 let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
                 if state.win95_setup_pointer(screen, renderer.size()) {
@@ -1081,7 +1239,13 @@ fn handle_mouse_event(
                             }
                             _ => {
                                 state.close_tool_menu();
-                                apply_palette_leaf_action(state, action, video, window, renderer.size());
+                                apply_palette_leaf_action(
+                                    state,
+                                    action,
+                                    video,
+                                    window,
+                                    renderer.size(),
+                                );
                                 // The floating Tools palette can hold key focus on
                                 // macOS. Return focus to the map as soon as a leaf
                                 // tool/action is chosen, so the next map press is a
@@ -1090,7 +1254,9 @@ fn handle_mouse_event(
                                 palette_window::sync_palette_stacking(window, palette_window);
                             }
                         }
-                        if state.mode == AppMode::CityView && mac_palette_has_post_action_music(action) {
+                        if state.mode == AppMode::CityView
+                            && mac_palette_has_post_action_music(action)
+                        {
                             service_mac_palette_music(state, city_music, asset_profile);
                         }
                     }
@@ -1226,11 +1392,28 @@ fn handle_mouse_event(
                             }
                             _ => {
                                 state.close_tool_menu();
-                                apply_palette_leaf_action(state, action, video, window, renderer.size());
-                                input.begin_info_preview(state, action, screen, tools_origin, Vec2::new(palette_logical_size.0 as f32 * ps, palette_logical_size.1 as f32 * ps));
+                                apply_palette_leaf_action(
+                                    state,
+                                    action,
+                                    video,
+                                    window,
+                                    renderer.size(),
+                                );
+                                input.begin_info_preview(
+                                    state,
+                                    action,
+                                    screen,
+                                    tools_origin,
+                                    Vec2::new(
+                                        palette_logical_size.0 as f32 * ps,
+                                        palette_logical_size.1 as f32 * ps,
+                                    ),
+                                );
                             }
                         }
-                        if state.mode == AppMode::CityView && mac_palette_has_post_action_music(action) {
+                        if state.mode == AppMode::CityView
+                            && mac_palette_has_post_action_music(action)
+                        {
                             service_mac_palette_music(state, city_music, asset_profile);
                         }
                         if resync {
@@ -1302,7 +1485,11 @@ fn handle_mouse_event(
             if state.city_info_dialog.is_some_and(|dialog| {
                 point_in_float_rect(
                     state.info_panel_input_point(screen, renderer.size()),
-                    city_info_dialog_rect_for_engine(dialog, renderer.size(), state.engine_fidelity),
+                    city_info_dialog_rect_for_engine(
+                        dialog,
+                        renderer.size(),
+                        state.engine_fidelity,
+                    ),
                 )
             }) {
                 input.painting = false;
@@ -1344,8 +1531,7 @@ fn handle_mouse_event(
         } if window_id == window.id() && input.mac_budget_review_pointer_down.is_some() => {
             let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
             input.mouse_pos = screen;
-            if let Some(action) =
-                input.mac_budget_review_pointer_up(state, screen, renderer.size())
+            if let Some(action) = input.mac_budget_review_pointer_up(state, screen, renderer.size())
             {
                 apply_city_info_dialog_action(
                     state,
@@ -1500,13 +1686,22 @@ fn handle_mouse_event(
             input.mouse_pos = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
             if single_window && let Some(slider) = state.edit_map_slider_drag {
                 let ps = pixel_scale(window, renderer.size());
-                let origin = input.docked_palette.tools_origin(MenubarUi::occupied_top(ps), ps);
-                let value = ui::edit_map_slider_drag_value(input.mouse_pos - origin, *palette_logical_size, ps, slider);
+                let origin = input
+                    .docked_palette
+                    .tools_origin(MenubarUi::occupied_top(ps), ps);
+                let value = ui::edit_map_slider_drag_value(
+                    input.mouse_pos - origin,
+                    *palette_logical_size,
+                    ps,
+                    slider,
+                );
                 state.set_edit_map_slider(slider, value);
                 state.update_window_title(video, window.id());
                 return Ok(());
             }
-            if input.move_info_preview(state, input.mouse_pos) { return Ok(()); }
+            if input.move_info_preview(state, input.mouse_pos) {
+                return Ok(());
+            }
             if state.drag_info_panel(input.mouse_pos, renderer.size()) {
                 return Ok(());
             }
@@ -1555,7 +1750,8 @@ fn handle_mouse_event(
         } if y != 0.0 => {
             let signed = match direction {
                 sdl3::mouse::MouseWheelDirection::Flipped => y,
-                sdl3::mouse::MouseWheelDirection::Normal | sdl3::mouse::MouseWheelDirection::Unknown(_) => -y,
+                sdl3::mouse::MouseWheelDirection::Normal
+                | sdl3::mouse::MouseWheelDirection::Unknown(_) => -y,
             };
             if state.scroll_pe_newspaper_article((signed * 3.0).round() as i32) {
                 return Ok(());
@@ -1695,7 +1891,11 @@ fn handle_touch_event(
                                         platform_ui::touch_hit_pad(ps),
                                     ) {
                                         if state.ui_action_enabled(action) {
-                                            service_mac_palette_music(state, city_music, asset_profile);
+                                            service_mac_palette_music(
+                                                state,
+                                                city_music,
+                                                asset_profile,
+                                            );
                                             state.press_palette_button(action);
                                             state.play_click_sound(sound.as_ref());
                                             match action {
@@ -1712,11 +1912,26 @@ fn handle_touch_event(
                                                         window,
                                                         renderer.size(),
                                                     );
-                                                    input.begin_info_preview(state, action, screen, tools_origin, Vec2::new(palette_logical_size.0 as f32 * ps, palette_logical_size.1 as f32 * ps));
+                                                    input.begin_info_preview(
+                                                        state,
+                                                        action,
+                                                        screen,
+                                                        tools_origin,
+                                                        Vec2::new(
+                                                            palette_logical_size.0 as f32 * ps,
+                                                            palette_logical_size.1 as f32 * ps,
+                                                        ),
+                                                    );
                                                 }
                                             }
-                                            if state.mode == AppMode::CityView && mac_palette_has_post_action_music(action) {
-                                                service_mac_palette_music(state, city_music, asset_profile);
+                                            if state.mode == AppMode::CityView
+                                                && mac_palette_has_post_action_music(action)
+                                            {
+                                                service_mac_palette_music(
+                                                    state,
+                                                    city_music,
+                                                    asset_profile,
+                                                );
                                             }
                                         }
                                         ui_consumed = true;
@@ -1759,10 +1974,20 @@ fn handle_touch_event(
             let screen = touch_input::finger_to_screen(x, y, renderer.size());
             input.mouse_pos = screen;
             let ps = pixel_scale(window, renderer.size());
-            if single_window && state.edit_map_slider_drag.is_some() && input.touch.finger_count() == 1 {
+            if single_window
+                && state.edit_map_slider_drag.is_some()
+                && input.touch.finger_count() == 1
+            {
                 let slider = state.edit_map_slider_drag.expect("active slider");
-                let origin = input.docked_palette.tools_origin(MenubarUi::occupied_top(ps), ps);
-                let value = ui::edit_map_slider_drag_value(screen - origin, palette_logical_size, ps, slider);
+                let origin = input
+                    .docked_palette
+                    .tools_origin(MenubarUi::occupied_top(ps), ps);
+                let value = ui::edit_map_slider_drag_value(
+                    screen - origin,
+                    palette_logical_size,
+                    ps,
+                    slider,
+                );
                 state.set_edit_map_slider(slider, value);
                 state.update_window_title(video, window.id());
                 let _ = input.touch.on_motion(finger_id, screen);
@@ -1942,45 +2167,109 @@ mod mac_fiscal_notice_input_tests {
         input.painting = true;
         input.paint_tile = Some((2, 3));
         state.open_mac_fiscal_crisis_notice();
-        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = true;
+        state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .as_mut()
+            .unwrap()
+            .button_down = true;
         let down = Event::FingerDown {
-            timestamp: 0, touch_id: 1, finger_id: 8, x: 0.2, y: 0.3,
-            dx: 0.0, dy: 0.0, pressure: 1.0, window_id: 0,
+            timestamp: 0,
+            touch_id: 1,
+            finger_id: 8,
+            x: 0.2,
+            y: 0.3,
+            dx: 0.0,
+            dy: 0.0,
+            pressure: 1.0,
+            window_id: 0,
         };
         let up = |finger_id| Event::FingerUp {
-            timestamp: 0, touch_id: 1, finger_id, x: 0.2, y: 0.3,
-            dx: 0.0, dy: 0.0, pressure: 0.0, window_id: 0,
+            timestamp: 0,
+            touch_id: 1,
+            finger_id,
+            x: 0.2,
+            y: 0.3,
+            dx: 0.0,
+            dy: 0.0,
+            pressure: 0.0,
+            window_id: 0,
         };
-        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &down));
-        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &up(7)));
+        assert!(consume_mac_fiscal_notice_event(
+            &mut state, &mut input, &down
+        ));
+        assert!(consume_mac_fiscal_notice_event(
+            &mut state,
+            &mut input,
+            &up(7)
+        ));
         assert_eq!(input.touch.finger_count(), 1);
         assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
         let synthetic_up = Event::MouseButtonUp {
-            timestamp: 0, window_id: 0, which: u32::MAX,
-            mouse_btn: sdl3::mouse::MouseButton::Left, clicks: 1, x: 0.2, y: 0.3,
+            timestamp: 0,
+            window_id: 0,
+            which: u32::MAX,
+            mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1,
+            x: 0.2,
+            y: 0.3,
         };
-        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &synthetic_up));
+        assert!(consume_mac_fiscal_notice_event(
+            &mut state,
+            &mut input,
+            &synthetic_up
+        ));
         assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
         let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
-        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 0);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits)
+                .days,
+            0
+        );
         let mouse_down = Event::MouseButtonDown {
-            timestamp: 0, window_id: 0, which: 0,
-            mouse_btn: sdl3::mouse::MouseButton::Left, clicks: 1, x: 0.0, y: 0.0,
+            timestamp: 0,
+            window_id: 0,
+            which: 0,
+            mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1,
+            x: 0.0,
+            y: 0.0,
         };
-        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &mouse_down));
-        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &up(8)));
+        assert!(consume_mac_fiscal_notice_event(
+            &mut state,
+            &mut input,
+            &mouse_down
+        ));
+        assert!(consume_mac_fiscal_notice_event(
+            &mut state,
+            &mut input,
+            &up(8)
+        ));
         assert_eq!(input.touch.finger_count(), 0);
         assert!(!input.map_touch.is_active());
         assert!(!input.painting);
         assert_eq!(input.paint_tile, None);
         assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
         let mouse_up = Event::MouseButtonUp {
-            timestamp: 0, window_id: 0, which: 0,
-            mouse_btn: sdl3::mouse::MouseButton::Left, clicks: 1, x: 0.0, y: 0.0,
+            timestamp: 0,
+            window_id: 0,
+            which: 0,
+            mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1,
+            x: 0.0,
+            y: 0.0,
         };
-        assert!(consume_mac_fiscal_notice_event(&mut state, &mut input, &mouse_up));
+        assert!(consume_mac_fiscal_notice_event(
+            &mut state, &mut input, &mouse_up
+        ));
         let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
-        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 1);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits)
+                .days,
+            1
+        );
     }
 
     #[test]
@@ -1989,8 +2278,14 @@ mod mac_fiscal_notice_input_tests {
         let mut state = test_state(city);
         state.open_mac_fiscal_crisis_notice();
         let key = |repeat| Event::KeyDown {
-            timestamp: 0, window_id: 0, keycode: Some(Keycode::Return), scancode: None,
-            keymod: sdl3::keyboard::Mod::NOMOD, repeat, which: 0, raw: 0,
+            timestamp: 0,
+            window_id: 0,
+            keycode: Some(Keycode::Return),
+            scancode: None,
+            keymod: sdl3::keyboard::Mod::NOMOD,
+            repeat,
+            which: 0,
+            raw: 0,
         };
         assert!(handle_mac_fiscal_notice_input(&mut state, &key(true)));
         assert!(!state.mac_loop_scheduler.fiscal_notice.unwrap().dismissed);
@@ -2000,12 +2295,22 @@ mod mac_fiscal_notice_input_tests {
         state.city_info_dialog = None;
         state.open_mac_fiscal_crisis_notice();
         let down = Event::MouseButtonDown {
-            timestamp: 0, window_id: 0, which: 0, mouse_btn: sdl3::mouse::MouseButton::Left,
-            clicks: 1, x: 0.0, y: 0.0,
+            timestamp: 0,
+            window_id: 0,
+            which: 0,
+            mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1,
+            x: 0.0,
+            y: 0.0,
         };
         let up = Event::MouseButtonUp {
-            timestamp: 0, window_id: 0, which: 0, mouse_btn: sdl3::mouse::MouseButton::Left,
-            clicks: 1, x: 0.0, y: 0.0,
+            timestamp: 0,
+            window_id: 0,
+            which: 0,
+            mouse_btn: sdl3::mouse::MouseButton::Left,
+            clicks: 1,
+            x: 0.0,
+            y: 0.0,
         };
         assert!(handle_mac_fiscal_notice_input(&mut state, &down));
         assert!(state.mac_loop_scheduler.fiscal_notice.unwrap().button_down);
@@ -2018,13 +2323,28 @@ mod mac_fiscal_notice_input_tests {
         state.mac_loop_scheduler.fiscal_notice = None;
         state.city_info_dialog = None;
         state.open_mac_fiscal_crisis_notice();
-        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = true;
+        state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .as_mut()
+            .unwrap()
+            .button_down = true;
         assert!(handle_mac_fiscal_notice_input(&mut state, &key(false)));
         let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
-        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 0);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits)
+                .days,
+            0
+        );
         assert!(handle_mac_fiscal_notice_input(&mut state, &up));
         let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
-        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 1);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits)
+                .days,
+            1
+        );
     }
 
     #[test]
@@ -2033,10 +2353,19 @@ mod mac_fiscal_notice_input_tests {
         let mut state = test_state(city);
         let initial_speed = state.traffic.speed();
         assert_ne!(initial_speed, GameSpeed::Cheetah);
-        assert!(mac_fiscal_notice_defers_command(&AppCommand::SaveToPath("/tmp/deferred.sc2".into())));
-        assert!(!mac_fiscal_notice_defers_command(&AppCommand::SetSpeed(GameSpeed::Cheetah)));
+        assert!(mac_fiscal_notice_defers_command(&AppCommand::SaveToPath(
+            "/tmp/deferred.sc2".into()
+        )));
+        assert!(!mac_fiscal_notice_defers_command(&AppCommand::SetSpeed(
+            GameSpeed::Cheetah
+        )));
         state.open_mac_fiscal_crisis_notice();
-        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = true;
+        state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .as_mut()
+            .unwrap()
+            .button_down = true;
         let command = AppCommand::SetSpeed(GameSpeed::Cheetah);
         if !handle_mac_fiscal_notice_command(&mut state, &command) {
             state.apply_state_app_command(&command);
@@ -2045,10 +2374,25 @@ mod mac_fiscal_notice_input_tests {
         assert!(notice.dismissed && notice.button_down);
         assert_eq!(state.traffic.speed(), initial_speed);
         let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
-        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 0);
-        state.mac_loop_scheduler.fiscal_notice.as_mut().unwrap().button_down = false;
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits)
+                .days,
+            0
+        );
+        state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .as_mut()
+            .unwrap()
+            .button_down = false;
         let waits = state.begin_mac_frame_actor_phase(std::time::Duration::ZERO);
-        assert_eq!(state.finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits).days, 1);
+        assert_eq!(
+            state
+                .finish_mac_frame_calendar_phase(std::time::Duration::ZERO, waits)
+                .days,
+            1
+        );
         assert!(!handle_mac_fiscal_notice_command(&mut state, &command));
         state.apply_state_app_command(&command);
         assert_eq!(state.traffic.speed(), GameSpeed::Cheetah);

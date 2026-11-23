@@ -406,11 +406,7 @@ fn tab_layout(text_scale: f32, scale: f32) -> Vec<(f32, f32)> {
     tabs
 }
 
-fn dropdown_metrics(
-    items: &[MenuEntry],
-    text_scale: f32,
-    scale: f32,
-) -> (f32, f32, Vec<()>) {
+fn dropdown_metrics(items: &[MenuEntry], text_scale: f32, scale: f32) -> (f32, f32, Vec<()>) {
     let row_h = row_height(text_scale, scale);
     let mut max_label = 0.0f32;
     let mut max_accel = 0.0f32;
@@ -448,7 +444,10 @@ mod tests {
             return;
         }
         let mut ui = MenubarUi::new();
-        let checks = MenuCheckState { mac_fidelity: true, ..MenuCheckState::default() };
+        let checks = MenuCheckState {
+            mac_fidelity: true,
+            ..MenuCheckState::default()
+        };
         let scale = 1.0;
         assert_eq!(
             ui.handle_click(Vec2::new(20.0, 8.0), (800, 600), scale, checks),
@@ -465,19 +464,53 @@ mod tests {
         use crate::menu_model::*;
         let menu = menus().iter().find(|m| m.title == "File").unwrap();
         let win = visible_items(menu, MenuCheckState::default());
-        let ids: Vec<_> = win.iter().map(|item| match item {
-            MenuEntry::Command { id, .. } => Some(*id),
-            MenuEntry::Separator => None,
-        }).collect();
-        assert_eq!(ids, vec![Some(CMD_OPEN_CITY), Some(CMD_NEW_CITY), Some(CMD_TOGGLE_EDIT_MAP), Some(CMD_LOAD_SCENARIO), None, Some(CMD_LOAD_TILE_SET), None, Some(CMD_SAVE_CITY), Some(CMD_SAVE_CITY_AS), None, Some(CMD_QUIT)]);
-        assert!(matches!(win.last(), Some(MenuEntry::Command { label: "Exit", accel: Some("Ctrl+X"), .. })));
-        let mac = MenuCheckState { mac_fidelity: true, ..MenuCheckState::default() };
+        let ids: Vec<_> = win
+            .iter()
+            .map(|item| match item {
+                MenuEntry::Command { id, .. } => Some(*id),
+                MenuEntry::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some(CMD_OPEN_CITY),
+                Some(CMD_NEW_CITY),
+                Some(CMD_TOGGLE_EDIT_MAP),
+                Some(CMD_LOAD_SCENARIO),
+                None,
+                Some(CMD_LOAD_TILE_SET),
+                None,
+                Some(CMD_SAVE_CITY),
+                Some(CMD_SAVE_CITY_AS),
+                None,
+                Some(CMD_QUIT)
+            ]
+        );
+        assert!(matches!(
+            win.last(),
+            Some(MenuEntry::Command {
+                label: "Exit",
+                accel: Some("Ctrl+X"),
+                ..
+            })
+        ));
+        let mac = MenuCheckState {
+            mac_fidelity: true,
+            ..MenuCheckState::default()
+        };
         assert_eq!(visible_items(menu, mac), menu.items);
         if MenubarUi::is_enabled() {
             let mut ui = MenubarUi::new();
             let checks = MenuCheckState::default();
-            assert_eq!(ui.handle_click(Vec2::new(20.0, 8.0), (800, 600), 1.0, checks), MenubarClick::Consumed);
-            assert_eq!(ui.handle_click(Vec2::new(30.0, 30.0), (800, 600), 1.0, checks), MenubarClick::Command(CMD_OPEN_CITY));
+            assert_eq!(
+                ui.handle_click(Vec2::new(20.0, 8.0), (800, 600), 1.0, checks),
+                MenubarClick::Consumed
+            );
+            assert_eq!(
+                ui.handle_click(Vec2::new(30.0, 30.0), (800, 600), 1.0, checks),
+                MenubarClick::Command(CMD_OPEN_CITY)
+            );
         }
     }
 
@@ -539,7 +572,10 @@ mod tests {
 
     #[test]
     fn mac_newspaper_items_follow_saved_order_and_selection() {
-        let menu = menu_model::menus().iter().find(|m| m.title == "Newspaper").unwrap();
+        let menu = menu_model::menus()
+            .iter()
+            .find(|m| m.title == "Newspaper")
+            .unwrap();
         let mut checks = MenuCheckState::default();
         assert_eq!(menu_model::visible_items(menu, checks), menu.items);
         checks.mac_newspaper = true;
@@ -548,8 +584,22 @@ mod tests {
         checks.mac_paper_selected = 1;
         let items = menu_model::visible_items(menu, checks);
         assert_eq!(items.len(), 5);
-        assert!(matches!(items[3], MenuEntry::Command { id: 140, label: "Picayune", .. }));
-        assert!(matches!(items[4], MenuEntry::Command { id: 141, label: "Chronicle", .. }));
+        assert!(matches!(
+            items[3],
+            MenuEntry::Command {
+                id: 140,
+                label: "Picayune",
+                ..
+            }
+        ));
+        assert!(matches!(
+            items[4],
+            MenuEntry::Command {
+                id: 141,
+                label: "Chronicle",
+                ..
+            }
+        ));
         assert!(!checks.item_checked(140));
         assert!(checks.item_checked(141));
         checks.edit_map = true;

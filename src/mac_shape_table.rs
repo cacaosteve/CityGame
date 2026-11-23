@@ -36,9 +36,14 @@ impl MacShapeDimensions {
     pub(crate) fn from_pack(root: &std::path::Path) -> anyhow::Result<Self> {
         use anyhow::Context;
         let mut result = Self::default();
-        for group in ["SPRT_00128_ShapeData", "SPRT_00129_ShapeData", "SPRT_00130_ShapeData"] {
+        for group in [
+            "SPRT_00128_ShapeData",
+            "SPRT_00129_ShapeData",
+            "SPRT_00130_ShapeData",
+        ] {
             let path = root.join("sprites").join(group).join("atlas.json");
-            let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let data =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             let manifest: crate::assets::AtlasManifest = serde_json::from_slice(&data)
                 .with_context(|| format!("parsing {}", path.display()))?;
             for frame in manifest.frames {
@@ -62,13 +67,17 @@ impl MacShapeDimensions {
     }
 
     pub(crate) fn terrain_dimensions(&self, terrain: u8, zoom: u32) -> Option<(u32, u32)> {
-        if zoom > 2 { return None; }
+        if zoom > 2 {
+            return None;
+        }
         let id = u32::from(*self.terrain_shapes.as_ref()?.get(usize::from(terrain))?);
         self.dimensions(id + 500 * zoom)
     }
 
     pub(crate) fn building_dimensions(&self, building: u8, zoom: u32) -> Option<(u32, u32)> {
-        if zoom > 2 || building == 0 { return None; }
+        if zoom > 2 || building == 0 {
+            return None;
+        }
         self.dimensions(u32::from(building) + 500 * zoom)
     }
 
@@ -134,15 +143,22 @@ mod tests {
     fn imported_dimensions_match_live_mac_shape_table() {
         let root = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SHAPE_PACK").unwrap());
         let ram = std::fs::read(std::env::var_os("CITYGAME_MAC_SHAPE_RAM").unwrap()).unwrap();
-        let read_u16 = |address: usize| u16::from_be_bytes(ram[address..address + 2].try_into().unwrap());
+        let read_u16 =
+            |address: usize| u16::from_be_bytes(ram[address..address + 2].try_into().unwrap());
         let table = u32::from_be_bytes(ram[0x76ea5a..0x76ea5e].try_into().unwrap()) as usize;
         let metrics = MacShapeDimensions::from_pack(&root).unwrap();
         let mut compared = 0;
         for id in 0..1500 {
             let height = read_u16(table + id * 8 + 4);
             let width = read_u16(table + id * 8 + 6);
-            if width == 0 || height == 0 { continue; }
-            assert_eq!(metrics.dimensions(id as u32), Some((u32::from(width), u32::from(height))), "shape {id}");
+            if width == 0 || height == 0 {
+                continue;
+            }
+            assert_eq!(
+                metrics.dimensions(id as u32),
+                Some((u32::from(width), u32::from(height))),
+                "shape {id}"
+            );
             compared += 1;
         }
         assert_eq!(compared, 1448);

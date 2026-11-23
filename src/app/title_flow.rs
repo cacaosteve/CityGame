@@ -12,7 +12,7 @@ use super::{
 use crate::asset_profile::{
     AssetProfile, GraphicsPreference, OriginalMedia, TitleMusicPreference, ToolbarPalettePreference,
 };
-use crate::city::City;
+use crate::city::{City, classic_cty::ClassicCtyFile};
 use crate::engine_fidelity::EngineFidelity;
 use crate::mac_menu;
 use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
@@ -21,6 +21,8 @@ use anyhow::Result;
 use glam::Vec2;
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Keycode;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use sdl3::messagebox::{ButtonData, ClickedButton, MessageBoxButtonFlag, MessageBoxFlag};
 use sdl3::mouse::{MouseButton, MouseWheelDirection};
 use std::time::{Duration, Instant};
 
@@ -739,11 +741,23 @@ pub(super) fn run_title_screen(
                 | AppCommand::OpenTitleScenarioPath(path) => path,
                 _ => unreachable!(),
             };
-            match City::load(&path) {
-                Ok(_) => {
+            let is_city_open = !matches!(&command, AppCommand::OpenTitleScenarioPath(_));
+            match preflight_title_city(&path, fidelity, is_city_open) {
+                Ok(needs_classic_cty_confirmation) => {
+                    if needs_classic_cty_confirmation && !confirm_classic_cty_conversion(window) {
+                        continue;
+                    }
                     // The title has no city to replace; the runtime must not
                     // ask to save the placeholder city for a Finder open.
-                    push_command(approve_title_open(command));
+                    let accepted_command = if needs_classic_cty_confirmation {
+                        AppCommand::OpenConfirmedClassicCityPath {
+                            path: path.clone(),
+                            title_tail: matches!(command, AppCommand::OpenTitleDialogPath(_)),
+                        }
+                    } else {
+                        approve_title_open(command)
+                    };
+                    push_command(accepted_command);
                     enter_game = true;
                 }
                 Err(error) => {
@@ -794,6 +808,58 @@ pub(super) fn run_title_screen(
     drop(music);
     log::info!("CityGame title screen finished (enter_game={enter_game})");
     Ok(running && enter_game)
+}
+
+fn preflight_title_city(
+    path: &std::path::Path,
+    fidelity: EngineFidelity,
+    is_city_open: bool,
+) -> Result<bool> {
+    match City::load(path) {
+        Ok(_) => Ok(false),
+        Err(city_error) if fidelity.uses_win95() && is_city_open => {
+            if ClassicCtyFile::has_legacy_import_size(path) && ClassicCtyFile::read(path).is_ok() {
+                Ok(true)
+            } else {
+                Err(city_error)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn confirm_classic_cty_conversion(window: &sdl3::video::Window) -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let buttons = [
+            ButtonData {
+                flags: MessageBoxButtonFlag::RETURNKEY_DEFAULT,
+                button_id: 6,
+                text: "Yes",
+            },
+            ButtonData {
+                flags: MessageBoxButtonFlag::ESCAPEKEY_DEFAULT,
+                button_id: 7,
+                text: "No",
+            },
+        ];
+        return matches!(
+            sdl3::messagebox::show_message_box(
+                MessageBoxFlag::empty(),
+                &buttons,
+                "SimCity 2000",
+                "This is a Simcity 1.0 file\r\nDo you want it converted",
+                window,
+                None,
+            ),
+            Ok(ClickedButton::CustomButton(button)) if button.button_id == 6
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = window;
+        false
+    }
 }
 
 fn is_win95_title_format_error(
@@ -952,7 +1018,13 @@ mod title_open_tests {
         let dialog = AppCommand::OpenTitleDialogPath(path.into());
         let external = AppCommand::OpenTitlePath(path.into());
         let scenario = AppCommand::OpenTitleScenarioPath(path.into());
-        for bytes in [&b"not an IFF"[..], &b"FORM\0\0\0\x04ILBM"[..], &b""[..], &b"FORM"[..], &b"FORM\0\0\0\x04"[..]] {
+        for bytes in [
+            &b"not an IFF"[..],
+            &b"FORM\0\0\0\x04ILBM"[..],
+            &b""[..],
+            &b"FORM"[..],
+            &b"FORM\0\0\0\x04"[..],
+        ] {
             let error = crate::city::detect_city_kind(path, bytes).unwrap_err();
             assert_eq!(
                 is_win95_title_format_error(EngineFidelity::Win95, &dialog, &error),
@@ -980,6 +1052,28 @@ mod title_open_tests {
             &dialog,
             &truncated
         ));
+    }
+
+    #[test]
+    fn win95_title_preflight_accepts_exact_size_classic_cty_only() {
+        let path = std::env::temp_dir().join(format!(
+            "citygame-title-preflight-{}.CTY",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            vec![0; crate::city::classic_cty::CLASSIC_CTY_FILE_LEN],
+        )
+        .unwrap();
+
+        assert_eq!(
+            preflight_title_city(&path, EngineFidelity::Win95, true).unwrap(),
+            true
+        );
+        assert!(preflight_title_city(&path, EngineFidelity::Mac68k, true).is_err());
+        assert!(preflight_title_city(&path, EngineFidelity::Win95, false).is_err());
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

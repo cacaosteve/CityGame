@@ -434,11 +434,12 @@ impl<'window> Renderer<'window> {
                     count: None,
                 }],
             });
-        let mac_world_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Mac indexed world sprite pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout), Some(&mac_shadow_index_layout)],
-            immediate_size: 0,
-        });
+        let mac_world_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Mac indexed world sprite pipeline layout"),
+                bind_group_layouts: &[Some(&bind_group_layout), Some(&mac_shadow_index_layout)],
+                immediate_size: 0,
+            });
         let mac_world_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Mac indexed world sprite pipeline"),
             layout: Some(&mac_world_pipeline_layout),
@@ -473,26 +474,53 @@ impl<'window> Renderer<'window> {
         });
         let unknown_index_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("unknown Mac sprite palette indices"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &unknown_index_texture, mip_level: 0,
-                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &unknown_index_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &[0, 0, 0, 255],
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let unknown_index_view = unknown_index_texture.create_view(&Default::default());
-        let mac_shadow_unknown_index_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("unknown Mac sprite palette index binding"), layout: &mac_shadow_index_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&unknown_index_view) }],
-        });
-        let (mac_shadow_pipeline, mac_shadow_background_layout) =
-            mac_shadow::create_pipeline(&device, &bind_group_layout, &mac_shadow_index_layout, surface_format);
+        let mac_shadow_unknown_index_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("unknown Mac sprite palette index binding"),
+                layout: &mac_shadow_index_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&unknown_index_view),
+                }],
+            });
+        let (mac_shadow_pipeline, mac_shadow_background_layout) = mac_shadow::create_pipeline(
+            &device,
+            &bind_group_layout,
+            &mac_shadow_index_layout,
+            surface_format,
+        );
 
         let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ui shader"),

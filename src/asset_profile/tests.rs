@@ -259,10 +259,15 @@ fn independent_sources_and_missing_slot_fallback() {
     assert_eq!(profile.mac_newspaper_data_paths(), None);
     let mac_data = mac.join("catalog/mac-newspaper");
     fs::create_dir_all(&mac_data).unwrap();
-    for id in 1000..1003 { fs::write(mac_data.join(format!("{id}.bin")), b"data").unwrap(); }
+    for id in 1000..1003 {
+        fs::write(mac_data.join(format!("{id}.bin")), b"data").unwrap();
+    }
     assert_eq!(profile.mac_newspaper_data_paths(), None);
     fs::write(mac_data.join("1003.bin"), b"data").unwrap();
-    assert_eq!(profile.mac_newspaper_data_paths(), Some([1000, 1001, 1002, 1003].map(|id| mac_data.join(format!("{id}.bin")))));
+    assert_eq!(
+        profile.mac_newspaper_data_paths(),
+        Some([1000, 1001, 1002, 1003].map(|id| mac_data.join(format!("{id}.bin"))))
+    );
     assert_eq!(
         profile.win95_newspaper_data_paths(),
         Some((
@@ -345,7 +350,10 @@ fn independent_sources_and_missing_slot_fallback() {
     fs::create_dir_all(&mac_audio).unwrap();
     assert_eq!(profile.mac_audio_resource_directory_for_song(10018), None);
     profile.settings.original_music = Some(mac.clone());
-    assert_eq!(profile.mac_audio_resource_directory_for_song(10018), Some(mac_audio));
+    assert_eq!(
+        profile.mac_audio_resource_directory_for_song(10018),
+        Some(mac_audio)
+    );
     profile.cycle_source(OriginalMedia::Effects).unwrap();
     assert_eq!(
         profile.sound_paths().effects.get(&505),

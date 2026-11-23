@@ -39,18 +39,27 @@ impl ViewerState {
         profile: &crate::asset_profile::AssetProfile,
     ) {
         self.mac_system_font = profile.mac_system_chicago_path().and_then(|path| {
-            let result = std::fs::read(&path).map_err(anyhow::Error::from)
+            let result = std::fs::read(&path)
+                .map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::mac_font_metrics::MacFontFamily::from_suitcase(&bytes, 0));
             match result {
                 Ok(mut family) => family.bitmap.remove(&12).map(std::sync::Arc::new),
-                Err(error) => { log::warn!("could not load Macintosh system font {}: {error:#}", path.display()); None }
+                Err(error) => {
+                    log::warn!(
+                        "could not load Macintosh system font {}: {error:#}",
+                        path.display()
+                    );
+                    None
+                }
             }
         });
         self.pe_registered_mayor_name = profile.win95_mayor_name().to_owned();
         self.pe_new_city_reserved_labels = profile.win95_new_city_labels_path().and_then(|path| {
             let labels = std::fs::read(&path)
                 .map_err(anyhow::Error::from)
-                .and_then(|bytes| serde_json::from_slice::<[String; 5]>(&bytes).map_err(Into::into));
+                .and_then(|bytes| {
+                    serde_json::from_slice::<[String; 5]>(&bytes).map_err(Into::into)
+                });
             match labels {
                 Ok(labels) if labels.iter().all(|label| !label.contains('\0')) => Some(labels),
                 Ok(_) => {
@@ -58,7 +67,10 @@ impl ViewerState {
                     None
                 }
                 Err(error) => {
-                    log::warn!("could not load Win95 new-city labels {}: {error:#}", path.display());
+                    log::warn!(
+                        "could not load Win95 new-city labels {}: {error:#}",
+                        path.display()
+                    );
                     None
                 }
             }
@@ -66,22 +78,37 @@ impl ViewerState {
         self.mac_newspaper.pictures = profile.mac_newspaper_picture_index_path().and_then(|path| {
             let bytes = std::fs::read(path).ok()?;
             let values: [u8; 12] = bytes.try_into().ok()?;
-            values.iter().all(|&n| n <= 1).then(|| values.map(|n| n != 0))
+            values
+                .iter()
+                .all(|&n| n <= 1)
+                .then(|| values.map(|n| n != 0))
         });
         self.mac_newspaper.strings = profile.mac_newspaper_strings_path().and_then(|path| {
-            match std::fs::read(&path).map_err(anyhow::Error::from)
-                .and_then(|bytes| crate::mac_newspaper::MacPaperDisplayStrings::from_strs(&bytes)) {
+            match std::fs::read(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|bytes| crate::mac_newspaper::MacPaperDisplayStrings::from_strs(&bytes))
+            {
                 Ok(strings) => Some(std::sync::Arc::new(strings)),
-                Err(error) => { log::warn!("could not load Macintosh newspaper strings {}: {error:#}", path.display()); None }
+                Err(error) => {
+                    log::warn!(
+                        "could not load Macintosh newspaper strings {}: {error:#}",
+                        path.display()
+                    );
+                    None
+                }
             }
         });
         self.mac_newspaper.font = profile.mac_newspaper_font_path().and_then(|path| {
-            let font = std::fs::read(&path).map_err(anyhow::Error::from)
+            let font = std::fs::read(&path)
+                .map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::mac_font_metrics::MacFontFamily::from_suitcase(&bytes, 2));
             match font {
                 Ok(font) => Some(std::sync::Arc::new(font)),
                 Err(error) => {
-                    log::warn!("could not load Macintosh newspaper font {}: {error:#}", path.display());
+                    log::warn!(
+                        "could not load Macintosh newspaper font {}: {error:#}",
+                        path.display()
+                    );
                     None
                 }
             }
@@ -106,9 +133,13 @@ impl ViewerState {
                     Ok(data) => Some(std::sync::Arc::new(data)),
                     Err(error) => {
                         if self.engine_fidelity.uses_win95()
-                            && let Some(open_error) = error.downcast_ref::<crate::win95_newspaper::PeArchiveOpenError>()
+                            && let Some(open_error) =
+                                error.downcast_ref::<crate::win95_newspaper::PeArchiveOpenError>()
                         {
-                            crate::win95_file_error::record_open_io_error(&open_error.path, &open_error.error);
+                            crate::win95_file_error::record_open_io_error(
+                                &open_error.path,
+                                &open_error.error,
+                            );
                         }
                         log::warn!("could not load Win95 newspaper data: {error:#}");
                         None
@@ -131,67 +162,164 @@ impl ViewerState {
     }
 
     fn prepare_mac_paper_first_paint(&mut self) -> anyhow::Result<()> {
-        use crate::mac_newspaper::{MacPaperSlot, layout_lead_and_picture, layout_short_stories, layout_weather_box, layout_survey_box};
+        use crate::mac_newspaper::{
+            MacPaperSlot, layout_lead_and_picture, layout_short_stories, layout_survey_box,
+            layout_weather_box,
+        };
         use anyhow::{Context, ensure};
-        let data = self.mac_newspaper.data.clone().context("missing newspaper tokens")?;
-        let font = self.mac_newspaper.font.clone().context("missing New York font")?;
-        let strings = self.mac_newspaper.strings.clone().context("missing newspaper strings")?;
-        let pictures = self.mac_newspaper.pictures.context("missing picture index")?;
-        let tick = self.mac_newspaper.tick_word.context("missing newspaper TickCount")?;
+        let data = self
+            .mac_newspaper
+            .data
+            .clone()
+            .context("missing newspaper tokens")?;
+        let font = self
+            .mac_newspaper
+            .font
+            .clone()
+            .context("missing New York font")?;
+        let strings = self
+            .mac_newspaper
+            .strings
+            .clone()
+            .context("missing newspaper strings")?;
+        let pictures = self
+            .mac_newspaper
+            .pictures
+            .context("missing picture index")?;
+        let tick = self
+            .mac_newspaper
+            .tick_word
+            .context("missing newspaper TickCount")?;
         let page = if matches!(
             self.city_info_dialog,
             Some(CityInfoDialog::Newspaper(
                 NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
             ))
         ) {
-            self.city.mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET).unwrap_or(0) as u16 as usize
-        } else { 0 };
+            self.city
+                .mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET)
+                .unwrap_or(0) as u16 as usize
+        } else {
+            0
+        };
         ensure!(page < 6, "invalid newspaper selection");
         let paper_field = |field: usize| -> anyhow::Result<usize> {
-            Ok(self.city.mac_state_misc_u32_at(MISC_NEWSPAPER_LIST_OFFSET + page*20 + field*4)
+            Ok(self
+                .city
+                .mac_state_misc_u32_at(MISC_NEWSPAPER_LIST_OFFSET + page * 20 + field * 4)
                 .context("missing newspaper record")? as u8 as usize)
         };
         let family = paper_field(1)?;
         let survey_heading = paper_field(3)?;
         let weather_heading = paper_field(4)?;
-        let age = self.city.mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET).unwrap_or(0) as i32;
+        let age = self
+            .city
+            .mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET)
+            .unwrap_or(0) as i32;
         let records: [[u32; 6]; 9] = std::array::from_fn(|i| self.city.mac_story_record(i));
         let mut slots: [MacPaperSlot; 9] = std::array::from_fn(|i| MacPaperSlot {
-            value: records[i][2] as u8, choice5: records[i][3] as u8,
-            choice6: records[i][4] as u8, number: records[i][5] as u8,
+            value: records[i][2] as u8,
+            choice5: records[i][3] as u8,
+            choice6: records[i][4] as u8,
+            number: records[i][5] as u8,
         });
         let groups: [usize; 9] = records.map(|row| row[0] as u16 as usize);
         let city_name = crate::city::mac_roman::encode(&self.city.name, 255);
         let mayor = crate::city::mac_roman::encode(self.city.label_at(0).unwrap_or(""), 24);
-        let mut labels = vec![0u8; 507*25];
+        let mut labels = vec![0u8; 507 * 25];
         for index in 0..=u8::MAX {
             let text = crate::city::mac_roman::encode(self.city.label_at(index).unwrap_or(""), 24);
-            let offset = usize::from(index)*25;
+            let offset = usize::from(index) * 25;
             labels[offset] = text.len() as u8;
-            labels[offset+1..offset+1+text.len()].copy_from_slice(&text);
+            labels[offset + 1..offset + 1 + text.len()].copy_from_slice(&text);
         }
         // Work on local copies so an incomplete asset pack cannot leave a
         // partially advanced RNG or partially changed story caches.
         let mut rng = self.mac_process_rng;
         let initial_seed = rng.seed();
-        let lead = layout_lead_and_picture(&data,&font,family,age,tick,page as i16,groups[0],&mut slots[0],
-            &city_name,&mayor,&labels,&|id| (400..=411).contains(&id) && pictures[usize::from(id-400)],&mut rng)?;
-        let mut short: [MacPaperSlot;4] = std::array::from_fn(|i| slots[i+1].clone());
-        let stories = layout_short_stories(&data,&font,family,age,tick,page as i16,
-            groups[1..5].try_into().unwrap(),&mut short,&city_name,&mayor,&labels,&mut rng)?;
+        let lead = layout_lead_and_picture(
+            &data,
+            &font,
+            family,
+            age,
+            tick,
+            page as i16,
+            groups[0],
+            &mut slots[0],
+            &city_name,
+            &mayor,
+            &labels,
+            &|id| (400..=411).contains(&id) && pictures[usize::from(id - 400)],
+            &mut rng,
+        )?;
+        let mut short: [MacPaperSlot; 4] = std::array::from_fn(|i| slots[i + 1].clone());
+        let stories = layout_short_stories(
+            &data,
+            &font,
+            family,
+            age,
+            tick,
+            page as i16,
+            groups[1..5].try_into().unwrap(),
+            &mut short,
+            &city_name,
+            &mayor,
+            &labels,
+            &mut rng,
+        )?;
         slots[1..5].clone_from_slice(&short);
         let weather_values = [MISC_HEAT_OFFSET, MISC_WIND_OFFSET, MISC_HUMID_OFFSET]
             .map(|offset| self.city.mac_state_misc_u32_at(offset).unwrap_or(0) as u8);
-        let weather = layout_weather_box(&data,&font,&strings,family,weather_heading,age,tick,page as i16,
-            groups[7],&mut slots[7],&city_name,&mayor,&labels,weather_values,&mut rng)?;
+        let weather = layout_weather_box(
+            &data,
+            &font,
+            &strings,
+            family,
+            weather_heading,
+            age,
+            tick,
+            page as i16,
+            groups[7],
+            &mut slots[7],
+            &city_name,
+            &mayor,
+            &labels,
+            weather_values,
+            &mut rng,
+        )?;
         let (approval, counts, order) = self.city.mac_opinion_poll_results();
-        let survey = layout_survey_box(&data,&font,&strings,family,survey_heading,age,tick,page as i16,
-            groups[8],&mut slots[8],&city_name,&mayor,&labels,approval,counts,order,&mut rng)?;
-        for i in [0,1,2,3,4,7,8] {
-            self.city.set_mac_story_choices(i,[slots[i].choice5,slots[i].choice6,slots[i].number]);
+        let survey = layout_survey_box(
+            &data,
+            &font,
+            &strings,
+            family,
+            survey_heading,
+            age,
+            tick,
+            page as i16,
+            groups[8],
+            &mut slots[8],
+            &city_name,
+            &mayor,
+            &labels,
+            approval,
+            counts,
+            order,
+            &mut rng,
+        )?;
+        for i in [0, 1, 2, 3, 4, 7, 8] {
+            self.city
+                .set_mac_story_choices(i, [slots[i].choice5, slots[i].choice6, slots[i].number]);
         }
         self.mac_process_rng = rng;
-        self.mac_newspaper.paint = Some(MacPaperPaint { family, initial_seed, lead, stories, weather, survey });
+        self.mac_newspaper.paint = Some(MacPaperPaint {
+            family,
+            initial_seed,
+            lead,
+            stories,
+            weather,
+            survey,
+        });
         Ok(())
     }
 
@@ -231,7 +359,10 @@ impl ViewerState {
             mayor_name: &mayor_name,
             labels: &labels,
         };
-        let age = self.city.mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET).unwrap_or(0) as i32;
+        let age = self
+            .city
+            .mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET)
+            .unwrap_or(0) as i32;
         // CODE 2 and the subscription caller pass saved choice WORD 1027;
         // the disaster-completion caller explicitly passes page zero.
         let page = if matches!(
@@ -240,14 +371,26 @@ impl ViewerState {
                 NewspaperEdition::MacStandard | NewspaperEdition::MacStoryWindow
             ))
         ) {
-            self.city.mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET).unwrap_or(0) as u16 as i16
-        } else { 0 };
-        if !(0..=5).contains(&page) { return; }
-        let seed = crate::mac_newspaper::story_seed(age, tick, page, (position as i32)*7);
+            self.city
+                .mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET)
+                .unwrap_or(0) as u16 as i16
+        } else {
+            0
+        };
+        if !(0..=5).contains(&page) {
+            return;
+        }
+        let seed = crate::mac_newspaper::story_seed(age, tick, page, (position as i32) * 7);
         let mut preview_rng = MacToolboxRng::new(seed);
-        let rng = if use_shared_rng { &mut self.mac_process_rng } else { &mut preview_rng };
+        let rng = if use_shared_rng {
+            &mut self.mac_process_rng
+        } else {
+            &mut preview_rng
+        };
         *rng = MacToolboxRng::new(seed);
-        match data.headline(row[0] as u16 as usize, &mut context, &mut || rng.random_u16()) {
+        match data.headline(row[0] as u16 as usize, &mut context, &mut || {
+            rng.random_u16()
+        }) {
             Ok(bytes) => self.mac_newspaper.headline = Some(crate::city::mac_roman::decode(&bytes)),
             Err(error) => {
                 log::debug!("Mac newspaper headline unavailable: {error:#}");
@@ -257,7 +400,9 @@ impl ViewerState {
         // FUN_33866 reseeds to the same position before generating the body;
         // it retains the headline's slot and group caches.
         *rng = MacToolboxRng::new(seed);
-        match data.article(row[0] as u16 as usize, &mut context, &mut || rng.random_u16()) {
+        match data.article(row[0] as u16 as usize, &mut context, &mut || {
+            rng.random_u16()
+        }) {
             Ok(bytes) => {
                 self.mac_newspaper.article = Some(crate::city::mac_roman::decode(&bytes));
                 self.mac_newspaper.detail_choices = Some([slot.choice5, slot.choice6, slot.number]);
@@ -274,10 +419,14 @@ impl ViewerState {
 
     /// CODE 7 maps page positions 4–10 to story records 0,8,7,1,2,3,4.
     pub(super) fn open_mac_paper_detail_at(&mut self, position: usize) {
-        let Some(&story) = [0usize,8,7,1,2,3,4].get(position.wrapping_sub(4)) else { return; };
+        let Some(&story) = [0usize, 8, 7, 1, 2, 3, 4].get(position.wrapping_sub(4)) else {
+            return;
+        };
         // Re-run both native workers at click time using current story state.
         self.compose_mac_paper_text(true, story, position);
-        if self.mac_newspaper.article.is_none() { return; }
+        if self.mac_newspaper.article.is_none() {
+            return;
+        }
         if let Some(choices) = self.mac_newspaper.detail_choices {
             self.city.set_mac_story_choices(story, choices);
         }
@@ -295,47 +444,97 @@ impl ViewerState {
     }
 
     pub(super) fn scroll_mac_paper_detail(&mut self, delta: i32) -> bool {
-        if !self.mac_newspaper.detail_open { return false; }
-        let max = self.mac_newspaper.article.as_deref().map_or(0, newspaper::detail_scroll_max);
-        self.mac_newspaper.detail_scroll = self.mac_newspaper.detail_scroll.saturating_add_signed(delta as isize).min(max);
+        if !self.mac_newspaper.detail_open {
+            return false;
+        }
+        let max = self
+            .mac_newspaper
+            .article
+            .as_deref()
+            .map_or(0, newspaper::detail_scroll_max);
+        self.mac_newspaper.detail_scroll = self
+            .mac_newspaper
+            .detail_scroll
+            .saturating_add_signed(delta as isize)
+            .min(max);
         true
     }
 
     /// Open the clicked PE story through the recovered 0x479b90 worker.
     pub(super) fn open_pe_newspaper_article(&mut self, position: u16) -> bool {
-        let Some(CityInfoDialog::Newspaper(edition)) = self.city_info_dialog else { return false; };
-        if !self.engine_fidelity.uses_win95() || self.pe_newspaper_article.is_some() { return false; }
-        let (Some(data), Some(tick), Some(paint)) =
-            (self.pe_newspaper_data.clone(), self.pe_document_tick_word, self.pe_newspaper_paint.as_ref())
-        else { return false; };
+        let Some(CityInfoDialog::Newspaper(edition)) = self.city_info_dialog else {
+            return false;
+        };
+        if !self.engine_fidelity.uses_win95() || self.pe_newspaper_article.is_some() {
+            return false;
+        }
+        let (Some(data), Some(tick), Some(paint)) = (
+            self.pe_newspaper_data.clone(),
+            self.pe_document_tick_word,
+            self.pe_newspaper_paint.as_ref(),
+        ) else {
+            return false;
+        };
         let style = paint.style;
-        let paper = if edition == NewspaperEdition::Founding { 0 } else {
+        let paper = if edition == NewspaperEdition::Founding {
+            0
+        } else {
             newspaper_choice_for_city(&self.city) as usize
         };
-        let Some(days) = self.city.city_age_days() else { return false; };
-        let Some(state) = crate::win95_newspaper::PeHeadlineContextState::from_city(&self.city) else { return false; };
+        let Some(days) = self.city.city_age_days() else {
+            return false;
+        };
+        let Some(state) = crate::win95_newspaper::PeHeadlineContextState::from_city(&self.city)
+        else {
+            return false;
+        };
         let state = std::cell::RefCell::new(state);
-        let context = crate::win95_newspaper::PeHeadlineContext { city_name_oem: &[], labels_oem: &[], mutable_state: Some(&state) };
+        let context = crate::win95_newspaper::PeHeadlineContext {
+            city_name_oem: &[],
+            labels_oem: &[],
+            mutable_state: Some(&state),
+        };
         let seed = crate::win95_newspaper::PeNewspaperSeed {
-            days: days as i32, startup_tick: tick, paper: paper as i32, slot: position as i16,
+            days: days as i32,
+            startup_tick: tick,
+            paper: paper as i32,
+            slot: position as i16,
         };
         let mut next_city = self.city.clone();
         let mut next_crt = self.pe_process_crt;
         let Some((headline, body)) = data.render_city_article_ascii(
-            &mut next_city, style, seed, &mut next_crt, Some(&context),
-        ) else { return false; };
-        let (headline, body) = (crate::win95_oem::decode_oem(&headline), crate::win95_oem::decode_oem(&body));
+            &mut next_city,
+            style,
+            seed,
+            &mut next_crt,
+            Some(&context),
+        ) else {
+            return false;
+        };
+        let (headline, body) = (
+            crate::win95_oem::decode_oem(&headline),
+            crate::win95_oem::decode_oem(&body),
+        );
         state.into_inner().apply_to_city(&mut next_city);
         self.city = next_city;
         self.pe_process_crt = next_crt;
-        self.pe_newspaper_article = Some(PePaperArticle { headline, body: body.replace('\n', "\r"), scroll: 0 });
+        self.pe_newspaper_article = Some(PePaperArticle {
+            headline,
+            body: body.replace('\n', "\r"),
+            scroll: 0,
+        });
         true
     }
 
     pub(super) fn scroll_pe_newspaper_article(&mut self, delta: i32) -> bool {
-        let Some(article) = self.pe_newspaper_article.as_mut() else { return false; };
+        let Some(article) = self.pe_newspaper_article.as_mut() else {
+            return false;
+        };
         let max = newspaper::pe_detail_scroll_max(&article.body);
-        article.scroll = article.scroll.saturating_add_signed(delta as isize).min(max);
+        article.scroll = article
+            .scroll
+            .saturating_add_signed(delta as isize)
+            .min(max);
         true
     }
 
@@ -353,7 +552,10 @@ impl ViewerState {
         else {
             return;
         };
-        let Some(state) = crate::win95_newspaper::PeHeadlineContextState::from_city(&self.city) else { return; };
+        let Some(state) = crate::win95_newspaper::PeHeadlineContextState::from_city(&self.city)
+        else {
+            return;
+        };
         let state = std::cell::RefCell::new(state);
         let context = crate::win95_newspaper::PeHeadlineContext {
             city_name_oem: &[],
@@ -401,7 +603,14 @@ pub(super) fn newspaper_paper_name(choice: u32) -> &'static str {
 /// The PE indexes its six name resources through byte zero of each saved
 /// five-byte paper record (menu construction at 0x406d70).
 pub(super) fn pe_newspaper_masthead(city: &City, paper: usize) -> Option<String> {
-    const PE_PAPER_NAMES: [&str; 6] = ["Picayune", "Courier", "Herald", "Journal", "Times", "Chronicle"];
+    const PE_PAPER_NAMES: [&str; 6] = [
+        "Picayune",
+        "Courier",
+        "Herald",
+        "Journal",
+        "Times",
+        "Chronicle",
+    ];
     let tables = city.pe_newspaper_tables()?;
     let name_index = (*tables.papers.get(paper.checked_mul(5)?)? as u8) as usize;
     Some(format!("{} {}", city.name, PE_PAPER_NAMES.get(name_index)?))

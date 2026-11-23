@@ -1205,26 +1205,53 @@ fn win95_ocean_xbit_pass_propagates_across_water_and_clears_dry_marks() {
 #[test]
 fn win95_two_maps_continue_rng_and_preserve_generated_salt_like_native() {
     let mut city = City::new_blank("/tmp/win95-repeat-map.sc2", "Repeat").unwrap();
-    let sliders = EditMapSliderValues { hills: 12, water: 5, trees: 15 };
+    let sliders = EditMapSliderValues {
+        hills: 12,
+        water: 5,
+        trees: 15,
+    };
     let mut crt = Win95CrtRand::new(0x1234_5678);
     let mut game = Win95GameRand::new(1);
     for (coast, expected_planes, expected_rng) in [
-        (true, [0x963d_ff2a_29a6_ad68, 0xaa3f_a85e_0c18_5f31,
-                0x15fd_5854_26b5_92ea, 0x816f_896b_2b56_8b30], (605_971_404, 519_488_550)),
-        (false, [0x0bc9_420b_e904_044e, 0xa768_f3eb_f362_c445,
-                 0xca2f_0301_d76a_562e, 0x03a6_5809_1d25_b6f5], (2_204_295_258, 519_488_550)),
+        (
+            true,
+            [
+                0x963d_ff2a_29a6_ad68,
+                0xaa3f_a85e_0c18_5f31,
+                0x15fd_5854_26b5_92ea,
+                0x816f_896b_2b56_8b30,
+            ],
+            (605_971_404, 519_488_550),
+        ),
+        (
+            false,
+            [
+                0x0bc9_420b_e904_044e,
+                0xa768_f3eb_f362_c445,
+                0xca2f_0301_d76a_562e,
+                0x03a6_5809_1d25_b6f5,
+            ],
+            (2_204_295_258, 519_488_550),
+        ),
     ] {
         generate_win95(&mut city, sliders, coast, false, &mut crt, &mut game);
         let cells = || (0..CITY_WIDTH).flat_map(|x| (0..CITY_HEIGHT).map(move |y| (x, y)));
         let planes = [
-            terrain_fingerprint(cells().flat_map(|(x, y)| packed_altm_word(city.altm_at(x, y)).to_le_bytes())),
+            terrain_fingerprint(
+                cells().flat_map(|(x, y)| packed_altm_word(city.altm_at(x, y)).to_le_bytes()),
+            ),
             terrain_fingerprint(cells().map(|(x, y)| city.terrain_at(x, y))),
             terrain_fingerprint(cells().map(|(x, y)| city.tile_bits_at(x, y).unwrap().raw_bits())),
             terrain_fingerprint(cells().map(|(x, y)| city.building_at(x, y))),
         ];
         assert_eq!(planes, expected_planes, "coast={coast}");
         assert_eq!((crt.seed(), game.state()), expected_rng, "coast={coast}");
-        assert_eq!(cells().filter(|&(x, y)| city.tile_bits_at(x, y).unwrap().raw_bits() & 1 != 0).count(), 1959);
+        assert_eq!(
+            cells()
+                .filter(|&(x, y)| city.tile_bits_at(x, y).unwrap().raw_bits() & 1 != 0)
+                .count(),
+            1959
+        );
     }
 }
 
@@ -1234,7 +1261,10 @@ fn win95_generation_retains_resident_xbit_flags_like_native_worker() {
     sliders.set(ui::EditMapSlider::Hills, 12);
     sliders.set(ui::EditMapSlider::Water, 5);
     sliders.set(ui::EditMapSlider::Trees, 15);
-    for (coast, expected) in [(false, 0x7b98_8371_2791_f6b5), (true, 0x9362_97ae_fc66_4bca)] {
+    for (coast, expected) in [
+        (false, 0x7b98_8371_2791_f6b5),
+        (true, 0x9362_97ae_fc66_4bca),
+    ] {
         let mut city = City::new_blank("/tmp/win95-resident-xbit.sc2", "Flags").unwrap();
         for x in 0..CITY_WIDTH {
             for y in 0..CITY_HEIGHT {

@@ -19,8 +19,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-mod construction;
 pub(crate) mod classic_cty;
+mod construction;
 #[cfg(test)]
 use construction::city_name_from_chunks;
 mod destruction;
@@ -102,11 +102,12 @@ use misc_state::{
 };
 #[cfg(test)]
 use queries::density_sum;
-mod save;
 pub(crate) mod mac_roman;
+mod save;
 pub(crate) mod win1252;
 mod yearly_microsim_schedule;
 mod yearly_microsims;
+pub(crate) use construction::CityOpenIoError;
 use economy::*;
 #[allow(unused_imports)]
 pub use economy::{pe_national_prosperity, pe_national_trend_from_prosperity};
@@ -114,14 +115,13 @@ use file_format::{
     CITYGAME_EXTENSION_CHUNK, city_rle_decode, decode_citygame_extension,
     encode_citygame_extension, encode_scdh_file_for_kind, upsert_chunk, upsert_chunk_for_kind,
 };
+pub(crate) use file_format::{CityReadEof, NotIffCityFile, WrongIffCityType};
 #[allow(unused_imports)]
 pub use file_format::{SAVE_CHUNK_ORDER, chunk_tags_in_file, sc2_rle_encode};
 pub use file_format::{
     detect_city_kind, encode_scdh_file, mac_rle_decode, mac_rle_encode, parse_scdh_chunks,
     sc2_rle_decode,
 };
-pub(crate) use file_format::{CityReadEof, NotIffCityFile, WrongIffCityType};
-pub(crate) use construction::CityOpenIoError;
 use layer_codec::{
     CITYGAME_FIRE_COVERAGE_CHUNK, CITYGAME_FIRE_COVERAGE_VERSION, CITYGAME_MAP_PLANES_CHUNK,
     CITYGAME_MAP_PLANES_VERSION, cnam_text, decode_altm, decode_city_date, decode_city_view,

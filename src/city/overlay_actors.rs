@@ -147,7 +147,9 @@ impl City {
 
     /// Write one native Mac XTHG slot while marking the city as changed.
     pub(crate) fn set_mac_object_slot_record(&mut self, slot: usize, record: Win95OverlayRecord) {
-        let Some(old) = self.mac_object_slot_records_mut().get(slot).copied() else { return; };
+        let Some(old) = self.mac_object_slot_records_mut().get(slot).copied() else {
+            return;
+        };
         self.mac_object_slot_records_mut()[slot] = record;
         self.modified = true;
         if old != record {

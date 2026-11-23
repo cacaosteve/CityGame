@@ -8,8 +8,8 @@ use super::power_water::{
     underground_user_pipe_tile, water_source_connects_as_building_pipe,
 };
 use super::underground::{
-    UNDER_TILE_BUILDING_PIPES, UNDER_TILE_GREY_BOX_1, UNDER_TILE_GREY_BOX_2,
-    UndergroundKind, underground_crossover_axis,
+    UNDER_TILE_BUILDING_PIPES, UNDER_TILE_GREY_BOX_1, UNDER_TILE_GREY_BOX_2, UndergroundKind,
+    underground_crossover_axis,
 };
 use crate::city::City;
 

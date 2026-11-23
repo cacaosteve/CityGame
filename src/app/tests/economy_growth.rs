@@ -11811,21 +11811,16 @@ fn win95_budget_settlement_wraps_city_funds_like_pe_add() {
 
 #[test]
 fn mac_budget_settlement_matches_captured_2014_row_rounding() {
-    let mut city =
-        City::new_blank("/tmp/sc2000-mac-budget-2014-settlement.sc2", "MacBudget")
-            .expect("blank city");
+    let mut city = City::new_blank("/tmp/sc2000-mac-budget-2014-settlement.sc2", "MacBudget")
+        .expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_city_funds(-5_032);
     let raw_accumulators = [
         202_370, 37_800, 206_850, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
     ];
     for (row, raw) in raw_accumulators.into_iter().enumerate() {
-        let offset = budget_row_misc_offset_for_city(
-            &city,
-            row,
-            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
-        )
-        .expect("Mac budget accumulator offset");
+        let offset = budget_row_misc_offset_for_city(&city, row, BUDGET_SERVICE_YEAR_TO_DATE_FIELD)
+            .expect("Mac budget accumulator offset");
         city.set_budget_misc_u32_values(offset, &[raw]);
     }
     let mut state = test_state(city);
@@ -11842,21 +11837,16 @@ fn mac_budget_settlement_matches_captured_2014_row_rounding() {
 
 #[test]
 fn mac_budget_settlement_matches_captured_2015_row_rounding() {
-    let mut city =
-        City::new_blank("/tmp/sc2000-mac-budget-2015-settlement.sc2", "MacBudget")
-            .expect("blank city");
+    let mut city = City::new_blank("/tmp/sc2000-mac-budget-2015-settlement.sc2", "MacBudget")
+        .expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_city_funds(-4_785);
     let raw_accumulators = [
         203_630, 37_800, 217_000, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
     ];
     for (row, raw) in raw_accumulators.into_iter().enumerate() {
-        let offset = budget_row_misc_offset_for_city(
-            &city,
-            row,
-            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
-        )
-        .expect("Mac budget accumulator offset");
+        let offset = budget_row_misc_offset_for_city(&city, row, BUDGET_SERVICE_YEAR_TO_DATE_FIELD)
+            .expect("Mac budget accumulator offset");
         city.set_budget_misc_u32_values(offset, &[raw]);
     }
     let mut state = test_state(city);
@@ -11873,21 +11863,16 @@ fn mac_budget_settlement_matches_captured_2015_row_rounding() {
 
 #[test]
 fn mac_budget_settlement_matches_captured_2016_rows() {
-    let mut city =
-        City::new_blank("/tmp/sc2000-mac-budget-2016-settlement.sc2", "MacBudget")
-            .expect("blank city");
+    let mut city = City::new_blank("/tmp/sc2000-mac-budget-2016-settlement.sc2", "MacBudget")
+        .expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_city_funds(-4_524);
     let raw_accumulators = [
         209_160, 37_800, 212_380, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
     ];
     for (row, raw) in raw_accumulators.into_iter().enumerate() {
-        let offset = budget_row_misc_offset_for_city(
-            &city,
-            row,
-            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
-        )
-        .expect("Mac budget accumulator offset");
+        let offset = budget_row_misc_offset_for_city(&city, row, BUDGET_SERVICE_YEAR_TO_DATE_FIELD)
+            .expect("Mac budget accumulator offset");
         city.set_budget_misc_u32_values(offset, &[raw]);
     }
     let mut state = test_state(city);
@@ -11900,21 +11885,16 @@ fn mac_budget_settlement_matches_captured_2016_rows() {
 
 #[test]
 fn mac_budget_settlement_matches_captured_2017_row_rounding() {
-    let mut city =
-        City::new_blank("/tmp/sc2000-mac-budget-2017-settlement.sc2", "MacBudget")
-            .expect("blank city");
+    let mut city = City::new_blank("/tmp/sc2000-mac-budget-2017-settlement.sc2", "MacBudget")
+        .expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_city_funds(-4_263);
     let raw_accumulators = [
         208_950, 37_800, 180_110, 0, 0, 1_200, 1_200, 0, 1_200, 0, 283_200, 0, 0, 0, 0, 0,
     ];
     for (row, raw) in raw_accumulators.into_iter().enumerate() {
-        let offset = budget_row_misc_offset_for_city(
-            &city,
-            row,
-            BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
-        )
-        .expect("Mac budget accumulator offset");
+        let offset = budget_row_misc_offset_for_city(&city, row, BUDGET_SERVICE_YEAR_TO_DATE_FIELD)
+            .expect("Mac budget accumulator offset");
         city.set_budget_misc_u32_values(offset, &[raw]);
     }
     let mut state = test_state(city);
@@ -21090,10 +21070,12 @@ fn mac_phase21_story_window_resumes_the_live_publisher_after_close() {
         Some(1),
         "the technology date stays live while the automatic paper is open"
     );
-    assert!(state
-        .mac_loop_scheduler
-        .mac_phase21_event_continuation
-        .is_some());
+    assert!(
+        state
+            .mac_loop_scheduler
+            .mac_phase21_event_continuation
+            .is_some()
+    );
 
     state.begin_mac_frame_actor_phase(Duration::from_secs(59));
     assert_eq!(
@@ -21111,10 +21093,12 @@ fn mac_phase21_story_window_resumes_the_live_publisher_after_close() {
         state.city.mac_state_misc_u32_at(technology.misc_offset()),
         Some(0)
     );
-    assert!(state
-        .mac_loop_scheduler
-        .mac_phase21_event_continuation
-        .is_none());
+    assert!(
+        state
+            .mac_loop_scheduler
+            .mac_phase21_event_continuation
+            .is_none()
+    );
 }
 
 #[test]

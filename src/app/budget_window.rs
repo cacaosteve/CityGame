@@ -1654,12 +1654,8 @@ mod tests {
 
     #[test]
     fn mac_january_2040_budget_summary_combines_negative_cashflows_before_twelfths() {
-        let row_ytd = [
-            68, 12, 79, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0,
-        ];
-        let row_estimate = [
-            59, 12, 75, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0,
-        ];
+        let row_ytd = [68, 12, 79, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0];
+        let row_estimate = [59, 12, 75, 0, 0, -100, -100, 0, -25, 0, -23, 0, 0, 0, 0, 0];
         let ytd_pre_month_division = [
             816, 155, 957, 0, 0, -1200, -1200, 0, -300, 0, -283, 0, 0, 0, 0, 0,
         ];
@@ -2986,6 +2982,784 @@ mod tests {
                 &native_xmic[slot * 8..slot * 8 + 8],
                 "annual CODE 3 export-162 XMIC slot {slot}"
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private R14 January 2053 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2053_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2053_CAPTURE_DIR").unwrap(),
+        );
+        let snapshot = std::fs::read(
+            root.join("r14-january-code3-export162-entry-age45900-tick680087-budget-review.cgms"),
+        )
+        .unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&snapshot).unwrap();
+        let entry_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-entry-age45900-tick680087-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+        let entry_ram =
+            std::fs::read(root.join("code3-export162-entry-age45900-tick680087.ram")).unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2053,
+                month: 1
+            })
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        assert_eq!(state.city.microsim_at(11).unwrap().tile_id, 0xd3);
+        // Native return XMIC copies the three zero transit accumulators before
+        // clearing them; the base CGMS projection carries stale older values.
+        for mode in 0..3 {
+            state.city.set_mac_transit_accumulator(mode, 0);
+        }
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x08b2_30d2);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc6d3_9797);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0xe47f);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        assert_eq!(funding, [100; 5]);
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x4488_991f);
+        assert_eq!(state.mac_game_rng.state(), 0xc6d3_9797);
+        assert_eq!(state.mac_app_lfsr.state(), 0xd30b);
+        let native_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-return-age45900-tick680088-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "annual CODE 3 export-162 XMIC slot {slot}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private R14 January 2054 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2054_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2054_CAPTURE_DIR").unwrap(),
+        );
+        let snapshot = std::fs::read(
+            root.join("r14-january-code3-export162-entry-age46200-tick695094-budget-review.cgms"),
+        )
+        .unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&snapshot).unwrap();
+        let entry_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-entry-age46200-tick695094-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+        let entry_ram =
+            std::fs::read(root.join("code3-export162-entry-age46200-tick695094.ram")).unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2054,
+                month: 1
+            })
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        assert_eq!(state.city.microsim_at(11).unwrap().tile_id, 0xd3);
+        // Native return XMIC copies the three zero transit accumulators before
+        // clearing them; the base CGMS projection carries stale older values.
+        for mode in 0..3 {
+            state.city.set_mac_transit_accumulator(mode, 0);
+        }
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x17c3_3b91);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc6d3_9797);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0xfa26);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        assert_eq!(funding, [100; 5]);
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x571e_6fcb);
+        assert_eq!(state.mac_game_rng.state(), 0xc6d3_9797);
+        assert_eq!(state.mac_app_lfsr.state(), 0xefb9);
+        let native_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-return-age46200-tick695096-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "annual CODE 3 export-162 XMIC slot {slot}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private R14 January 2055 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2055_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2055_CAPTURE_DIR").unwrap(),
+        );
+        let snapshot = std::fs::read(
+            root.join("r14-january-code3-export162-entry-age46500-tick706420-budget-review.cgms"),
+        )
+        .unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&snapshot).unwrap();
+        let entry_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-entry-age46500-tick706420-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+        let entry_ram =
+            std::fs::read(root.join("code3-export162-entry-age46500-tick706420.ram")).unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2055,
+                month: 1
+            })
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        assert_eq!(state.city.microsim_at(11).unwrap().tile_id, 0xd3);
+        // Native return XMIC copies the three zero transit accumulators before
+        // clearing them; the base CGMS projection carries stale older values.
+        for mode in 0..3 {
+            state.city.set_mac_transit_accumulator(mode, 0);
+        }
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x2b73_e98d);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc6d3_9797);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x750e);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        assert_eq!(funding, [100; 5]);
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x2acb_fe14);
+        assert_eq!(state.mac_game_rng.state(), 0xc6d3_9797);
+        assert_eq!(state.mac_app_lfsr.state(), 0xea1c);
+        let native_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-return-age46500-tick706422-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "annual CODE 3 export-162 XMIC slot {slot}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private R14 January 2056 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2056_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2056_CAPTURE_DIR").unwrap(),
+        );
+        let snapshot = std::fs::read(
+            root.join("r14-january-code3-export162-entry-age46800-tick716955-budget-review.cgms"),
+        )
+        .unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&snapshot).unwrap();
+        let entry_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-entry-age46800-tick716955-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+        let entry_ram =
+            std::fs::read(root.join("code3-export162-entry-age46800-tick716955.ram")).unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2056,
+                month: 1
+            })
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        assert_eq!(state.city.microsim_at(11).unwrap().tile_id, 0xd3);
+        // Native return XMIC copies the three zero transit accumulators before
+        // clearing them; the base CGMS projection carries stale older values.
+        for mode in 0..3 {
+            state.city.set_mac_transit_accumulator(mode, 0);
+        }
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x3532_e775);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc6d3_9797);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0xf27d);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        assert_eq!(funding, [100; 5]);
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x487e_5262);
+        assert_eq!(state.mac_game_rng.state(), 0xc6d3_9797);
+        assert_eq!(state.mac_app_lfsr.state(), 0xff0f);
+        let native_xmic =
+            std::fs::read(root.join(
+                "r14-january-code3-export162-return-age46800-tick716957-budget-review-xmic.bin",
+            ))
+            .unwrap();
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "annual CODE 3 export-162 XMIC slot {slot}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private R14 January 2057–2085 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2085_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2085_CAPTURE_DIR").unwrap(),
+        );
+        let cases = [
+            (
+                2057,
+                47100,
+                732039,
+                732041,
+                0x3dd4_d1c8,
+                0x0b08_89a1,
+                0xdd34,
+                0xa19d,
+            ),
+            (
+                2058,
+                47400,
+                743454,
+                743456,
+                0x60fe_5dab,
+                0x7d13_3ed7,
+                0x51b8,
+                0xa370,
+            ),
+            (
+                2059,
+                47700,
+                754928,
+                754930,
+                0x67ab_fad3,
+                0x2878_20d9,
+                0xc90b,
+                0x89e3,
+            ),
+            (
+                2060,
+                48000,
+                766369,
+                766371,
+                0x1047_92a1,
+                0x2093_80c1,
+                0xfc09,
+                0xe3e7,
+            ),
+            (
+                2061,
+                48300,
+                777804,
+                777806,
+                0x3ca5_1802,
+                0x6b53_89a0,
+                0x6b1c,
+                0xd638,
+            ),
+            (
+                2062,
+                48600,
+                789250,
+                789251,
+                0x2ec2_3db3,
+                0x0264_57da,
+                0x5478,
+                0xa8f0,
+            ),
+            (
+                2063,
+                48900,
+                798587,
+                798588,
+                0x5ba0_e6dd,
+                0x73b7_5640,
+                0x66c1,
+                0xcd82,
+            ),
+            (
+                2064,
+                49200,
+                807766,
+                807767,
+                0x1ce7_1a96,
+                0x1cd3_1e86,
+                0x3348,
+                0x6690,
+            ),
+            (
+                2065,
+                49500,
+                817075,
+                817076,
+                0x6735_0063,
+                0x4cf0_b15a,
+                0x33de,
+                0x67bc,
+            ),
+            (
+                2066,
+                49800,
+                826331,
+                826332,
+                0x7de0_367e,
+                0x6ad9_a235,
+                0x741b,
+                0xe836,
+            ),
+            (
+                2067,
+                50100,
+                835526,
+                835527,
+                0x0020_2640,
+                0x0ccb_b712,
+                0xeeac,
+                0xc6ad,
+            ),
+            (
+                2068,
+                50400,
+                844814,
+                844815,
+                0x4886_be9b,
+                0x19e1_d6ec,
+                0xf6cd,
+                0xf66f,
+            ),
+            (
+                2069,
+                50700,
+                854083,
+                854084,
+                0x1acd_2827,
+                0x7702_90ac,
+                0x6758,
+                0xceb0,
+            ),
+            (
+                2070,
+                51000,
+                863407,
+                863407,
+                0x484d_b4fb,
+                0x3586_153b,
+                0x92b0,
+                0x3e95,
+            ),
+            (
+                2071,
+                51300,
+                872588,
+                872589,
+                0x3c22_3804,
+                0x2ef0_1f87,
+                0x2a77,
+                0x54ee,
+            ),
+            (
+                2072,
+                51600,
+                881992,
+                881993,
+                0x1826_8d69,
+                0x67fe_fbca,
+                0x1082,
+                0x2104,
+            ),
+            (
+                2073,
+                51900,
+                891245,
+                891246,
+                0x4aad_b0d1,
+                0x7ddb_baf0,
+                0xd905,
+                0xa9ff,
+            ),
+            (
+                2074,
+                52200,
+                900470,
+                900471,
+                0x7d72_90cd,
+                0x10bb_6991,
+                0x9825,
+                0x2bbf,
+            ),
+            (
+                2075,
+                52500,
+                909730,
+                909731,
+                0x0afc_9b83,
+                0x5b8e_0ea9,
+                0x72c7,
+                0xe58e,
+            ),
+            (
+                2076,
+                52800,
+                918939,
+                918940,
+                0x0439_afe9,
+                0x79d6_fc9d,
+                0x0da2,
+                0x1b44,
+            ),
+            (
+                2077,
+                53100,
+                928146,
+                928147,
+                0x4b8f_ad6b,
+                0x65e3_1336,
+                0x2705,
+                0x4e0a,
+            ),
+            (
+                2078,
+                53400,
+                937376,
+                937377,
+                0x2c7f_3a82,
+                0x67b5_360f,
+                0xa32c,
+                0x5dad,
+            ),
+            (
+                2079,
+                53700,
+                946558,
+                946559,
+                0x7cd2_b49a,
+                0x1859_b3cb,
+                0xa061,
+                0x5b37,
+            ),
+            (
+                2080,
+                54000,
+                955733,
+                955734,
+                0x268a_66c8,
+                0x3e76_9a88,
+                0xb851,
+                0x6b57,
+            ),
+            (
+                2081,
+                54300,
+                964959,
+                964960,
+                0x5885_445f,
+                0x55b2_c1df,
+                0x7d30,
+                0xfa60,
+            ),
+            (
+                2082,
+                54600,
+                974263,
+                974264,
+                0x6e0d_6cf5,
+                0x64e0_f533,
+                0x5330,
+                0xa660,
+            ),
+            (
+                2083,
+                54900,
+                983520,
+                983521,
+                0x3f01_f690,
+                0x2ade_a2e0,
+                0x5941,
+                0xb282,
+            ),
+            (
+                2084,
+                55200,
+                992832,
+                992833,
+                0x4bbd_8b63,
+                0x0a51_82ba,
+                0x7b77,
+                0xf6ee,
+            ),
+            (
+                2085,
+                55500,
+                1002188,
+                1002189,
+                0x65a2_5735,
+                0x3ce2_20ac,
+                0x8a8d,
+                0x0eef,
+            ),
+        ];
+
+        for (
+            year,
+            age,
+            entry_tick,
+            return_tick,
+            process_before,
+            process_after,
+            lfsr_before,
+            lfsr_after,
+        ) in cases
+        {
+            let stem = |role: &str, tick: u32| {
+                format!("r14-january-code3-export162-{role}-age{age}-tick{tick}-budget-review")
+            };
+            let entry_cgms =
+                std::fs::read(root.join(format!("{}.cgms", stem("entry", entry_tick)))).unwrap();
+            let mut city = crate::city::city_from_cgms_v4_for_test(&entry_cgms).unwrap();
+            let entry_xmic =
+                std::fs::read(root.join(format!("{}-xmic.bin", stem("entry", entry_tick))))
+                    .unwrap();
+            assert_eq!(entry_xmic.len(), 150 * 8);
+            for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+                city.set_microsim_tile_id(slot, row[0]);
+                city.set_microsim_stat0(slot, row[1]);
+                city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+                city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+                city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+            }
+            let entry_ram = std::fs::read(root.join(format!(
+                "code3-export162-entry-age{age}-tick{entry_tick}.ram"
+            )))
+            .unwrap();
+            assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+            let native_u32 = |address: usize| {
+                u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+            };
+            let a5 = native_u32(0x904) as usize;
+            let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+            for row in 0..16 {
+                let start = table + row * 0x70;
+                let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+                for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                    values[field] = native_u32(start + offset);
+                }
+                city.set_budget_misc_u32_values(
+                    0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4,
+                    &values,
+                );
+            }
+            assert_eq!(
+                city.saved_date(),
+                Some(crate::city::CityDate { year, month: 1 })
+            );
+
+            let mut state = crate::app::tests::test_state(city);
+            state.engine_fidelity = EngineFidelity::Mac68k;
+            assert_eq!(state.city.microsim_at(11).unwrap().tile_id, 0xd3);
+            for mode in 0..3 {
+                state.city.set_mac_transit_accumulator(mode, 0);
+            }
+            state.mac_process_rng = crate::mac_random::MacToolboxRng::new(process_before);
+            state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc6d3_9797);
+            state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(lfsr_before);
+            let funding = std::array::from_fn(|row| {
+                mac_budget_service_funding_raw_for_city(&state.city, row)
+            });
+            assert_eq!(funding, [100; 5]);
+            let tax_rates =
+                std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+            state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+            assert_eq!(state.mac_process_rng.seed(), process_after, "year {year}");
+            assert_eq!(state.mac_game_rng.state(), 0xc6d3_9797, "year {year}");
+            assert_eq!(state.mac_app_lfsr.state(), lfsr_after, "year {year}");
+            let native_xmic =
+                std::fs::read(root.join(format!("{}-xmic.bin", stem("return", return_tick))))
+                    .unwrap();
+            assert_eq!(native_xmic.len(), 150 * 8);
+            for slot in 0..150 {
+                let row = state.city.microsim_at(slot).unwrap();
+                let citygame_row = [
+                    row.tile_id,
+                    row.stat0,
+                    (row.stat1 >> 8) as u8,
+                    row.stat1 as u8,
+                    (row.stat2 >> 8) as u8,
+                    row.stat2 as u8,
+                    (row.stat3 >> 8) as u8,
+                    row.stat3 as u8,
+                ];
+                assert_eq!(
+                    &citygame_row,
+                    &native_xmic[slot * 8..slot * 8 + 8],
+                    "annual CODE 3 export-162 XMIC year {year}, slot {slot}"
+                );
+            }
         }
     }
 

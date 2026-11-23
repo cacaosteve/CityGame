@@ -3,7 +3,7 @@
 //! Strokes, highways, and bridge transactions retain their existing worker bodies.
 
 use super::PlacementSound;
-use crate::city::{CITY_HEIGHT, CITY_WIDTH};
+use crate::city::{CITY_HEIGHT, CITY_WIDTH, City};
 use crate::ui::EditTool;
 
 mod bridges;
@@ -186,6 +186,38 @@ pub(super) enum NetworkKind {
     Power,
     Road,
     Rail,
+}
+
+/// Retail CTY normalization calls the matching network writer after removing
+/// bridge endpoints 0x57, 0x5a, and 0x5c. Reuse those writers' shared tile
+/// reshaper and overlay persistence on center, left, right, up, and down.
+pub(super) fn pe_refresh_cty_bridge_neighbors(
+    city: &mut City,
+    x: usize,
+    y: usize,
+    kind: NetworkKind,
+) {
+    for (nx, ny) in std::iter::once((x, y)).chain(super::neighbor_tiles(x, y)) {
+        let is_bridge_center = (nx, ny) == (x, y);
+        let building = city.building_at(nx, ny);
+        // FUN_004843D0 first erases the bridge with PlaceTile(0), then calls
+        // the matching network writer at that same coordinate. Preserve that
+        // center refresh even though its XBLD byte is now zero; the bridge's
+        // freshly written XTER orientation drives the slope tile result.
+        let refresh = is_bridge_center
+            || match kind {
+                NetworkKind::Power => (0x0e..=0x1c).contains(&building),
+                NetworkKind::Road => (0x1d..=0x2b).contains(&building),
+                NetworkKind::Rail => (0x2c..=0x3a).contains(&building),
+            };
+        if refresh {
+            let tile = pe_reshape::pe_surface_neighbor_shape(city, nx, ny, kind);
+            super::pe_place_tile_441f00(city, nx, ny, tile);
+        }
+        if matches!(kind, NetworkKind::Road | NetworkKind::Rail) {
+            city_connections::persist_pe_neighbor_connection_overlay(city, nx, ny);
+        }
+    }
 }
 
 impl NetworkKind {

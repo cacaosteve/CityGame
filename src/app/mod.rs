@@ -77,6 +77,7 @@ mod city_attitude;
 mod city_options;
 mod city_publication;
 mod city_valuation;
+mod classic_cty_import;
 mod command_bus;
 mod coverage;
 mod cursors;
@@ -208,9 +209,9 @@ mod traffic_rendering;
 mod transport_maintenance;
 mod underground;
 mod underground_model;
-mod win95_new_city_setup;
 mod view_navigation;
 mod weather;
+mod win95_new_city_setup;
 mod window_support;
 mod zoning_signs;
 
@@ -236,23 +237,22 @@ use city_attitude::*;
 #[cfg(test)]
 use city_options::{
     AUTO_GOTO_MISC_OFFSET, MISC_NEWSPAPER_EXTRA_OFFSET, MISC_NEWSPAPER_SUBSCRIPTION_OFFSET,
-    NO_DISASTERS_MISC_OFFSET,
-    auto_goto_enabled_for_city, ensure_default_city_options,
+    NO_DISASTERS_MISC_OFFSET, auto_goto_enabled_for_city, ensure_default_city_options,
     ensure_newspaper_list_misc_defaults_before_extension, music_enabled_for_city,
     set_city_auto_goto_enabled, set_city_music_enabled, set_city_sound_effects_enabled,
     sound_effects_enabled_for_city,
 };
 use city_options::{
     CITY_OPTION_DISABLED_VALUE, CITY_OPTION_ENABLED_VALUE, MISC_NEWSPAPER_CHOICE_OFFSET,
-    MUSIC_MISC_OFFSET, SOUND_EFFECTS_MISC_OFFSET,
-    auto_goto_enabled_for_engine, city_difficulty_for_city, ensure_default_city_options_for_engine,
-    music_enabled_for_engine, newspaper_choice_for_city, newspaper_extra_enabled_for_city,
-    newspaper_max_choice_for_city, newspaper_subscription_enabled_for_city,
-    no_disasters_enabled_for_city, no_disasters_enabled_for_engine,
-    set_auto_goto_enabled_for_engine, set_city_newspaper_choice, set_city_newspaper_extra_enabled,
-    set_city_newspaper_subscription_enabled, set_city_no_disasters_enabled,
-    set_music_enabled_for_engine, set_no_disasters_enabled_for_engine,
-    set_sound_effects_enabled_for_engine, sound_effects_enabled_for_engine,
+    MUSIC_MISC_OFFSET, SOUND_EFFECTS_MISC_OFFSET, auto_goto_enabled_for_engine,
+    city_difficulty_for_city, ensure_default_city_options_for_engine, music_enabled_for_engine,
+    newspaper_choice_for_city, newspaper_extra_enabled_for_city, newspaper_max_choice_for_city,
+    newspaper_subscription_enabled_for_city, no_disasters_enabled_for_city,
+    no_disasters_enabled_for_engine, set_auto_goto_enabled_for_engine, set_city_newspaper_choice,
+    set_city_newspaper_extra_enabled, set_city_newspaper_subscription_enabled,
+    set_city_no_disasters_enabled, set_music_enabled_for_engine,
+    set_no_disasters_enabled_for_engine, set_sound_effects_enabled_for_engine,
+    sound_effects_enabled_for_engine,
 };
 #[cfg(test)]
 use city_publication::pe_year_end_flag;
@@ -276,8 +276,8 @@ use city_valuation::{
     sc2kfix_pe_city_value_total,
 };
 use command_bus::{
-    AppCommand, Win95CloseAction, Win95FileDialog, app_command_for_menu_command, command_queue, menu_callback, pop_command,
-    push_command, win95_file_menu_shortcut, windows_menu_shortcut,
+    AppCommand, Win95CloseAction, Win95FileDialog, app_command_for_menu_command, command_queue,
+    menu_callback, pop_command, push_command, win95_file_menu_shortcut, windows_menu_shortcut,
 };
 
 pub(crate) extern "C" fn document_open_callback(path: *const std::ffi::c_char) {
@@ -340,9 +340,9 @@ use density::*;
 use dialogs::{
     ARCOLOGY_CHOICES, ArcologyDialogState, CityInfoDialog, MilitaryBaseDialogState,
     NewspaperEdition, PowerPlantDialogState, SignDialogState, arcology_choice_for_tool,
-    arcology_dialog_hit_test, handle_modal_pointer_down,
-    handle_modal_pointer_up, military_base_dialog_hit_test, power_plant_choice_for_tool,
-    power_plant_dialog_hit_test, sync_sign_text_input,
+    arcology_dialog_hit_test, handle_modal_pointer_down, handle_modal_pointer_up,
+    military_base_dialog_hit_test, power_plant_choice_for_tool, power_plant_dialog_hit_test,
+    sync_sign_text_input,
 };
 #[cfg(test)]
 use dialogs::{
@@ -350,10 +350,10 @@ use dialogs::{
     arcology_cancel_rect, arcology_card_rect, arcology_dialog_rect, arcology_info_rect,
     budget_auto_budget_rect, budget_bond_button_rect, budget_service_funding_adjust_rect,
     budget_tax_adjust_rect, city_info_close_rect, city_info_dialog_hit_test, city_info_dialog_rect,
-    city_info_dialog_rect_for, city_map_cell_color, city_map_cell_rect_for_tile, city_map_panel_rect_and_cell,
-    city_map_tile_for_point, graph_legend_rect, graph_panel_xgrp_series, graph_scale_rect,
-    industry_tax_adjust_rect, ordinance_row_rect, point_in_arcology_dialog,
-    point_in_power_plant_dialog, population_panel_demographic_rows,
+    city_info_dialog_rect_for, city_map_cell_color, city_map_cell_rect_for_tile,
+    city_map_panel_rect_and_cell, city_map_tile_for_point, graph_legend_rect,
+    graph_panel_xgrp_series, graph_scale_rect, industry_tax_adjust_rect, ordinance_row_rect,
+    point_in_arcology_dialog, point_in_power_plant_dialog, population_panel_demographic_rows,
     population_panel_demographic_rows_with_power,
     population_panel_demographic_rows_with_power_and_fidelity, population_panel_transit_rows,
     power_plant_cancel_rect, power_plant_card_rect, power_plant_dialog_rect, power_plant_info_rect,
@@ -368,7 +368,10 @@ use disaster_progression::{
 };
 use disaster_start::*;
 use disasters::*;
-use effect_sound::{DisasterEffectPlayback, PlacementSound, disaster_effect_playback, disaster_start_sound, play_placement_sound};
+use effect_sound::{
+    DisasterEffectPlayback, PlacementSound, disaster_effect_playback, disaster_start_sound,
+    play_placement_sound,
+};
 #[cfg(test)]
 use graph_history::XGRP_SAMPLES_PER_SERIES;
 use graph_history::{
@@ -503,7 +506,8 @@ use session::{
 use session::{
     open_city_dialog, open_scenario_dialog, open_title_city_dialog, open_title_scenario_dialog,
     pe_city_mode_misc_value, persist_pe_city_mode_misc, persist_speed_misc_value_to_city,
-    save_city_dialog, save_city_dialog_before_close, sc2k_speed_misc_value, set_window_title, speed_misc_value_for_city,
+    save_city_dialog, save_city_dialog_before_close, sc2k_speed_misc_value, set_window_title,
+    speed_misc_value_for_city,
 };
 use special_building_growth::*;
 use special_zone_growth::*;

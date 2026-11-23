@@ -1389,9 +1389,8 @@ mod tests {
     #[test]
     #[ignore = "requires locally extracted Macintosh Scenario Disk data and forks"]
     fn mac_retail_scenario_pict_resources_decode() {
-        let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_SCENARIO_FIXTURES").unwrap(),
-        );
+        let root =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_SCENARIO_FIXTURES").unwrap());
         for name in ["Charleston", "Dullsville", "Flint", "Hollywood", "Oakland"] {
             let scenario = crate::mac_scenario::MacScenario::read(&root.join(name)).unwrap();
             assert!(
@@ -1595,7 +1594,10 @@ mod tests {
 
     #[test]
     fn city_name_input_keeps_western_characters_and_punctuation() {
-        let path = std::env::temp_dir().join(format!("citygame-title-western-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "citygame-title-western-{}.json",
+            std::process::id()
+        ));
         let profile = AssetProfile::load_from(path).unwrap();
         let mut title = TitleScreen::new(&profile);
         title.append_city_name("Café – €");

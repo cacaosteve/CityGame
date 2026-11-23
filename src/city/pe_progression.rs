@@ -341,10 +341,19 @@ impl City {
     /// Mirrors into MISC `0x738` tech-year dwords. PE then calls tech-unlock rebuild
     /// @ `0x42e5bf` → `0x4023ec` → `0x46a080`.
     pub fn pe_reseed_neighbor_fame_ranks_42e585(&mut self, crt: &mut Win95CrtRand) {
-        let founded = self.pe_w_year_founded;
+        self.pe_reseed_neighbor_fame_ranks_before_year_42e585(crt, self.pe_w_year_founded);
+    }
+
+    /// The Classic CTY reader calls the same reseed worker after publishing its
+    /// imported calendar, so its cutoff can be later than the new-city founding year.
+    pub(crate) fn pe_reseed_neighbor_fame_ranks_before_year_42e585(
+        &mut self,
+        crt: &mut Win95CrtRand,
+        cutoff_year: u16,
+    ) {
         for (index, &base_year) in TECHNOLOGY_BASE_DISCOVERY_YEARS.iter().enumerate() {
             let mut rank = base_year.wrapping_add(crt.random_u15() % 0x14);
-            if rank < founded {
+            if rank < cutoff_year {
                 rank = 0;
             }
             self.set_technology_discovery_year(Technology::ALL[index], u32::from(rank));

@@ -138,7 +138,10 @@ pub(super) fn decode_labels(chunks: &[CityChunk], kind: CityFileKind) -> Result<
         kind,
     )?;
     let citygame_save = chunks.iter().any(|chunk| {
-        matches!(chunk.name.as_str(), CITYGAME_MAP_PLANES_CHUNK | CITYGAME_EXTENSION_CHUNK | CITYGAME_FIRE_COVERAGE_CHUNK)
+        matches!(
+            chunk.name.as_str(),
+            CITYGAME_MAP_PLANES_CHUNK | CITYGAME_EXTENSION_CHUNK | CITYGAME_FIRE_COVERAGE_CHUNK
+        )
     });
     let windows_labels = chunks.iter().any(|chunk| {
         chunk.name == CITYGAME_WIN_LABELS_CHUNK && chunk.data == CITYGAME_WIN_LABELS_VERSION
@@ -146,8 +149,8 @@ pub(super) fn decode_labels(chunks: &[CityChunk], kind: CityFileKind) -> Result<
     let utf8_labels = chunks.iter().any(|chunk| {
         chunk.name == CITYGAME_WIN_LABELS_CHUNK && chunk.data == CITYGAME_WIN_LABELS_UTF8_VERSION
     });
-    let legacy_utf8 = kind != CityFileKind::MacCity
-        && (utf8_labels || (citygame_save && !windows_labels));
+    let legacy_utf8 =
+        kind != CityFileKind::MacCity && (utf8_labels || (citygame_save && !windows_labels));
     let mut labels = Vec::with_capacity(CITY_LABEL_COUNT);
     for record in raw.chunks_exact(CITY_LABEL_RECORD_LEN) {
         let max = if kind == CityFileKind::MacCity {
@@ -495,7 +498,12 @@ pub(super) fn decode_misc_bytes_for_kind(
         fn(&[u8]) -> Vec<u8>,
         fn(&[u8]) -> Result<Vec<u8>>,
         fn(&[u8]) -> Vec<u8>,
-    ) = (sc2_rle_decode, sc2_rle_encode, mac_rle_decode, mac_rle_encode);
+    ) = (
+        sc2_rle_decode,
+        sc2_rle_encode,
+        mac_rle_decode,
+        mac_rle_encode,
+    );
     let first = first(&chunk.data).ok();
     if first.as_ref().is_some_and(|decoded| {
         decoded.len() == WIN95_MISC_RECORD_SIZE || first_encode(decoded) == chunk.data

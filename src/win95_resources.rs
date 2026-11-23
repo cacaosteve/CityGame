@@ -127,7 +127,10 @@ fn string_block(data: &[u8], block: u16) -> Result<Vec<String>> {
 /// Extract the five native new-city reserved labels.
 pub(crate) fn new_city_reserved_labels(data: &[u8]) -> Result<[String; 5]> {
     let strings = string_block(data, 26)?;
-    strings[1..=5].to_vec().try_into().map_err(|_| anyhow!("incomplete new-city labels"))
+    strings[1..=5]
+        .to_vec()
+        .try_into()
+        .map_err(|_| anyhow!("incomplete new-city labels"))
 }
 
 /// Load the native save-success prefix and save-failure message.
@@ -200,7 +203,22 @@ mod tests {
         }
         let mut text = Vec::new();
         for value in [
-            "", "Lămas", "Two", "Three", "Four", "Five", "Wrong type", "", "", "", "", "", "Open failed", "", "", "",
+            "",
+            "Lămas",
+            "Two",
+            "Three",
+            "Four",
+            "Five",
+            "Wrong type",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "Open failed",
+            "",
+            "",
+            "",
         ] {
             let words: Vec<u16> = value.encode_utf16().collect();
             text.extend_from_slice(&(words.len() as u16).to_le_bytes());
@@ -239,7 +257,10 @@ mod tests {
     fn extracts_save_feedback_from_its_resource_block() {
         let mut bytes = fixture();
         bytes[0x230..0x234].copy_from_slice(&4_u32.to_le_bytes());
-        assert_eq!(save_feedback_strings(&bytes).unwrap(), ["Three", "Open failed"]);
+        assert_eq!(
+            save_feedback_strings(&bytes).unwrap(),
+            ["Three", "Open failed"]
+        );
         assert_eq!(not_iff_string(&bytes).unwrap(), "Five");
         assert_eq!(wrong_iff_city_type_string(&bytes).unwrap(), "Wrong type");
         assert!(new_city_reserved_labels(&bytes).is_err());
@@ -267,7 +288,8 @@ mod tests {
         let executable = std::fs::read(std::env::var_os("CITYGAME_WIN95_EXE").unwrap()).unwrap();
         let expected: [String; 2] = serde_json::from_slice(
             &std::fs::read(std::env::var_os("CITYGAME_WIN95_SAVE_FEEDBACK").unwrap()).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(save_feedback_strings(&executable).unwrap(), expected);
     }
 
@@ -277,7 +299,8 @@ mod tests {
         let executable = std::fs::read(std::env::var_os("CITYGAME_WIN95_EXE").unwrap()).unwrap();
         let expected: String = serde_json::from_slice(
             &std::fs::read(std::env::var_os("CITYGAME_WIN95_OPEN_FAILURE").unwrap()).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(city_open_failure_string(&executable).unwrap(), expected);
     }
 

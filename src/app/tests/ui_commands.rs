@@ -249,6 +249,112 @@ fn mac_paper_selects_song_once_on_open_from_app_lfsr() {
 }
 
 #[test]
+#[ignore = "requires the private R13 Quadra capture and original Mac paper resource pack"]
+fn mac_r13_automatic_story_window_reaches_native_quickdraw_seed() {
+    let pack = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_PAPER_PACK").unwrap());
+    let capture = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_STORY_R13").unwrap());
+    let city_path =
+        std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_AUTODEBT_CITY").unwrap());
+    let native_events = std::fs::read_to_string(capture.join("story-window-events.csv")).unwrap();
+    let native_return = native_events
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("export233-return,"))
+        .unwrap();
+    let native_return: Vec<_> = native_return.split(',').collect();
+    let expected_quickdraw = u32::from_str_radix(native_return[10], 16).unwrap();
+    let expected_app_lfsr = u16::from_str_radix(native_return[12], 16).unwrap();
+    let settings = std::env::temp_dir().join(format!(
+        "citygame-r13-paper-settings-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &settings,
+        serde_json::json!({"schema_version": 1, "original_graphics": pack}).to_string(),
+    )
+    .unwrap();
+    let profile = crate::asset_profile::AssetProfile::load_from(settings.clone()).unwrap();
+    let mut city = City::load(&city_path).unwrap();
+    city.kind = CityFileKind::MacCity;
+    // City::load derives this save's name from its temporary filename because
+    // it has no CNAM chunk; the native document is named "AutoDebt".
+    city.name = "AutoDebt".to_owned();
+    city.set_mac_state_misc_u32_at(MISC_CITY_AGE_OFFSET, 29_446);
+    city.set_mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET, 0); // AutoDebt Picayune.
+    city.set_mac_state_misc_u32_at(0x1008, 1); // Extra enabled.
+    city.set_mac_state_misc_u32_at(0x102c, 100); // Native opinion-poll gate.
+    city.set_mac_state_misc_u32_at(MISC_HEAT_OFFSET, 170);
+    city.set_mac_state_misc_u32_at(MISC_WIND_OFFSET, 47);
+    city.set_mac_state_misc_u32_at(MISC_HUMID_OFFSET, 26);
+    assert!(city.queue_mac_newspaper_story(5, 5));
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.mac_newspaper.tick_word = Some(2_929);
+    state.mac_process_rng = MacToolboxRng::new(0x15b3_0408);
+    state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x48f3);
+    state.configure_original_newspaper_data(&profile);
+
+    state.open_mac_story_window();
+
+    assert!(
+        state.mac_newspaper.paint.is_some(),
+        "original resources loaded"
+    );
+    let paint = state.mac_newspaper.paint.as_ref().unwrap();
+    assert!(
+        paint
+            .survey
+            .lines
+            .iter()
+            .any(|line| line.text.starts_with(b"AutoDebt")),
+        "the temporary fixture path must not replace the native city name"
+    );
+    println!(
+        "first-paint initial={:08x} lead=({:08x},{:08x}) stories={:08x?} weather={:08x} survey={:08x} final={:08x}",
+        paint.initial_seed,
+        paint.lead.after_lead_seed,
+        paint.lead.after_picture_seed,
+        paint
+            .stories
+            .iter()
+            .map(|story| story.ending_seed)
+            .collect::<Vec<_>>(),
+        paint.weather.ending_seed,
+        paint.survey.ending_seed,
+        state.mac_process_rng.seed()
+    );
+    println!(
+        "headline={:?} rows={:?}",
+        state.mac_newspaper.headline,
+        (0..9)
+            .map(|i| state.city.mac_story_record(i))
+            .collect::<Vec<_>>()
+    );
+    println!(
+        "weather-lines={:?} weather-filler={} survey-lines={:?} survey-filler={} poll={:?}",
+        paint
+            .weather
+            .lines
+            .iter()
+            .map(|line| String::from_utf8_lossy(&line.text).into_owned())
+            .collect::<Vec<_>>(),
+        paint.weather.filler.len(),
+        paint
+            .survey
+            .lines
+            .iter()
+            .map(|line| String::from_utf8_lossy(&line.text).into_owned())
+            .collect::<Vec<_>>(),
+        paint.survey.filler.len(),
+        state.city.mac_opinion_poll_results()
+    );
+    assert_eq!(state.mac_process_rng.seed(), expected_quickdraw);
+    assert_eq!(state.mac_app_lfsr.state(), expected_app_lfsr);
+    std::fs::remove_file(settings).unwrap();
+}
+
+#[test]
 #[ignore = "requires user-supplied Mac System font and private Quadra capture"]
 fn mac_newspaper_loads_user_font_from_asset_profile() {
     let capture = std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_PAPER_WIDTHS").unwrap());
@@ -5099,6 +5205,24 @@ fn pe_newspaper_gift_zone_paint_size1_436ee7_places_and_marks_corners() {
 }
 
 #[test]
+fn pe_newspaper_gift_zone_story_bands_use_the_native_building_table_selector() {
+    for (story_id, table_type) in [(0x158, 0), (0x1e8, 1), (0x272, 2)] {
+        let mut city =
+            City::new_blank("/tmp/sc2000-gift-zone-table.sc2", "GiftZoneTable").expect("blank");
+        let mut crt = Win95CrtRand::new(0x1937);
+        let mut expected_crt = crt;
+        let expected = pe_zone_paint_pick_building_4e755e(&mut expected_crt, 1, table_type);
+        pe_newspaper_gift_entry_483250(&mut city, &mut crt, 20, 20, story_id);
+        assert_eq!(
+            city.building_at(20, 20),
+            expected,
+            "story {story_id:#x} native zone table index {table_type}"
+        );
+        assert_eq!(crt.seed(), expected_crt.seed(), "story {story_id:#x} CRT");
+    }
+}
+
+#[test]
 fn pe_newspaper_gift_zone_paint_size_gt1_436fb6_stamps_2x2() {
     let mut city = City::new_blank("/tmp/sc2000-gift-zpaint2.sc2", "GiftZP2").expect("blank");
     let mut crt = Win95CrtRand::new(2);
@@ -9106,8 +9230,14 @@ fn win95_file_shortcuts_route_original_commands_without_stealing_plain_keys() {
     ] {
         assert_eq!(win95_file_menu_shortcut(key, Mod::LCTRLMOD), Some(expected));
         assert_eq!(win95_file_menu_shortcut(key, Mod::NOMOD), None);
-        assert_eq!(win95_file_menu_shortcut(key, Mod::LCTRLMOD | Mod::LSHIFTMOD), None);
-        assert_eq!(win95_file_menu_shortcut(key, Mod::LGUIMOD | Mod::LCTRLMOD), None);
+        assert_eq!(
+            win95_file_menu_shortcut(key, Mod::LCTRLMOD | Mod::LSHIFTMOD),
+            None
+        );
+        assert_eq!(
+            win95_file_menu_shortcut(key, Mod::LGUIMOD | Mod::LCTRLMOD),
+            None
+        );
     }
 }
 
@@ -9442,8 +9572,8 @@ fn pe_modal_mac_fidelity_does_not_inherit_native_pe_pause() {
 // 0x9a43 first, then the annual marina row consumes the next shared LFSR step.
 #[test]
 fn mac_quadra_2011_captured_budget_song_and_marina_draws_match_in_order() {
-    let mut city = City::new_blank("/tmp/mac-quadra-2011-budget-marina.sc2", "2011")
-        .expect("blank city");
+    let mut city =
+        City::new_blank("/tmp/mac-quadra-2011-budget-marina.sc2", "2011").expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_mac_state_misc_u32_at(0x102c, 5_200);
     city.set_mac_state_misc_u32_at(0x01f0 + 0xf8 * 4, 0);
@@ -9470,8 +9600,8 @@ fn mac_quadra_2011_captured_budget_song_and_marina_draws_match_in_order() {
 
 #[test]
 fn mac_quadra_2018_budget_open_and_annual_marina_share_lfsr_in_order() {
-    let mut city = City::new_blank("/tmp/mac-quadra-2018-budget-marina.sc2", "2018")
-        .expect("blank city");
+    let mut city =
+        City::new_blank("/tmp/mac-quadra-2018-budget-marina.sc2", "2018").expect("blank city");
     city.kind = CityFileKind::MacCity;
     city.set_mac_state_misc_u32_at(0x102c, 5_200);
     city.set_mac_state_misc_u32_at(0x01f0 + 0xf8 * 4, 0);

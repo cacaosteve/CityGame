@@ -161,12 +161,14 @@ pub(super) fn pe_newspaper_gift_entry_483250(
         0x2f3 if ux > 0 && uy > 0 => {
             let _ = pe_newspaper_gift_place_coal_4836d7(city, ux - 1, uy - 1);
         }
-        // PE @ `0x483706`: stories `0x2fd..=0x301` fire (`cmp 0x302` / `cmp 0x2fd`).
-        0x2fd..=0x301 => {
+        // PE @ `0x483706`: only story `0x2fd` reaches PlaceTile-size fire;
+        // `0x2fe..=0x301` branch to the common no-op epilogue.
+        0x2fd => {
             let _ = pe_newspaper_gift_place_fire_483706(city, ux, uy);
         }
-        // PE @ `0x483731`: stories `0x306..=0x30a` police (`cmp 0x30b` / `cmp 0x306`).
-        0x306..=0x30a => {
+        // PE @ `0x483731`: only story `0x306` reaches PlaceTile-size police;
+        // `0x307..=0x30a` branch to the common no-op epilogue.
+        0x306 => {
             let _ = pe_newspaper_gift_place_police_483731(city, ux, uy);
         }
         // PE @ `0x483767`: stories `0x30b`/`0x31b` stadium at `(x+1, y-2)`.
@@ -435,37 +437,37 @@ pub(super) fn pe_newspaper_gift_zone_type_power_483b48(
 }
 
 /// PE gift zone-paint size index after zone-type @ `0x483bd5`..`0x483cec`.
-/// Returns `(ax_size, paint_type)` where `ax_size` is the pre-`dec` jump selector
-/// (`1`..=`6`); `None` when PE takes the `ax==0` / out-of-band exit.
+/// Returns `(ax_size, paint_type, table_type)` where `ax_size` is the pre-`dec` jump
+/// selector (`1`..=`6`); `None` when PE takes the `ax==0` / out-of-band exit.
 fn pe_newspaper_gift_zone_paint_selector_483bd5(
     story_id: u16,
     zone_nibble: u8,
-) -> Option<(u8, u8)> {
-    let paint_from_zone = zone_nibble.saturating_sub(1) / 2;
-    let (ax_size, paint_type) = if story_id < 0xf9 {
+) -> Option<(u8, u8, u8)> {
+    let (ax_size, paint_type, table_type) = if story_id < 0xf9 {
         return None;
     } else if story_id < 0x105 {
-        (1u8, paint_from_zone)
+        let zone_type = zone_nibble.saturating_sub(1) / 2;
+        (1u8, zone_type, zone_type)
     } else if story_id < 0x195 {
         let delta = u32::from(story_id - 0x105);
-        (((delta / 0x24) + 1) as u8, (delta % 9) as u8)
+        (((delta / 0x24) + 1) as u8, (delta % 9) as u8, 0)
     } else if story_id < 0x19e {
-        (5u8, ((story_id - 0x195) % 9) as u8)
+        (5u8, ((story_id - 0x195) % 9) as u8, 0)
     } else if story_id < 0x1a7 {
-        (6u8, ((story_id - 0x19e) % 9) as u8)
+        (6u8, ((story_id - 0x19e) % 9) as u8, 0)
     } else if (0x1b0..0x264).contains(&story_id) {
         let delta = u32::from(story_id - 0x1b0);
-        ((delta / 0x24) as u8, (delta % 9) as u8)
+        ((delta / 0x24) as u8, (delta % 9) as u8, 1)
     } else if (0x26d..0x2b5).contains(&story_id) {
         let delta = u32::from(story_id - 0x26d);
-        ((2 * (delta / 0x24) + 2) as u8, (delta % 9) as u8)
+        ((2 * (delta / 0x24) + 2) as u8, (delta % 9) as u8, 2)
     } else {
         return None;
     };
     if !(1..=6).contains(&ax_size) {
         return None;
     }
-    Some((ax_size, paint_type))
+    Some((ax_size, paint_type, table_type))
 }
 
 /// PE newspaper gift zone-type then zone-paint fallthrough @ `0x483b48`→`0x483cf3`+.
@@ -478,16 +480,34 @@ fn pe_newspaper_gift_zone_type_then_paint_483b48(
 ) {
     pe_newspaper_gift_zone_type_power_483b48(city, x, y, story_id);
     let zone_nibble = city.zone_at(x, y).map(|z| z.raw_bits() & 0x0f).unwrap_or(0);
-    let Some((ax_size, paint_type)) =
+    let Some((ax_size, paint_type, table_type)) =
         pe_newspaper_gift_zone_paint_selector_483bd5(story_id, zone_nibble)
     else {
         return;
     };
     match ax_size {
-        1 => pe_newspaper_gift_zone_paint_size1_436ee7(city, crt, x, y, paint_type),
-        2 => pe_newspaper_gift_zone_paint_size2_483d08(city, crt, x, y, paint_type),
-        3 => pe_newspaper_gift_zone_paint_size3_483d6b(city, crt, x, y, paint_type),
-        4 => pe_newspaper_gift_zone_paint_size4_483dce(city, crt, x, y, paint_type),
+        1 => pe_newspaper_gift_zone_paint_size1_436ee7(city, crt, x, y, table_type),
+        2 => pe_newspaper_gift_zone_paint_size2_483d08(
+            city,
+            crt,
+            x,
+            y,
+            if paint_type == 4 { 4 } else { table_type },
+        ),
+        3 => pe_newspaper_gift_zone_paint_size3_483d6b(
+            city,
+            crt,
+            x,
+            y,
+            if paint_type == 4 { 4 } else { table_type },
+        ),
+        4 => pe_newspaper_gift_zone_paint_size4_483dce(
+            city,
+            crt,
+            x,
+            y,
+            if paint_type == 4 { 4 } else { table_type },
+        ),
         // PE hospital/church JT arms gate on paint type `bx == 4`.
         5 if paint_type == 4 => {
             let _ = pe_newspaper_gift_place_hospital_483df1(city, x, y);
@@ -582,7 +602,11 @@ pub(super) fn pe_newspaper_gift_mark_zone_corners_436f5f(city: &mut City, x: usi
 
 /// PE zone-paint building pick @ `0x436ee7`/`0x436fc8`: index `size + type*4` into
 /// base `0x4e755e` and modulus `0x4e7586`, then `base + rand()%mod` (mod `0` → `1`).
-fn pe_zone_paint_pick_building_4e755e(crt: &mut Win95CrtRand, size: u8, zone_type: u8) -> u8 {
+pub(super) fn pe_zone_paint_pick_building_4e755e(
+    crt: &mut Win95CrtRand,
+    size: u8,
+    zone_type: u8,
+) -> u8 {
     let size = size.max(1).min(4);
     let zone_type = zone_type.min(6);
     let index = usize::from(size) + usize::from(zone_type) * 4;

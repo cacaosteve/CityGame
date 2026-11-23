@@ -58,7 +58,9 @@ pub(crate) fn rotated_underground_id(tile: u8, rotation: u8) -> u8 {
 /// `placed` reports PlaceTile calls so the save transform can update
 /// the appropriate ordinary or military census.
 pub(crate) fn pe_rotate_special_tiles(
-    buildings: &mut [u8], bits: &mut [u8], clockwise: bool,
+    buildings: &mut [u8],
+    bits: &mut [u8],
+    clockwise: bool,
     mut placed: impl FnMut(usize, usize, u8, u8),
 ) {
     assert!(buildings.len() >= 128 * 128 && bits.len() >= 128 * 128);
@@ -79,7 +81,9 @@ pub(crate) fn pe_rotate_special_tiles(
                 buildings[i] = replacement;
                 placed(x, y, tile, replacement);
                 bits[i] &= !2;
-                if selector < 4 { bits[i] |= 2; }
+                if selector < 4 {
+                    bits[i] |= 2;
+                }
             } else if (0x51..=0x5c).contains(&tile) || matches!(tile, 0x6a | 0x6b) {
                 if clockwise {
                     if flagged {
@@ -87,7 +91,9 @@ pub(crate) fn pe_rotate_special_tiles(
                         let replacement = rotated_building_id(tile, 1);
                         buildings[i] = replacement;
                         placed(x, y, tile, replacement);
-                    } else { bits[i] |= 2; }
+                    } else {
+                        bits[i] |= 2;
+                    }
                 } else if flagged {
                     bits[i] &= !2;
                 } else {
@@ -277,7 +283,9 @@ mod tests {
         buildings[2] = 0x51;
         bits[2] = 2;
         let mut changes = Vec::new();
-        pe_rotate_special_tiles(&mut buildings, &mut bits, true, |x, y, old, new| changes.push((x, y, old, new)));
+        pe_rotate_special_tiles(&mut buildings, &mut bits, true, |x, y, old, new| {
+            changes.push((x, y, old, new))
+        });
         assert_eq!(&buildings[..3], &[0x60, 0x51, 0x55]);
         assert_eq!(&bits[..3], &[2, 2, 0]);
         assert_eq!(changes, vec![(0, 0, 0x5d, 0x60), (0, 2, 0x51, 0x55)]);
@@ -287,26 +295,41 @@ mod tests {
     #[ignore = "requires private original-PE special rotation fixtures"]
     fn pe_special_rotation_matches_original_instruction_fixtures() {
         fn bytes(s: &str) -> Vec<u8> {
-            s.as_bytes().chunks_exact(2).map(|pair| {
-                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
-            }).collect()
+            s.as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
         }
         let path = std::env::var_os("CITYGAME_PE_SPECIAL_ROTATION_FIXTURE").unwrap();
-        let cases: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(cases.len(), 2);
         for case in cases {
             let mut buildings = bytes(case["buildings"].as_str().unwrap());
             let mut bits = bytes(case["bits"].as_str().unwrap());
             let mut census = [0_u16; 256];
-            pe_rotate_special_tiles(&mut buildings, &mut bits, case["clockwise"].as_bool().unwrap(), |_, _, old, new| {
-                census[old as usize] = census[old as usize].wrapping_sub(1);
-                census[new as usize] = census[new as usize].wrapping_add(1);
-            });
+            pe_rotate_special_tiles(
+                &mut buildings,
+                &mut bits,
+                case["clockwise"].as_bool().unwrap(),
+                |_, _, old, new| {
+                    census[old as usize] = census[old as usize].wrapping_sub(1);
+                    census[new as usize] = census[new as usize].wrapping_add(1);
+                },
+            );
             let expected_buildings = bytes(case["output"].as_str().unwrap());
             let expected_bits = bytes(case["output_bits"].as_str().unwrap());
             for i in 0..buildings.len() {
-                assert_eq!(buildings[i], expected_buildings[i], "building at {} direction {}", i, case["clockwise"]);
-                assert_eq!(bits[i], expected_bits[i], "bits at {} direction {}", i, case["clockwise"]);
+                assert_eq!(
+                    buildings[i], expected_buildings[i],
+                    "building at {} direction {}",
+                    i, case["clockwise"]
+                );
+                assert_eq!(
+                    bits[i], expected_bits[i],
+                    "bits at {} direction {}",
+                    i, case["clockwise"]
+                );
             }
             let actual: Vec<_> = census.into_iter().flat_map(u16::to_le_bytes).collect();
             assert_eq!(actual, bytes(case["census"].as_str().unwrap()));

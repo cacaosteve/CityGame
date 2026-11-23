@@ -463,12 +463,26 @@ fn mac_transit_route_unwinds_empty_parent_masks_without_random_draws() {
     assert_eq!(draws, 5, "no random word is used for the empty parent mask");
 
     let mut draws = 0;
-    assert!(mac_transit_route_search_with_root_cost(
-        40, 40, 1, 2, 100, 255,
-        |x, y| cells[y * CITY_WIDTH + x],
-        || { draws += 1; 0 },
-    ).is_none());
-    assert_eq!(draws, 4, "restoring the over-limit root exits before another draw");
+    assert!(
+        mac_transit_route_search_with_root_cost(
+            40,
+            40,
+            1,
+            2,
+            100,
+            255,
+            |x, y| cells[y * CITY_WIDTH + x],
+            || {
+                draws += 1;
+                0
+            },
+        )
+        .is_none()
+    );
+    assert_eq!(
+        draws, 4,
+        "restoring the over-limit root exits before another draw"
+    );
 }
 
 /// The private fixture is captured immediately before CODE 14 export 217 in
@@ -481,7 +495,10 @@ fn mac_transit_route_matches_native_root_stack_byte_sweep() {
     assert_eq!(bytes.len(), CITY_TILES * 6);
     let cell = |x: usize, y: usize| {
         let i = x * CITY_HEIGHT + y;
-        let altm = u16::from_be_bytes([bytes[4 * CITY_TILES + 2 * i], bytes[4 * CITY_TILES + 2 * i + 1]]);
+        let altm = u16::from_be_bytes([
+            bytes[4 * CITY_TILES + 2 * i],
+            bytes[4 * CITY_TILES + 2 * i + 1],
+        ]);
         MacTransitRouteCell {
             building: bytes[i],
             zone_low: bytes[CITY_TILES + i] & 0x0f,
@@ -504,7 +521,11 @@ fn mac_transit_route_matches_native_root_stack_byte_sweep() {
             draws += 1;
             rng.random_i16()
         });
-        assert_eq!((draws, result.is_some(), rng.seed()), (expected_draws, success, seed), "root {root}");
+        assert_eq!(
+            (draws, result.is_some(), rng.seed()),
+            (expected_draws, success, seed),
+            "root {root}"
+        );
     }
 }
 
@@ -513,9 +534,12 @@ fn mac_transit_route_matches_native_root_stack_byte_sweep() {
 #[test]
 #[ignore = "requires private native Lakeland route and sweep fixtures"]
 fn mac_transit_route_matches_lakeland_native_all_root_bytes() {
-    let dir = PathBuf::from(std::env::var_os("CITYGAME_MAC_LAKELAND_ROUTE_ROOT").expect("fixture directory"));
+    let dir = PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_LAKELAND_ROUTE_ROOT").expect("fixture directory"),
+    );
     let cg = std::fs::read(dir.join("route731.cgms")).unwrap();
-    let cases: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(dir.join("root-cost-sweep.json")).unwrap()).unwrap();
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(dir.join("root-cost-sweep.json")).unwrap()).unwrap();
     assert_eq!(cases.len(), 256);
     let cell = |x: usize, y: usize| {
         let i = x * CITY_HEIGHT + y;
@@ -523,8 +547,10 @@ fn mac_transit_route_matches_lakeland_native_all_root_bytes() {
         let p = 20 + 9 * CITY_TILES + 2 * i;
         let altm = u16::from_be_bytes([cg[p], cg[p + 1]]);
         MacTransitRouteCell {
-            building: plane(1), zone_low: plane(2) & 0x0f,
-            underground: plane(4), text_overlay: plane(5),
+            building: plane(1),
+            zone_low: plane(2) & 0x0f,
+            underground: plane(4),
+            text_overlay: plane(5),
             tunnel_levels: ((altm >> 10) & 0x1f) as u8,
         }
     };
@@ -533,13 +559,20 @@ fn mac_transit_route_matches_lakeland_native_all_root_bytes() {
         assert_eq!(native["pc"].as_u64(), Some(0xf10000));
         let mut rng = MacToolboxRng::new(0x78330a1f);
         let mut draws = 0;
-        let result = mac_transit_route_search_with_root_cost(100, 7, 6, 0, 100, root as u8, cell, || {
-            draws += 1;
-            rng.random_i16()
-        });
-        assert_eq!((draws, rng.seed(), result.is_some()),
-            (native["draws"].as_u64().unwrap() as usize, native["seed"].as_u64().unwrap() as u32,
-             native["d0"].as_u64().unwrap() != 0), "root {root}");
+        let result =
+            mac_transit_route_search_with_root_cost(100, 7, 6, 0, 100, root as u8, cell, || {
+                draws += 1;
+                rng.random_i16()
+            });
+        assert_eq!(
+            (draws, rng.seed(), result.is_some()),
+            (
+                native["draws"].as_u64().unwrap() as usize,
+                native["seed"].as_u64().unwrap() as u32,
+                native["d0"].as_u64().unwrap() != 0
+            ),
+            "root {root}"
+        );
     }
 }
 
@@ -10653,7 +10686,9 @@ fn win95_airport_growth_plan_has_no_extra_global_population_floor() {
     let power_maps = power_service_maps_with_entry_seed(&state.city, state.pe_process_crt.seed());
     let plan = state
         .special_zone_development_plan_at(origin.0, origin.1, &reserved, &power_maps)
-        .expect("the rooted airport selector, not planner terrain/transport filters, owns admission");
+        .expect(
+            "the rooted airport selector, not planner terrain/transport filters, owns admission",
+        );
     assert_eq!(plan.building, RUNWAY_BUILDING_ID);
 }
 
@@ -10677,8 +10712,8 @@ fn airport_zone_growth_waits_for_airport_technology() {
     state.game_clock = GameClock::new(1938, 1);
     assert!(state.develop_special_zones() > 0);
     assert!(
-        (0..CITY_WIDTH).any(|x| (0..CITY_HEIGHT)
-            .any(|y| state.city.building_at(x, y) == RUNWAY_BUILDING_ID)),
+        (0..CITY_WIDTH)
+            .any(|x| (0..CITY_HEIGHT).any(|y| state.city.building_at(x, y) == RUNWAY_BUILDING_ID)),
         "airport growth should place a runway after Airport is invented"
     );
 }
@@ -11709,15 +11744,15 @@ fn static_traffic_epoch_only_changes_on_dirty_traffic_redraw() {
         power_plant_dialog: None,
         arcology_dialog: None,
         sign_dialog: None,
-            win95_new_city_setup: None,
+        win95_new_city_setup: None,
         military_base_dialog: None,
         city_info_dialog: None,
         pending_newspaper_music: None,
-            status_panel_origin: None,
-            status_panel_grab: None,
-            info_panel_origin: None,
-            info_panel_scale: 1.0,
-            info_panel_drag: None,
+        status_panel_origin: None,
+        status_panel_grab: None,
+        info_panel_origin: None,
+        info_panel_scale: 1.0,
+        info_panel_drag: None,
         founding_newspaper_pending: false,
         pe_founding_mode_transition_pending: false,
         graph_series_visible: [true; GRAPH_HISTORY_TOTAL_SERIES],
@@ -11869,15 +11904,15 @@ fn static_traffic_epoch_does_not_advance_on_speed_clock_only() {
         power_plant_dialog: None,
         arcology_dialog: None,
         sign_dialog: None,
-            win95_new_city_setup: None,
+        win95_new_city_setup: None,
         military_base_dialog: None,
         city_info_dialog: None,
         pending_newspaper_music: None,
-            status_panel_origin: None,
-            status_panel_grab: None,
-            info_panel_origin: None,
-            info_panel_scale: 1.0,
-            info_panel_drag: None,
+        status_panel_origin: None,
+        status_panel_grab: None,
+        info_panel_origin: None,
+        info_panel_scale: 1.0,
+        info_panel_drag: None,
         founding_newspaper_pending: false,
         pe_founding_mode_transition_pending: false,
         graph_series_visible: [true; GRAPH_HISTORY_TOTAL_SERIES],
@@ -12089,25 +12124,32 @@ fn mac_transit_route_replays_natural_lakeland_capture() {
             zone_low: bytes[CITY_TILES + i] & 0x0f,
             underground: bytes[CITY_TILES * 2 + i],
             text_overlay: bytes[CITY_TILES * 3 + i],
-            tunnel_levels:
-                ((u16::from_be_bytes([bytes[altm], bytes[altm + 1]]) >> 10) & 0x1f) as u8,
+            tunnel_levels: ((u16::from_be_bytes([bytes[altm], bytes[altm + 1]]) >> 10) & 0x1f)
+                as u8,
         }
     };
     let mut rng = MacToolboxRng::new(0x6adb89b6);
     let mut draws = 0;
-    let result = mac_transit_route_search_with_root_cost(
-        72, 76, 4, 1, 100, 0, cell, || {
-            draws += 1;
-            rng.random_i16()
-        },
-    );
+    let result = mac_transit_route_search_with_root_cost(72, 76, 4, 1, 100, 0, cell, || {
+        draws += 1;
+        rng.random_i16()
+    });
     assert_eq!(
         result,
         Some(MacTransitRouteResult {
             route: vec![
-                (69, 76, 0), (69, 77, 0), (69, 78, 0), (69, 79, 0),
-                (69, 80, 0), (69, 81, 0), (69, 82, 0), (70, 82, 0),
-                (71, 82, 0), (72, 82, 0), (73, 82, 0), (74, 82, 0),
+                (69, 76, 0),
+                (69, 77, 0),
+                (69, 78, 0),
+                (69, 79, 0),
+                (69, 80, 0),
+                (69, 81, 0),
+                (69, 82, 0),
+                (70, 82, 0),
+                (71, 82, 0),
+                (72, 82, 0),
+                (73, 82, 0),
+                (74, 82, 0),
             ],
             cost: 33,
             random_draws: 13,

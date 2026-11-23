@@ -57,19 +57,57 @@ const UPPER: [u8; 128] = [
     0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xf7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0x9f,
 ];
 
-pub(crate) fn ansi_to_oem(byte: u8) -> u8 { if byte < 128 { byte } else { ANSI_TO_OEM[usize::from(byte - 128)] } }
-pub(crate) fn oem_to_ansi(byte: u8) -> u8 { if byte < 128 { byte } else { OEM_TO_ANSI[usize::from(byte - 128)] } }
-pub(crate) fn is_lower(byte: u8) -> bool { if byte < 128 { byte.is_ascii_lowercase() } else { IS_LOWER[usize::from(byte - 128)] != 0 } }
-pub(crate) fn is_alnum(byte: u8) -> bool { if byte < 128 { byte.is_ascii_alphanumeric() } else { IS_ALNUM[usize::from(byte - 128)] != 0 } }
-pub(crate) fn upper(byte: u8) -> u8 { if byte < 128 { byte.to_ascii_uppercase() } else { UPPER[usize::from(byte - 128)] } }
+pub(crate) fn ansi_to_oem(byte: u8) -> u8 {
+    if byte < 128 {
+        byte
+    } else {
+        ANSI_TO_OEM[usize::from(byte - 128)]
+    }
+}
+pub(crate) fn oem_to_ansi(byte: u8) -> u8 {
+    if byte < 128 {
+        byte
+    } else {
+        OEM_TO_ANSI[usize::from(byte - 128)]
+    }
+}
+pub(crate) fn is_lower(byte: u8) -> bool {
+    if byte < 128 {
+        byte.is_ascii_lowercase()
+    } else {
+        IS_LOWER[usize::from(byte - 128)] != 0
+    }
+}
+pub(crate) fn is_alnum(byte: u8) -> bool {
+    if byte < 128 {
+        byte.is_ascii_alphanumeric()
+    } else {
+        IS_ALNUM[usize::from(byte - 128)] != 0
+    }
+}
+pub(crate) fn upper(byte: u8) -> u8 {
+    if byte < 128 {
+        byte.to_ascii_uppercase()
+    } else {
+        UPPER[usize::from(byte - 128)]
+    }
+}
 
 /// Build a round-trip-safe OEM fixture without changing its ANSI source.
 #[cfg(test)]
 pub(crate) fn encode_lossless(text: &str) -> Option<Vec<u8>> {
-    if !crate::city::win1252::can_encode(text) || text.contains('\0') { return None; }
+    if !crate::city::win1252::can_encode(text) || text.contains('\0') {
+        return None;
+    }
     let ansi = crate::city::win1252::encode(text, usize::MAX);
     let oem: Vec<_> = ansi.iter().copied().map(ansi_to_oem).collect();
-    if !ansi.iter().copied().eq(oem.iter().copied().map(oem_to_ansi)) { return None; }
+    if !ansi
+        .iter()
+        .copied()
+        .eq(oem.iter().copied().map(oem_to_ansi))
+    {
+        return None;
+    }
     Some(oem)
 }
 
@@ -98,7 +136,16 @@ mod tests {
             let row: Vec<u32> = line.split(',').map(|s| s.parse().unwrap()).collect();
             assert_eq!(row[0], i as u32 + 1);
             let x = row[0] as u8;
-            assert_eq!([ansi_to_oem(x) as u32, oem_to_ansi(x) as u32, is_lower(x) as u32, is_alnum(x) as u32, upper(x) as u32], row[1..]);
+            assert_eq!(
+                [
+                    ansi_to_oem(x) as u32,
+                    oem_to_ansi(x) as u32,
+                    is_lower(x) as u32,
+                    is_alnum(x) as u32,
+                    upper(x) as u32
+                ],
+                row[1..]
+            );
         }
     }
 }

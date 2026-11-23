@@ -34,7 +34,9 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 pub fn set_city_runtime_active(active: bool) {
-    unsafe { sc2000_set_city_runtime_active(i32::from(active)); }
+    unsafe {
+        sc2000_set_city_runtime_active(i32::from(active));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -120,7 +122,14 @@ pub fn set_newspaper_extra(enabled: bool) {
 
 #[cfg(target_os = "macos")]
 pub fn set_newspaper_papers(enabled: bool, names: [u8; 6], count: u8, selected: u8) {
-    unsafe { sc2000_set_newspaper_papers(i32::from(enabled), names.as_ptr(), i32::from(count), i32::from(selected)); }
+    unsafe {
+        sc2000_set_newspaper_papers(
+            i32::from(enabled),
+            names.as_ptr(),
+            i32::from(count),
+            i32::from(selected),
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]

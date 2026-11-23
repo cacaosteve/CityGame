@@ -639,13 +639,19 @@ impl City {
     pub(crate) fn set_label_untracked(&mut self, index: u8, text: String) {
         self.update_pe_label_backing(index, &text);
         self.update_mac_label_backing(index, &text);
-        if let Some(label) = self.labels.as_mut().and_then(|labels| labels.get_mut(index as usize)) {
+        if let Some(label) = self
+            .labels
+            .as_mut()
+            .and_then(|labels| labels.get_mut(index as usize))
+        {
             *label = text;
         }
     }
 
     fn update_pe_label_backing(&mut self, index: u8, text: &str) {
-        let Some(backing) = self.pe_label_backing.as_mut() else { return };
+        let Some(backing) = self.pe_label_backing.as_mut() else {
+            return;
+        };
         let offset = usize::from(index) * CITY_LABEL_RECORD_LEN;
         let encoded = super::win1252::encode(text, CITY_LABEL_TEXT_MAX);
         backing[offset..offset + encoded.len()].copy_from_slice(&encoded);
@@ -656,7 +662,9 @@ impl City {
         if self.kind != CityFileKind::MacCity {
             return;
         }
-        let backing = self.mac_label_backing.get_or_insert_with(|| vec![0; CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN]);
+        let backing = self
+            .mac_label_backing
+            .get_or_insert_with(|| vec![0; CITY_LABEL_COUNT * CITY_LABEL_RECORD_LEN]);
         let offset = usize::from(index) * CITY_LABEL_RECORD_LEN;
         let encoded = super::mac_roman::encode(text, CITY_LABEL_RECORD_LEN - 1);
         backing[offset] = encoded.len() as u8;

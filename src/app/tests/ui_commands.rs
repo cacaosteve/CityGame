@@ -6469,6 +6469,36 @@ fn win95_editor_make_map_preserves_tile_text_and_labels() {
 }
 
 #[test]
+fn win95_edit_map_done_opens_post_editor_charter_through_ui_action() {
+    let mut state = test_state(City::new_blank("/tmp/pe-charter-done.sc2", "Before").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state.new_win95_edit_map_from_city().unwrap();
+
+    assert!(state.handle_ui_action_state(UiAction::DoneEditMap));
+    assert_eq!(state.mode, AppMode::EditNewMap);
+    assert!(state.founding_newspaper_pending);
+    assert!(state.city_info_dialog.is_none());
+    let setup = state
+        .win95_new_city_setup
+        .as_ref()
+        .expect("Done opens the post-editor charter");
+    assert_eq!(setup.name, "New City");
+    assert_eq!(setup.difficulty, 0);
+    assert_eq!(setup.year, 0);
+
+    state.commit_win95_new_city_setup();
+    state.finish_edit_map_after_charter();
+    assert_eq!(state.mode, AppMode::CityView);
+    assert_eq!(state.city.name, "New City");
+    assert_eq!(state.city.saved_date().unwrap().year, 1900);
+    assert_eq!(state.city.city_funds(), 20_000);
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::Founding))
+    );
+}
+
+#[test]
 fn win95_editor_charter_applies_choices_before_founding() {
     let mut state = test_state(City::new_blank("/tmp/pe-charter.sc2", "Before").unwrap());
     state.engine_fidelity = EngineFidelity::Win95;

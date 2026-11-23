@@ -1662,6 +1662,11 @@ mod music_open_tests {
             "METROPOL" => 1,
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
+        let native_auto_goto = match city_name.as_str() {
+            "BAZ" => 0,
+            "BERN" | "METROPOL" => 1,
+            other => panic!("unsupported native Classic CTY fixture {other}"),
+        };
         let native_funds = match city_name.as_str() {
             "BAZ" => 0x4ccc_4e20_i32,
             "BERN" => 0x0206,
@@ -1769,6 +1774,18 @@ mod music_open_tests {
                     "normal {city_name} open exposes the native option to gameplay"
                 );
                 assert_eq!(
+                    state
+                        .city
+                        .misc_u32_at(crate::app::city_options::AUTO_GOTO_MISC_OFFSET),
+                    Some(native_auto_goto),
+                    "normal {city_name} open publishes the native Auto-Goto header option"
+                );
+                assert_eq!(
+                    crate::app::auto_goto_enabled_for_engine(&state.city, state.engine_fidelity,),
+                    native_auto_goto != 0,
+                    "normal {city_name} open exposes Auto-Goto to gameplay"
+                );
+                assert_eq!(
                     state.city.saved_date(),
                     Some(crate::city::CityDate {
                         year: native_year,
@@ -1835,6 +1852,16 @@ mod music_open_tests {
             crate::app::budget::auto_budget_enabled_for_engine(&reopened, EngineFidelity::Win95,),
             native_auto_budget != 0,
             "saved/reloaded {city_name} exposes the option to gameplay"
+        );
+        assert_eq!(
+            reopened.misc_u32_at(crate::app::city_options::AUTO_GOTO_MISC_OFFSET),
+            Some(native_auto_goto),
+            "saved/reloaded {city_name} retains the native Auto-Goto header option"
+        );
+        assert_eq!(
+            crate::app::auto_goto_enabled_for_engine(&reopened, EngineFidelity::Win95,),
+            native_auto_goto != 0,
+            "saved/reloaded {city_name} exposes Auto-Goto to gameplay"
         );
         let reloaded_planes = collect_planes(&reopened);
         for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {

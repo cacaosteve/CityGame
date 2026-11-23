@@ -33,6 +33,12 @@ pub(crate) fn load_classic_cty(
         super::budget::AUTO_BUDGET_MISC_OFFSET,
         classic.auto_budget_option(),
     );
+    // The reader publishes header WORD +0x6c to the Win95 Auto-Goto option
+    // global (`0x4ca5d8`, saved MISC +0x0ff4) without normalization.
+    city.set_misc_u32_at(
+        super::city_options::AUTO_GOTO_MISC_OFFSET,
+        classic.auto_goto_option(),
+    );
     // FUN_004829F0 sets 0x4ca5f4 to 1900 for this legacy format before it
     // publishes the imported calendar and computes the city's age.
     city.initialize_new_city_founding_year(CLASSIC_CTY_FOUNDED_YEAR);

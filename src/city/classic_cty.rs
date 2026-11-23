@@ -18,6 +18,7 @@ const CLASSIC_CTY_MAP_LEN: usize = CLASSIC_CTY_MAP_WORDS * 2;
 const CLASSIC_CTY_MAP_WIDTH: usize = 100;
 const CLASSIC_CTY_MAP_HEIGHT: usize = 120;
 const CLASSIC_CTY_FUNDS_WORD_INDEX: usize = 0x64 / 2;
+const CLASSIC_CTY_AUTO_GOTO_WORD_INDEX: usize = 0x6c / 2;
 const CLASSIC_CTY_AUTO_BUDGET_WORD_INDEX: usize = 0x6a / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,12 @@ impl ClassicCtyFile {
         let high = u32::from(self.header_words[CLASSIC_CTY_FUNDS_WORD_INDEX]);
         let low = u32::from(self.header_words[CLASSIC_CTY_FUNDS_WORD_INDEX + 1]);
         ((high << 16) | low) as i32
+    }
+
+    /// The retail reader copies the WORD at header byte offset `0x6c` to the
+    /// Auto-Goto option global at `0x4ca5d8` without normalization.
+    pub(crate) fn auto_goto_option(&self) -> u32 {
+        u32::from(self.header_words[CLASSIC_CTY_AUTO_GOTO_WORD_INDEX])
     }
 }
 

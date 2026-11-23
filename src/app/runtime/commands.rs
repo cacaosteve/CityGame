@@ -1640,12 +1640,14 @@ mod music_open_tests {
     }
 
     #[test]
-    #[ignore = "requires an authentic private Classic CTY and native Win95 reader plane capture"]
+    #[ignore = "requires authentic private BAZ/BERN Classic CTYs and native Win95 reader planes"]
     fn win95_authentic_classic_cty_confirmation_open_and_save_reload_match_native_planes() {
         use std::collections::BTreeMap;
 
         let source = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_INPUT").unwrap(),
+            std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_INPUT")
+                .or_else(|| std::env::var_os("CITYGAME_CLASSIC_CTY_BERN_INPUT"))
+                .unwrap(),
         );
         let city_name = source.file_stem().unwrap().to_string_lossy().to_string();
         let (native_year, native_month) = match city_name.as_str() {
@@ -1653,9 +1655,18 @@ mod music_open_tests {
             "BERN" => (1977, 10),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
-        let native_planes_path = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_PLANES").unwrap(),
-        );
+        let (planes_env, expected_crt, expected_game_rand) = match city_name.as_str() {
+            "BAZ" => (
+                "CITYGAME_CLASSIC_CTY_NATIVE_PLANES",
+                0x4621_c31c,
+                0x9302_aeea,
+            ),
+            "BERN" => ("CITYGAME_CLASSIC_CTY_BERN_PLANES", 0xb2ed_7061, 0x0b76_55c9),
+            _ => unreachable!(),
+        };
+        let mut expected_open_crt = crate::win95_random::Win95CrtRand::new(expected_crt);
+        crate::city::City::pe_sample_city_reset_neighbors_40e250(&mut expected_open_crt);
+        let native_planes_path = std::path::PathBuf::from(std::env::var_os(planes_env).unwrap());
         let expected: BTreeMap<String, String> = serde_json::from_slice(
             &std::fs::read(native_planes_path).expect("read retail reader plane capture"),
         )
@@ -1733,13 +1744,13 @@ mod music_open_tests {
         assert_eq!(*callbacks.borrow(), ["music", "finish"]);
         assert_eq!(
             state.pe_process_crt_seed(),
-            0xb8bb_6730,
-            "confirmed BAZ open preserves reader output plus native open-controller samples"
+            expected_open_crt.seed(),
+            "confirmed {city_name} open preserves reader output plus native open-controller samples"
         );
         assert_eq!(
             state.pe_process_game_rand_state(),
-            0x9302_aeea,
-            "confirmed BAZ open preserves the native border LCG sequence"
+            expected_game_rand,
+            "confirmed {city_name} open preserves the native border LCG sequence"
         );
         let opened_planes = collect_planes(&state.city);
         for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {

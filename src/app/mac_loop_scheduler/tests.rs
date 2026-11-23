@@ -6936,6 +6936,36 @@ fn mac_hurricane_releases_calendar_on_the_pass_after_expiry() {
 }
 
 #[test]
+fn mac_r15_tornado_menu_point_matches_live_quickdraw_boundary() {
+    let city = blank_city_layout_fixture("r15-tornado-menu-point.city", "R15 Tornado point");
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.traffic.set_speed(GameSpeed::Paused);
+    // R15's MENU 1004 MouseDown boundary before the captured Tornado-row
+    // release. CityGame must draw the menu point from its own QuickDraw stream.
+    state.mac_process_rng = MacToolboxRng::new(0x5222_343b);
+
+    let command = crate::app::command_bus::app_command_for_menu_command(
+        crate::menu_model::CMD_START_TORNADO,
+    )
+    .expect("Tornado menu command is routed");
+    state
+        .apply_state_app_command(&command)
+        .expect("Tornado menu command is handled");
+
+    assert_eq!(state.mac_loop_scheduler.pending_action_point, Some((126, 52)));
+    assert_eq!(state.mac_process_rng.seed(), 0x7628_4713);
+    assert_eq!(
+        state.city.mac_pending_action(),
+        u32::from(scenario_action::TORNADO_ACTION)
+    );
+}
+
+#[test]
 fn mac_manual_disaster_selection_replaces_pending_during_active_action() {
     for (path, auto_goto) in [
         ("manual-replacement.city", true),

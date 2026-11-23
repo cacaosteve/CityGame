@@ -24,6 +24,12 @@ pub(crate) fn load_classic_cty(
     clear_classic_cty_target_map(&mut city);
     apply_cty_tiles(&mut city, crt, game_rand, &classic.tiles);
     let date = classic.date();
+    // FUN_004829F0 copies header WORD +0x6a to the PE Auto-Budget DWORD
+    // (`0x4cc4b0`, saved MISC +0x0ff0) without boolean normalization.
+    city.set_misc_u32_at(
+        super::budget::AUTO_BUDGET_MISC_OFFSET,
+        classic.auto_budget_option(),
+    );
     // FUN_004829F0 sets 0x4ca5f4 to 1900 for this legacy format before it
     // publishes the imported calendar and computes the city's age.
     city.initialize_new_city_founding_year(CLASSIC_CTY_FOUNDED_YEAR);

@@ -17,6 +17,7 @@ const CLASSIC_CTY_MAP_WORDS: usize = 12_000;
 const CLASSIC_CTY_MAP_LEN: usize = CLASSIC_CTY_MAP_WORDS * 2;
 const CLASSIC_CTY_MAP_WIDTH: usize = 100;
 const CLASSIC_CTY_MAP_HEIGHT: usize = 120;
+const CLASSIC_CTY_AUTO_BUDGET_WORD_INDEX: usize = 0x6a / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ClassicCtyTile {
@@ -101,6 +102,12 @@ impl ClassicCtyFile {
             year: year as u16,
             month,
         }
+    }
+
+    /// The retail reader copies the WORD at header byte offset `0x6a` to the
+    /// Win95 Auto-Budget DWORD at `0x4cc4b0` without normalization.
+    pub(crate) fn auto_budget_option(&self) -> u32 {
+        u32::from(self.header_words[CLASSIC_CTY_AUTO_BUDGET_WORD_INDEX])
     }
 }
 

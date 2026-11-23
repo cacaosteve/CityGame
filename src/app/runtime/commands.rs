@@ -1657,6 +1657,11 @@ mod music_open_tests {
             "METROPOL" => (2099, 8),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
+        let native_auto_budget = match city_name.as_str() {
+            "BAZ" | "BERN" => 0,
+            "METROPOL" => 1,
+            other => panic!("unsupported native Classic CTY fixture {other}"),
+        };
         let (planes_env, expected_crt, expected_game_rand) = match city_name.as_str() {
             "BAZ" => (
                 "CITYGAME_CLASSIC_CTY_NATIVE_PLANES",
@@ -1738,6 +1743,21 @@ mod music_open_tests {
             |state: &ViewerState| {
                 assert_eq!(state.city.name, city_name);
                 assert_eq!(
+                    state
+                        .city
+                        .misc_u32_at(crate::app::budget::AUTO_BUDGET_MISC_OFFSET),
+                    Some(native_auto_budget),
+                    "normal {city_name} open publishes the native Auto-Budget header option"
+                );
+                assert_eq!(
+                    crate::app::budget::auto_budget_enabled_for_engine(
+                        &state.city,
+                        state.engine_fidelity,
+                    ),
+                    native_auto_budget != 0,
+                    "normal {city_name} open exposes the native option to gameplay"
+                );
+                assert_eq!(
                     state.city.saved_date(),
                     Some(crate::city::CityDate {
                         year: native_year,
@@ -1790,6 +1810,16 @@ mod music_open_tests {
         assert_eq!(reopened.saved_date(), state.city.saved_date());
         assert_eq!(reopened.year_founded(), state.city.year_founded());
         assert_eq!(reopened.year_founded(), Some(1900));
+        assert_eq!(
+            reopened.misc_u32_at(crate::app::budget::AUTO_BUDGET_MISC_OFFSET),
+            Some(native_auto_budget),
+            "saved/reloaded {city_name} retains the native Auto-Budget header option"
+        );
+        assert_eq!(
+            crate::app::budget::auto_budget_enabled_for_engine(&reopened, EngineFidelity::Win95,),
+            native_auto_budget != 0,
+            "saved/reloaded {city_name} exposes the option to gameplay"
+        );
         let reloaded_planes = collect_planes(&reopened);
         for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {
             assert_eq!(

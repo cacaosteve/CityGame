@@ -2429,6 +2429,44 @@ mod tests {
         assert_eq!(cashflow.year_to_date, -140);
         assert_eq!(cashflow.estimated, -141);
         assert_eq!(cashflow.end_of_year_funds, -4_043);
+
+        // The live trace pins the annual export-237 entry at TickCount 614450.
+        // Replay CityGame's ordered XMIC worker from those native RNG states
+        // and compare the full table with the post-review RAM capture.
+        let mut xmic_state = crate::app::tests::test_state(city.clone());
+        xmic_state.engine_fidelity = EngineFidelity::Mac68k;
+        xmic_state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x4850_f4af);
+        xmic_state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xc6d3_9797);
+        xmic_state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x02f7);
+        // The test-only CGMS keeps prior transit accumulators from its older
+        // base capture. Native post-worker XMIC retains zero in the bus/rail/
+        // subway rows, so hydrate the live accumulator state as [0; 3].
+        for mode in 0..3 {
+            xmic_state.city.set_mac_transit_accumulator(mode, 0);
+        }
+        xmic_state.refresh_mac_xmic_with_arcologies([100; 5], [7; 3]);
+        let native_post_xmic =
+            std::fs::read(root.join("r14-january-2046-post-review-xmic.bin")).unwrap();
+        assert_eq!(native_post_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = xmic_state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_post_xmic[slot * 8..slot * 8 + 8],
+                "annual XMIC slot {slot}"
+            );
+        }
+
         let mut state = crate::app::tests::test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
         state.apply_budget_year_end_settlement();

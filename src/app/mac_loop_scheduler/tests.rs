@@ -8419,6 +8419,85 @@ fn mac_earthquake_r14_third_autodebt_scan_matches_live_at_menu_derived_point() {
 }
 
 #[test]
+#[ignore = "requires private R15 AutoDebt Earthquake entry/return CGMS captures"]
+fn mac_earthquake_r15_autodebt_worker_matches_live_rng_and_map() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R15_CAPTURE_DIR")
+            .expect("set CITYGAME_MAC_EARTHQUAKE_R15_CAPTURE_DIR to the private R15 capture"),
+    );
+    let entry_path = root.join("CODE10-earthquake_worker_entry.cgms");
+    let worker_path = root.join("CODE10-earthquake_worker-return.cgms");
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read R15 Earthquake worker-entry CGMS"),
+    )
+    .expect("decode R15 worker-entry CGMS");
+    let native_worker = std::fs::read(worker_path).expect("read R15 Earthquake worker-return CGMS");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_pending_action(6);
+
+    // The native EventRecord pair locates the menu command at QuickDraw
+    // 0x795615b5. Its two `% 126 + 1` draws produce (70,12) and the captured
+    // CODE 10 entry seed 0x403947e7.
+    let mut menu_city = city.clone();
+    menu_city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    let mut menu_state = test_state(menu_city);
+    menu_state.engine_fidelity = EngineFidelity::Mac68k;
+    menu_state.mode = AppMode::CityView;
+    menu_state.traffic.set_speed(GameSpeed::Paused);
+    menu_state.mac_process_rng = MacToolboxRng::new(0x7956_15b5);
+    let command = crate::app::command_bus::app_command_for_menu_command(
+        crate::menu_model::CMD_START_EARTHQUAKE,
+    )
+    .expect("native Earthquake menu command is routed");
+    menu_state
+        .apply_state_app_command(&command)
+        .expect("menu command is handled");
+    assert_eq!(
+        menu_state.mac_loop_scheduler.pending_action_point,
+        Some((70, 12))
+    );
+    assert_eq!(menu_state.mac_process_rng.seed(), 0x4039_47e7);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    // In this capture the first CODE 10 scan site sees two QuickDraw draws
+    // after export-246 entry. Keep that caller/prelude delta separate from the
+    // map worker, whose direct scan comparator starts at the captured scan
+    // seed rather than assuming it equals the function-entry seed.
+    state.mac_process_rng = MacToolboxRng::new(0x03c3_accb);
+    state.mac_game_rng = MacGameLcgRng::new(0x540f_ffce);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x1083);
+    let mut now = 13_117;
+
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        (70, 12),
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+
+    assert_eq!(state.mac_process_rng.seed(), 0x3308_ac28);
+    assert_eq!(state.mac_game_rng.state(), 0x540f_ffce);
+    assert_eq!(state.mac_app_lfsr.state(), 0x1083);
+    let actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let map_end = 20 + 196_608;
+    assert_eq!(
+        &actual[..map_end],
+        &native_worker[..map_end],
+        "CityGame differs from the R15 AutoDebt Earthquake worker-return map"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_worker[census_start..census_end],
+        "Mac XBLD census after the R15 AutoDebt Earthquake worker"
+    );
+}
+
+#[test]
 fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts() {
     for path in ["mac-mixed-earthquake.city", "mac-mixed-earthquake.sc2"] {
         let city = blank_city_layout_fixture(path, "Mixed earthquake");

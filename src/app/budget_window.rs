@@ -4614,6 +4614,7 @@ mod tests {
                 "CITYGAME_MAC_R14_JAN2116_BUDGET_CAPTURE_DIR",
                 "budget-review-age64800-current",
                 2116,
+                64_800,
                 -13_842,
                 -142,
                 -142,
@@ -4623,6 +4624,7 @@ mod tests {
                 "CITYGAME_MAC_R15_JAN2025_BUDGET_CAPTURE_DIR",
                 "r15-budget-review-jan2025-current",
                 2025,
+                37_500,
                 -2_269,
                 238,
                 236,
@@ -4632,6 +4634,7 @@ mod tests {
                 "CITYGAME_MAC_R15_JAN2026_BUDGET_CAPTURE_DIR",
                 "r15-jan2026-current",
                 2026,
+                37_800,
                 -2_031,
                 250,
                 249,
@@ -4639,19 +4642,26 @@ mod tests {
             ),
         ];
 
-        for (dir_env, stem, year, funds, ytd, estimate, end_of_year) in cases {
+        for (dir_env, stem, year, age, funds, ytd, estimate, end_of_year) in cases {
             let root = std::path::PathBuf::from(std::env::var_os(dir_env).unwrap());
             let cgms = std::fs::read(root.join(format!("{stem}.cgms"))).unwrap();
             let mut city = crate::city::city_from_cgms_v4_for_test(&cgms).unwrap();
             city.kind = CityFileKind::MacCity;
             city.name = "AutoDebt".to_owned();
-            city.set_saved_date(crate::city::CityDate { year, month: 1 });
-            city.set_city_funds(funds);
+            assert_eq!(
+                city.saved_date(),
+                Some(crate::city::CityDate { year, month: 1 }),
+                "year {year} date from captured CGMS state"
+            );
 
             let ram = std::fs::read(root.join(format!("{stem}.ram"))).unwrap();
             let native_u32 =
                 |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
             let a5 = native_u32(0x904) as usize;
+            assert_eq!(native_u32(a5 + 0xefa4 - 0x10000), age, "year {year} age");
+            let native_funds = native_u32(a5 + 0xefac - 0x10000) as i32;
+            assert_eq!(native_funds, funds, "year {year} funds");
+            city.set_city_funds(native_funds);
             let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
             assert!(table + 16 * 0x70 <= ram.len());
             for row in 0..16 {

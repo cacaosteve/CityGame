@@ -1648,6 +1648,7 @@ mod music_open_tests {
             std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_INPUT")
                 .or_else(|| std::env::var_os("CITYGAME_CLASSIC_CTY_BERN_INPUT"))
                 .or_else(|| std::env::var_os("CITYGAME_CLASSIC_CTY_METROPOL_INPUT"))
+                .or_else(|| std::env::var_os("CITYGAME_CLASSIC_CTY_BIGMEG_INPUT"))
                 .unwrap(),
         );
         let city_name = source.file_stem().unwrap().to_string_lossy().to_string();
@@ -1655,22 +1656,26 @@ mod music_open_tests {
             "BAZ" => (2000, 1),
             "BERN" => (1977, 10),
             "METROPOL" => (2099, 8),
+            "BIGMEG" => (2273, 1),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let native_auto_budget = match city_name.as_str() {
             "BAZ" | "BERN" => 0,
             "METROPOL" => 1,
+            "BIGMEG" => 1,
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let native_auto_goto = match city_name.as_str() {
             "BAZ" => 0,
             "BERN" | "METROPOL" => 1,
+            "BIGMEG" => 0,
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let native_funds = match city_name.as_str() {
             "BAZ" => 0x4ccc_4e20_i32,
             "BERN" => 0x0206,
             "METROPOL" => 0x9989,
+            "BIGMEG" => 0x9e3f,
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let (planes_env, expected_crt, expected_game_rand) = match city_name.as_str() {
@@ -1685,8 +1690,14 @@ mod music_open_tests {
                 0x336a_066e,
                 0x1eca_8ce3,
             ),
+            "BIGMEG" => (
+                "CITYGAME_CLASSIC_CTY_BIGMEG_PLANES",
+                0xd72c_1d0c,
+                0xb1ff_f6f7,
+            ),
             _ => unreachable!(),
         };
+        let native_audio = if city_name == "BIGMEG" { 0 } else { 1 };
         let mut expected_open_crt = crate::win95_random::Win95CrtRand::new(expected_crt);
         crate::city::City::pe_sample_city_reset_neighbors_40e250(&mut expected_open_crt);
         let native_planes_path = std::path::PathBuf::from(std::env::var_os(planes_env).unwrap());
@@ -1786,6 +1797,33 @@ mod music_open_tests {
                     "normal {city_name} open exposes Auto-Goto to gameplay"
                 );
                 assert_eq!(
+                    state
+                        .city
+                        .misc_u32_at(crate::app::city_options::SOUND_EFFECTS_MISC_OFFSET),
+                    Some(native_audio),
+                    "normal {city_name} open publishes the native WAV gate"
+                );
+                assert_eq!(
+                    state
+                        .city
+                        .misc_u32_at(crate::app::city_options::MUSIC_MISC_OFFSET),
+                    Some(native_audio),
+                    "normal {city_name} open publishes the native MIDI gate"
+                );
+                assert_eq!(
+                    crate::app::sound_effects_enabled_for_engine(
+                        &state.city,
+                        state.engine_fidelity,
+                    ),
+                    native_audio != 0,
+                    "normal {city_name} open exposes the WAV gate to gameplay"
+                );
+                assert_eq!(
+                    crate::app::music_enabled_for_engine(&state.city, state.engine_fidelity),
+                    native_audio != 0,
+                    "normal {city_name} open exposes the MIDI gate to gameplay"
+                );
+                assert_eq!(
                     state.city.saved_date(),
                     Some(crate::city::CityDate {
                         year: native_year,
@@ -1862,6 +1900,26 @@ mod music_open_tests {
             crate::app::auto_goto_enabled_for_engine(&reopened, EngineFidelity::Win95,),
             native_auto_goto != 0,
             "saved/reloaded {city_name} exposes Auto-Goto to gameplay"
+        );
+        assert_eq!(
+            reopened.misc_u32_at(crate::app::city_options::SOUND_EFFECTS_MISC_OFFSET),
+            Some(native_audio),
+            "saved/reloaded {city_name} retains the native WAV gate"
+        );
+        assert_eq!(
+            reopened.misc_u32_at(crate::app::city_options::MUSIC_MISC_OFFSET),
+            Some(native_audio),
+            "saved/reloaded {city_name} retains the native MIDI gate"
+        );
+        assert_eq!(
+            crate::app::sound_effects_enabled_for_engine(&reopened, EngineFidelity::Win95,),
+            native_audio != 0,
+            "saved/reloaded {city_name} exposes the WAV gate to gameplay"
+        );
+        assert_eq!(
+            crate::app::music_enabled_for_engine(&reopened, EngineFidelity::Win95,),
+            native_audio != 0,
+            "saved/reloaded {city_name} exposes the MIDI gate to gameplay"
         );
         let reloaded_planes = collect_planes(&reopened);
         for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {

@@ -20,6 +20,7 @@ const CLASSIC_CTY_MAP_HEIGHT: usize = 120;
 const CLASSIC_CTY_FUNDS_WORD_INDEX: usize = 0x64 / 2;
 const CLASSIC_CTY_AUTO_GOTO_WORD_INDEX: usize = 0x6c / 2;
 const CLASSIC_CTY_AUTO_BUDGET_WORD_INDEX: usize = 0x6a / 2;
+const CLASSIC_CTY_AUDIO_WORD_INDEX: usize = 0x6e / 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ClassicCtyTile {
@@ -125,6 +126,12 @@ impl ClassicCtyFile {
     pub(crate) fn auto_goto_option(&self) -> u32 {
         u32::from(self.header_words[CLASSIC_CTY_AUTO_GOTO_WORD_INDEX])
     }
+
+    /// The retail reader publishes the WORD at header byte offset `0x6e` to
+    /// both the Win95 WAV and MIDI gates without normalization.
+    pub(crate) fn audio_option(&self) -> u32 {
+        u32::from(self.header_words[CLASSIC_CTY_AUDIO_WORD_INDEX])
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +145,8 @@ mod tests {
             .copy_from_slice(&0x1234u16.to_be_bytes());
         bytes[CLASSIC_CTY_HEADER_OFFSET + 8 * 2..CLASSIC_CTY_HEADER_OFFSET + 9 * 2]
             .copy_from_slice(&0xabcd_u16.to_be_bytes());
+        bytes[CLASSIC_CTY_HEADER_OFFSET + 0x6e..CLASSIC_CTY_HEADER_OFFSET + 0x70]
+            .copy_from_slice(&0x0123_u16.to_be_bytes());
 
         let put_map_word = |bytes: &mut [u8], index: usize, word: u16| {
             let offset = CLASSIC_CTY_MAP_OFFSET + index * 2;
@@ -151,6 +160,7 @@ mod tests {
         let parsed = ClassicCtyFile::parse(&bytes).expect("valid fixed-size Classic CTY");
         assert_eq!(parsed.header_words[0], 0x1234);
         assert_eq!(parsed.header_words[8], 0xabcd);
+        assert_eq!(parsed.audio_option(), 0x0123);
         assert_eq!(parsed.tiles.len(), CLASSIC_CTY_MAP_WORDS);
         assert_eq!(
             parsed.tiles[0],

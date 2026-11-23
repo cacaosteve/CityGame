@@ -4677,20 +4677,20 @@ fn pe_newspaper_gift_place_nuclear_483aab_place_tile_size() {
 }
 
 #[test]
-fn pe_newspaper_gift_shore_prep_484320_sets_water_land1_trees() {
-    // PE @ `0x484320`: XBIT|=water_tile, ALTM land→1, PlaceTile XBLD=0x10.
+fn pe_newspaper_gift_shore_prep_484320_sets_water_land1_and_xter() {
+    // PE @ `0x484320`: XBIT|=water_tile, ALTM land→1, XTER=0x10.
     let mut city = City::new_blank("/tmp/sc2000-gift-shore.sc2", "GiftShore").expect("blank");
     city.set_altitude(20, 20, 9, 3);
     city.set_building(20, 20, 0);
     city.set_tile_bits(20, 20, TileBits::new(0));
-    let vacant = city.pe_dw_tile_count[0];
+    let old_tile_count = city.pe_dw_tile_count;
     pe_newspaper_gift_shore_prep_484320(&mut city, 20, 20);
     assert!(city.tile_bits_at(20, 20).expect("bits").water_tile());
     assert_eq!(city.altitude_at(20, 20), 1);
     assert_eq!(city.altm_at(20, 20).water, 3);
-    assert_eq!(city.building_at(20, 20), 0x10);
-    assert_eq!(city.pe_dw_tile_count[0x10], 1);
-    assert_eq!(city.pe_dw_tile_count[0], vacant.wrapping_sub(1));
+    assert_eq!(city.terrain_at(20, 20), 0x10);
+    assert_eq!(city.building_at(20, 20), 0);
+    assert_eq!(city.pe_dw_tile_count, old_tile_count);
 }
 
 #[test]
@@ -4701,7 +4701,8 @@ fn pe_newspaper_gift_place_bridge_4838a9_places_rotated_bridge_tiles() {
     pe_newspaper_gift_place_road_stub_483874(&mut city, 8, 8);
     assert_eq!(city.building_at(8, 8), 0x0d);
     pe_newspaper_gift_place_bridge_4838a9(&mut city, 20, 20);
-    assert_eq!(city.building_at(20, 20), 0x10);
+    assert_eq!(city.building_at(20, 20), 0);
+    assert_eq!(city.terrain_at(20, 20), 0x10);
     assert!(city.tile_bits_at(20, 20).expect("bits").water_tile());
     assert_eq!(city.building_at(21, 21), 0x57);
     assert!(city.tile_bits_at(21, 21).expect("bits").rotate());
@@ -4728,7 +4729,8 @@ fn pe_newspaper_gift_place_bridge_offset_48394d_4839c3_4839f0() {
     let mut city = City::new_blank("/tmp/sc2000-gift-bridge3.sc2", "GiftBr3").expect("blank");
     // PE @ `0x48394d`: prep (20,20), bridge at (19,21) rotated.
     pe_newspaper_gift_place_bridge_48394d(&mut city, 20, 20);
-    assert_eq!(city.building_at(20, 20), 0x10);
+    assert_eq!(city.building_at(20, 20), 0);
+    assert_eq!(city.terrain_at(20, 20), 0x10);
     assert_eq!(city.building_at(19, 21), 0x57);
     assert!(city.tile_bits_at(19, 21).expect("bits").rotate());
     // PE @ `0x4839c3`: prep (40,40), bridge at (41,39) plain.
@@ -4894,7 +4896,8 @@ fn pe_newspaper_gift_shore_only_4832c1_runs_shore_prep() {
     let mut city = City::new_blank("/tmp/sc2000-gift-shore-only.sc2", "GiftShore").expect("blank");
     city.set_altitude(19, 19, 5, 0);
     pe_newspaper_gift_shore_only_4832c1(&mut city, 19, 19);
-    assert_eq!(city.building_at(19, 19), 0x10);
+    assert_eq!(city.building_at(19, 19), 0);
+    assert_eq!(city.terrain_at(19, 19), 0x10);
     assert_eq!(city.altm_at(19, 19).land, 1);
     assert!(city.tile_bits_at(19, 19).expect("bits").water_tile());
 }

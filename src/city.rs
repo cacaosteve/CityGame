@@ -20,6 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod construction;
+pub(crate) mod classic_cty;
 #[cfg(test)]
 use construction::city_name_from_chunks;
 mod destruction;

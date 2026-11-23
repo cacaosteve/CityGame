@@ -81,7 +81,7 @@ pub(super) fn pe_newspaper_gift_place_police_483731(city: &mut City, x: usize, y
 }
 
 /// PE newspaper gift shore prep @ `0x484320`: OR XBIT water-tile (`0x04`), force ALTM
-/// land nibble to `1` (`&=0xffe1` / `|=1`), then PlaceTile XBLD=`0x10`.
+/// land nibble to `1` (`&=0xffe1` / `|=1`), then write XTER=`0x10`.
 pub(super) fn pe_newspaper_gift_shore_prep_484320(city: &mut City, x: usize, y: usize) {
     if x >= CITY_WIDTH || y >= CITY_HEIGHT {
         return;
@@ -93,7 +93,7 @@ pub(super) fn pe_newspaper_gift_shore_prep_484320(city: &mut City, x: usize, y: 
     city.set_tile_bits(x, y, bits);
     let sample = city.altm_at(x, y);
     city.set_altitude(x, y, 1, sample.water);
-    pe_place_tile_441f00(city, x, y, 0x10);
+    city.set_terrain(x, y, 0x10);
 }
 
 /// PE newspaper gift ALTM prep @ `0x483287`: `ALTM &= 0xfc5f` then `|= 0x40` — keeps

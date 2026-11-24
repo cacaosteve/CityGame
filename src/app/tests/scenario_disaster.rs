@@ -2035,6 +2035,10 @@ fn win95_captured_flint_scenario_saves_match_native_chunk_order() {
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
+        let native_reference_path = directory.join("native-reference.sc2");
+        std::fs::write(&native_reference_path, &native_save).unwrap();
+        let native_reference = City::load(&native_reference_path)
+            .expect("load captured native Flint save for state comparison");
         let source_copy = directory.join("flint.SCN");
         let saved = directory.join("flint.SCN.sc2");
         std::fs::write(&source_copy, &original).unwrap();
@@ -2092,6 +2096,18 @@ fn win95_captured_flint_scenario_saves_match_native_chunk_order() {
             None,
             "the saved city must not resume its SCN payload"
         );
+        assert_eq!(
+            state.city.city_funds(),
+            native_reference.city_funds(),
+            "funds after Flint save/reload, scenario_open={scenario_open}"
+        );
+        for slot in 0..150 {
+            assert_eq!(
+                state.city.microsim_at(slot),
+                native_reference.microsim_at(slot),
+                "Flint XMIC after save/reload, scenario_open={scenario_open}, slot={slot}"
+            );
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

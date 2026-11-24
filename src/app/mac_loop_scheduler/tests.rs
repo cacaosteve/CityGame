@@ -8604,6 +8604,65 @@ fn mac_earthquake_r15_autodebt_worker_matches_live_rng_and_map() {
 }
 
 #[test]
+#[ignore = "requires synchronized R15 age-39043 Earthquake RAM-derived CGMS captures"]
+fn mac_earthquake_r15_age39043_worker_matches_live_rng_and_map() {
+    let entry_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R15_AGE39043_ENTRY_CGMS").expect(
+        "set CITYGAME_MAC_EARTHQUAKE_R15_AGE39043_ENTRY_CGMS to the RAM-derived entry CGMS",
+    );
+    let worker_path = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_R15_AGE39043_RETURN_CGMS").expect(
+        "set CITYGAME_MAC_EARTHQUAKE_R15_AGE39043_RETURN_CGMS to the RAM-derived return CGMS",
+    );
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read R15 age-39043 Earthquake entry CGMS"),
+    )
+    .expect("decode R15 age-39043 worker-entry CGMS");
+    let native_worker =
+        std::fs::read(worker_path).expect("read R15 age-39043 Earthquake worker-return CGMS");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_pending_action(6);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.traffic.set_speed(GameSpeed::Paused);
+    // The paired 2026-11-23 RAM snapshots are CODE 10 entry/return at
+    // TickCounts 388439/388641 (age 39043). The live scan made 4,225 `_Random`
+    // calls but no conditional candidate calls; the captured map and XBLD
+    // census are unchanged. The menu-selected point was not captured in the
+    // RAM pair, so this worker-boundary case checks that no-op scan and stream
+    // result only; it does not claim menu-point parity.
+    state.mac_process_rng = MacToolboxRng::new(0x72a5_694c);
+    state.mac_game_rng = MacGameLcgRng::new(0xd214_deef);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0xa5ce);
+    let mut now = 388_439;
+
+    scenario_action::seed_earthquake(
+        &mut state.city,
+        (70, 12),
+        &mut state.mac_process_rng,
+        &mut now,
+        &mut state.mac_app_lfsr,
+    );
+
+    assert_eq!(state.mac_process_rng.seed(), 0x7c1f_375c);
+    assert_eq!(state.mac_game_rng.state(), 0xd214_deef);
+    assert_eq!(state.mac_app_lfsr.state(), 0xa5ce);
+    let actual = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let map_end = 20 + 196_608;
+    assert_eq!(
+        &actual[..map_end],
+        &native_worker[..map_end],
+        "CityGame differs from the R15 age-39043 Earthquake worker-return map"
+    );
+    let census_start = map_end + 0x1f0;
+    let census_end = census_start + 256 * 4;
+    assert_eq!(
+        &actual[census_start..census_end],
+        &native_worker[census_start..census_end],
+        "Mac XBLD census after the R15 age-39043 Earthquake worker"
+    );
+}
+
+#[test]
 fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts() {
     for path in ["mac-mixed-earthquake.city", "mac-mixed-earthquake.sc2"] {
         let city = blank_city_layout_fixture(path, "Mixed earthquake");

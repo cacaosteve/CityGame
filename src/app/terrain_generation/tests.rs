@@ -1108,6 +1108,99 @@ fn win95_terrain_tree_slider_endpoints_and_midpoint_match_native_with_all_coast_
 }
 
 #[test]
+fn win95_terrain_every_tree_slider_value_matches_native_in_all_coast_river_modes() {
+    #[derive(Clone, Copy)]
+    struct NativeCase {
+        trees: u8,
+        coast: bool,
+        river: bool,
+        planes: [u64; 4],
+        rng: (u32, u32),
+    }
+
+    let mut lines = include_str!("win95_tree_slider_native.csv").lines();
+    assert_eq!(
+        lines.next(),
+        Some("trees,coast,river,altm,xter,xbit,xbld,crt,game")
+    );
+    let cases: Vec<_> = lines
+        .map(|line| {
+            let fields: Vec<_> = line.split(',').collect();
+            assert_eq!(fields.len(), 9, "native terrain row {line}");
+            NativeCase {
+                trees: fields[0].parse().unwrap(),
+                coast: match fields[1] {
+                    "0" => false,
+                    "1" => true,
+                    _ => panic!("invalid native coast flag in {line}"),
+                },
+                river: match fields[2] {
+                    "0" => false,
+                    "1" => true,
+                    _ => panic!("invalid native river flag in {line}"),
+                },
+                planes: [
+                    u64::from_str_radix(fields[3], 16).unwrap(),
+                    u64::from_str_radix(fields[4], 16).unwrap(),
+                    u64::from_str_radix(fields[5], 16).unwrap(),
+                    u64::from_str_radix(fields[6], 16).unwrap(),
+                ],
+                rng: (
+                    u32::from_str_radix(fields[7], 16).unwrap(),
+                    u32::from_str_radix(fields[8], 16).unwrap(),
+                ),
+            }
+        })
+        .collect();
+    assert_eq!(cases.len(), 192, "full Trees slider × coast/river matrix");
+
+    std::thread::scope(|scope| {
+        for (worker, batch) in cases.chunks(48).enumerate() {
+            scope.spawn(move || {
+                let path = format!("/tmp/citygame-win95-all-tree-sliders-{worker}.sc2");
+                for case in batch {
+                    let mut city = City::new_blank(&path, "Terrain").expect("blank city");
+                    let mut crt = Win95CrtRand::new(0x1234_5678);
+                    let mut game = Win95GameRand::new(1);
+                    generate_win95(
+                        &mut city,
+                        EditMapSliderValues {
+                            hills: 12,
+                            water: 5,
+                            trees: case.trees,
+                        },
+                        case.coast,
+                        case.river,
+                        &mut crt,
+                        &mut game,
+                    );
+                    let cells =
+                        || (0..CITY_WIDTH).flat_map(|x| (0..CITY_HEIGHT).map(move |y| (x, y)));
+                    let planes =
+                        [
+                            terrain_fingerprint(cells().flat_map(|(x, y)| {
+                                packed_altm_word(city.altm_at(x, y)).to_le_bytes()
+                            })),
+                            terrain_fingerprint(cells().map(|(x, y)| city.terrain_at(x, y))),
+                            terrain_fingerprint(
+                                cells().map(|(x, y)| city.tile_bits_at(x, y).unwrap().raw_bits()),
+                            ),
+                            terrain_fingerprint(cells().map(|(x, y)| city.building_at(x, y))),
+                        ];
+                    let key = (case.trees, case.coast, case.river);
+                    assert_eq!(planes, case.planes, "native terrain planes for {key:?}");
+                    assert_eq!(
+                        (crt.seed(), game.state()),
+                        case.rng,
+                        "native terrain RNG endpoints for {key:?}"
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
 fn win95_height_generation_consumes_exactly_the_lattice_and_refinement_draws() {
     let seed = 0x1234_5678;
     let mut actual_rng = Win95CrtRand::new(seed);

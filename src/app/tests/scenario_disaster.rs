@@ -2039,6 +2039,13 @@ fn win95_captured_flint_scenario_saves_match_native_chunk_order() {
         std::fs::write(&native_reference_path, &native_save).unwrap();
         let native_reference = City::load(&native_reference_path)
             .expect("load captured native Flint save for state comparison");
+        assert_eq!(native_reference.kind, CityFileKind::WinSc2);
+        assert!(!native_reference.pe_scenario_active());
+        assert_eq!(
+            native_reference.scenario_time_limit_months(),
+            None,
+            "the retail scenario save must reopen as an ordinary SC2 city"
+        );
         let source_copy = directory.join("flint.SCN");
         let saved = directory.join("flint.SCN.sc2");
         std::fs::write(&source_copy, &original).unwrap();

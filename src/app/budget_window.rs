@@ -6122,7 +6122,7 @@ mod tests {
             .unwrap()
             .join("mac68k-story-window-r13-20261121")
             .join("AutoDebt.city");
-        let mut city = City::load(source_city).unwrap();
+        let mut city = City::load(source_city.clone()).unwrap();
         assert_eq!(city.kind, CityFileKind::MacCity);
         // The source file lacks CNAM, so City::load falls back to the filename.
         city.name = "AutoDebt".to_owned();
@@ -6255,5 +6255,123 @@ mod tests {
         assert_eq!(after_native_u32(police + 96), 1);
         assert_eq!(after_native_u32(police + 100), 95);
         assert_eq!(after_native_u32(police + 104), 1200);
+
+        // The same native run retained the 95% Police setting through later
+        // January reviews. Compare the budget projection from each live
+        // accumulator table, then check the 2001 row-wise settlement against
+        // the native post-calendar snapshot.
+        for (stem, year, age, tick, funds, ytd, estimate, end_of_year, settled) in [
+            (
+                "jan1998-budget-panel-live-stop",
+                1998,
+                29_400,
+                101_264,
+                -8_908,
+                268,
+                258,
+                -8_640,
+                -8_641,
+            ),
+            (
+                "jan2001-budget-panel-live-stop",
+                2001,
+                30_300,
+                128_529,
+                -8_204,
+                268,
+                282,
+                -7_936,
+                -7_937,
+            ),
+        ] {
+            let later_ram = std::fs::read(root.join(format!("{stem}-ram.bin"))).unwrap();
+            assert_eq!(later_ram.len(), 10 * 1024 * 1024);
+            let later_u32 = |address: usize| {
+                u32::from_be_bytes(later_ram[address..address + 4].try_into().unwrap())
+            };
+            let later_a5 = later_u32(0x904) as usize;
+            let later_at_a5 = |offset: usize| later_a5 + offset - 0x10000;
+            assert_eq!(later_u32(later_a5 - 0x105c), age, "{year} captured age");
+            assert_eq!(later_u32(0x16a), tick, "{year} captured TickCount");
+            assert_eq!(later_u32(later_at_a5(0xefac)) as i32, funds, "{year} funds");
+            let later_table = later_u32(later_at_a5(0xfd66)) as usize;
+            assert!(later_table + 16 * 0x70 <= later_ram.len());
+
+            let mut later_city = City::load(source_city.clone()).unwrap();
+            later_city.name = "AutoDebt".to_owned();
+            later_city.set_saved_date(crate::city::CityDate { year, month: 1 });
+            later_city.set_city_funds(funds);
+            for row in 0..16 {
+                let start = later_table + row * 0x70;
+                let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+                for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                    values[field] = later_u32(start + offset);
+                }
+                later_city.set_budget_misc_u32_values(
+                    0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4,
+                    &values,
+                );
+            }
+            assert_eq!(
+                later_city.budget_misc_u32_at(0x077c + 5 * BUDGET_SERVICE_MISC_STRIDE * 4 + 4),
+                Some(95),
+                "{year} native Police funding remains at 95%"
+            );
+
+            let later_entries =
+                entries_for_city_for_month(&later_city, EngineFidelity::Mac68k, 1, true);
+            let later_summary = mac_cashflow_summary(&later_entries, i64::from(funds));
+            assert_eq!(
+                later_summary,
+                MacCashflowSummary {
+                    year_to_date: ytd,
+                    estimated: estimate,
+                    end_of_year_funds: end_of_year,
+                },
+                "captured January {year} review after the native Police edit"
+            );
+
+            let save_path = std::env::temp_dir().join(format!(
+                "citygame-r10-budget-continuation-{year}-{}.city",
+                std::process::id()
+            ));
+            later_city.save(&save_path).unwrap();
+            let reloaded = City::load(&save_path).unwrap();
+            std::fs::remove_file(&save_path).unwrap();
+            assert_eq!(reloaded.kind, CityFileKind::MacCity);
+            assert_eq!(
+                reloaded.saved_date(),
+                Some(crate::city::CityDate { year, month: 1 })
+            );
+            assert_eq!(reloaded.city_funds(), funds);
+            let reloaded_entries =
+                entries_for_city_for_month(&reloaded, EngineFidelity::Mac68k, 1, true);
+            assert_eq!(
+                mac_cashflow_summary(&reloaded_entries, i64::from(funds)),
+                later_summary,
+                "captured January {year} budget survives Mac save/reload"
+            );
+
+            let mut settled_state = crate::app::tests::test_state(reloaded);
+            settled_state.engine_fidelity = EngineFidelity::Mac68k;
+            settled_state.apply_budget_year_end_settlement();
+            assert_eq!(
+                settled_state.city.city_funds(),
+                settled,
+                "{year} settlement"
+            );
+            if year == 2001 {
+                let after_calendar =
+                    std::fs::read(root.join("jan2001-post-calendar-phase-ram.bin")).unwrap();
+                let after_a5 =
+                    u32::from_be_bytes(after_calendar[0x904..0x908].try_into().unwrap()) as usize;
+                let native_settled = u32::from_be_bytes(
+                    after_calendar[after_a5 + 0xefac - 0x10000..after_a5 + 0xefac - 0x10000 + 4]
+                        .try_into()
+                        .unwrap(),
+                ) as i32;
+                assert_eq!(native_settled, settled);
+            }
+        }
     }
 }

@@ -5978,6 +5978,16 @@ mod tests {
                 -423,
             ),
             (
+                "CITYGAME_MAC_R15_JAN2048_BUDGET_CAPTURE_DIR",
+                "r15-jan2048-review-readonly-20261124",
+                2048,
+                44_400,
+                -424,
+                -241,
+                -248,
+                -665,
+            ),
+            (
                 "CITYGAME_MAC_R14_JAN2162_BUDGET_CAPTURE_DIR",
                 "current-jan2162-20261124",
                 2162,
@@ -6006,6 +6016,16 @@ mod tests {
                 -5,
                 -5,
                 -17_534,
+            ),
+            (
+                "CITYGAME_MAC_R14_JAN2165_BUDGET_CAPTURE_DIR",
+                "r14-jan2165-review-readonly-20261124",
+                2165,
+                79_500,
+                -17_534,
+                -5,
+                -5,
+                -17_539,
             ),
         ];
 

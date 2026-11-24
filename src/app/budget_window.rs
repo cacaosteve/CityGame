@@ -5554,11 +5554,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2062 selected CODE 3 worker captures"]
-    fn mac_r15_selected_january_2031_through_2062_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 selected CODE 3 worker captures"]
+    fn mac_r15_selected_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2062_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_CODE3_CAPTURE_DIR").unwrap(),
         );
+        let selected_year = std::env::var("CITYGAME_MAC_R15_CODE3_ONLY_YEAR")
+            .ok()
+            .map(|year| year.parse::<u16>().expect("valid selected CODE 3 year"));
         let cases = [
             (
                 2031,
@@ -5944,11 +5947,26 @@ mod tests {
                 112,
                 100,
             ),
+            (
+                2063,
+                48_900,
+                775_093,
+                775_094,
+                0x1425_4eda,
+                0x3b30_8e2a,
+                0x0003,
+                0x0006,
+                112,
+                100,
+            ),
         ];
 
         for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, crime, power) in
             cases
         {
+            if selected_year.is_some_and(|selected| selected != year) {
+                continue;
+            }
             let stem =
                 |role: &str, tick: u32| format!("code3-export162-{role}-age{age}-tick{tick}");
             let entry_cgms =
@@ -6339,6 +6357,16 @@ mod tests {
                 -3_394,
             ),
             (
+                "CITYGAME_MAC_R15_JAN2063_BUDGET_CAPTURE_DIR",
+                "jan2063-budget-review-before-done-20261124",
+                2063,
+                48_900,
+                -4_138,
+                -248,
+                -248,
+                -4_386,
+            ),
+            (
                 "CITYGAME_MAC_R14_JAN2162_BUDGET_CAPTURE_DIR",
                 "current-jan2162-20261124",
                 2162,
@@ -6518,6 +6546,83 @@ mod tests {
         assert_eq!(
             reloaded.saved_date(),
             Some(crate::city::CityDate { year: 2060, month: 1 })
+        );
+        assert_eq!(reloaded.city_funds(), funds);
+        let reloaded_entries =
+            entries_for_city_for_month(&reloaded, EngineFidelity::Mac68k, 1, true);
+        assert_eq!(
+            mac_cashflow_summary(&reloaded_entries, i64::from(reloaded.city_funds())),
+            summary
+        );
+    }
+
+    #[test]
+    #[ignore = "requires private R15 January 2063 review RAM and CGMS capture"]
+    fn mac_r15_january_2063_budget_review_matches_native_panel_and_survives_save_reload() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R15_JAN2063_BUDGET_CAPTURE_DIR").unwrap(),
+        );
+        let stem = "jan2063-budget-review-before-done-20261124";
+        let cgms = std::fs::read(root.join(format!("{stem}.cgms"))).unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&cgms).unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.name = "AutoDebt".to_owned();
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2063,
+                month: 1
+            })
+        );
+
+        let ram = std::fs::read(root.join(format!("{stem}.ram"))).unwrap();
+        assert_eq!(ram.len(), 16 * 1024 * 1024);
+        let native_u32 =
+            |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
+        let a5 = native_u32(0x904) as usize;
+        let age_address = a5 + 0xefa4 - 0x10000;
+        let funds_address = a5 + 0xefac - 0x10000;
+        assert_eq!(native_u32(age_address), 48_900);
+        let funds = native_u32(funds_address) as i32;
+        assert_eq!(funds, -4_138);
+        city.set_city_funds(funds);
+
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        assert!(table + 16 * 0x70 <= ram.len());
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+
+        let entries = entries_for_city_for_month(&city, EngineFidelity::Mac68k, 1, true);
+        let summary = mac_cashflow_summary(&entries, i64::from(funds));
+        assert_eq!(
+            summary,
+            MacCashflowSummary {
+                year_to_date: -248,
+                estimated: -248,
+                end_of_year_funds: -4_386,
+            }
+        );
+
+        let save_path = std::env::temp_dir().join(format!(
+            "citygame-mac-annual-budget-2063-{}.city",
+            std::process::id()
+        ));
+        city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(&save_path).unwrap();
+        assert_eq!(reloaded.kind, CityFileKind::MacCity);
+        assert_eq!(
+            reloaded.saved_date(),
+            Some(crate::city::CityDate {
+                year: 2063,
+                month: 1
+            })
         );
         assert_eq!(reloaded.city_funds(), funds);
         let reloaded_entries =

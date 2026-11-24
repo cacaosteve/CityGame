@@ -4002,10 +4002,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R14 January 2057–2158 and 2162–2164 CODE 3 export-162 boundary captures"]
-    fn mac_r14_january_2057_through_2164_code3_annual_xmic_matches_native_worker() {
+    #[ignore = "requires private R14 January 2057–2158 and 2162–2166 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2166_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2164_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2166_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5058,6 +5058,26 @@ mod tests {
                 0xfe8c,
                 0xe6ed,
             ),
+            (
+                2165,
+                79500,
+                2451660,
+                2451661,
+                0x2d6b_ac51,
+                0x2d6b_ac51,
+                0x9bfe,
+                0x2c09,
+            ),
+            (
+                2166,
+                79800,
+                2461606,
+                2461607,
+                0x1b5c_fc82,
+                0x1b5c_fc82,
+                0xf0e2,
+                0xfa31,
+            ),
         ];
 
         for (
@@ -5444,10 +5464,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2044 and 2046-2047 CODE 3 worker captures"]
-    fn mac_r15_january_2031_through_2047_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2044 and 2046-2048 CODE 3 worker captures"]
+    fn mac_r15_january_2031_through_2048_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2047_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2048_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5627,6 +5647,18 @@ mod tests {
                 0x5964_4dba,
                 0xc83c,
                 0x8b8d,
+                112,
+                100,
+            ),
+            (
+                2048,
+                44_400,
+                612_184,
+                612_187,
+                0x7b05_51b7,
+                0x6383_6643,
+                0x91b5,
+                0x389f,
                 112,
                 100,
             ),
@@ -5986,6 +6018,16 @@ mod tests {
                 -241,
                 -248,
                 -665,
+            ),
+            (
+                "CITYGAME_MAC_R15_JAN2049_BUDGET_CAPTURE_DIR",
+                "r15-jan2049-review-readonly-20261124",
+                2049,
+                44_700,
+                -666,
+                -248,
+                -248,
+                -914,
             ),
             (
                 "CITYGAME_MAC_R14_JAN2162_BUDGET_CAPTURE_DIR",

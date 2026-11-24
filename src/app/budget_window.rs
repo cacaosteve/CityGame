@@ -5484,10 +5484,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2044 and 2046-2051 CODE 3 worker captures"]
-    fn mac_r15_january_2031_through_2051_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2044, 2046-2051, and 2058 CODE 3 worker captures"]
+    fn mac_r15_selected_january_2031_through_2058_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2051_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2058_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5718,6 +5718,18 @@ mod tests {
                 112,
                 100,
             ),
+            (
+                2058,
+                47_400,
+                727_687,
+                727_689,
+                0x4575_7079,
+                0x75f2_957b,
+                0x1476,
+                0x28ec,
+                112,
+                100,
+            ),
         ];
 
         for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, crime, power) in
@@ -5749,6 +5761,13 @@ mod tests {
                 u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
             };
             let a5 = native_u32(0x904) as usize;
+            let worker_game_lcg = if year == 2058 {
+                let captured = native_u32(a5 - 8);
+                assert_eq!(captured, 0xeaa9_edfc, "year {year} native game LCG");
+                captured
+            } else {
+                0xd214_deef
+            };
             let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
             for row in 0..16 {
                 let start = table + row * 0x70;
@@ -5776,7 +5795,7 @@ mod tests {
                 state.city.set_mac_transit_accumulator(mode, 0);
             }
             state.mac_process_rng = crate::mac_random::MacToolboxRng::new(qd_in);
-            state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xd214_deef);
+            state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(worker_game_lcg);
             state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(lfsr_in);
             let funding = std::array::from_fn(|row| {
                 mac_budget_service_funding_raw_for_city(&state.city, row)
@@ -5800,7 +5819,7 @@ mod tests {
             }
             assert_eq!(
                 state.mac_game_rng.state(),
-                0xd214_deef,
+                worker_game_lcg,
                 "year {year} game LCG"
             );
             let native_xmic =

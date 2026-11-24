@@ -3126,6 +3126,23 @@ mod tests {
         assert_eq!(cashflow.year_to_date, -5);
         assert_eq!(cashflow.estimated, -5);
         assert_eq!(cashflow.end_of_year_funds, -17_464);
+
+        let annual_entry =
+            std::fs::read(root.join("code3-export162-entry-age75000-tick2295719.ram")).unwrap();
+        assert_eq!(annual_entry.len(), 16 * 1024 * 1024);
+        let entry_a5 =
+            u32::from_be_bytes(annual_entry[0x904..0x908].try_into().unwrap()) as usize;
+        let funds_offset = entry_a5 + 0xefac - 0x10000;
+        let native_funds = u32::from_be_bytes(
+            annual_entry[funds_offset..funds_offset + 4]
+                .try_into()
+                .unwrap(),
+        ) as i32;
+        assert_eq!(native_funds, -17_464);
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.apply_budget_year_end_settlement();
+        assert_eq!(state.city.city_funds(), native_funds);
     }
 
     #[test]
@@ -3985,10 +4002,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R14 January 2057–2149 CODE 3 export-162 boundary captures"]
-    fn mac_r14_january_2057_through_2149_code3_annual_xmic_matches_native_worker() {
+    #[ignore = "requires private R14 January 2057–2150 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2150_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2149_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2150_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -4920,6 +4937,16 @@ mod tests {
                 0x0f84_aee7,
                 0x7c06,
                 0xf80c,
+            ),
+            (
+                2150,
+                75000,
+                2295719,
+                2295720,
+                0x0114_0139,
+                0x0114_0139,
+                0x8f11,
+                0x05d7,
             ),
         ];
 

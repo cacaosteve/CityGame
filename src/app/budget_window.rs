@@ -4640,6 +4640,16 @@ mod tests {
                 249,
                 -1_781,
             ),
+            (
+                "CITYGAME_MAC_R15_JAN2027_BUDGET_CAPTURE_DIR",
+                "r15-jan2027-entry",
+                2027,
+                38_100,
+                -1_780,
+                220,
+                232,
+                -1_560,
+            ),
         ];
 
         for (dir_env, stem, year, age, funds, ytd, estimate, end_of_year) in cases {

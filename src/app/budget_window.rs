@@ -5903,6 +5903,26 @@ mod tests {
                 -230,
                 47,
             ),
+            (
+                "CITYGAME_MAC_R15_JAN2046_BUDGET_CAPTURE_DIR",
+                "current-jan2046-20261124",
+                2046,
+                43_800,
+                44,
+                -231,
+                -231,
+                -187,
+            ),
+            (
+                "CITYGAME_MAC_R14_JAN2162_BUDGET_CAPTURE_DIR",
+                "current-jan2162-20261124",
+                2162,
+                78_600,
+                -17_519,
+                -5,
+                -5,
+                -17_524,
+            ),
         ];
 
         for (dir_env, stem, year, age, funds, ytd, estimate, end_of_year) in cases {

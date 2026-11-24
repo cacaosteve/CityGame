@@ -4002,10 +4002,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R14 January 2057–2158 and 2162–2166 CODE 3 export-162 boundary captures"]
-    fn mac_r14_january_2057_through_2166_code3_annual_xmic_matches_native_worker() {
+    #[ignore = "requires private R14 January 2057–2158 and 2162–2167 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2167_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2166_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2167_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5078,6 +5078,16 @@ mod tests {
                 0xf0e2,
                 0xfa31,
             ),
+            (
+                2167,
+                80100,
+                2471833,
+                2471834,
+                0x607d_777b,
+                0x607d_777b,
+                0xae36,
+                0x4799,
+            ),
         ];
 
         for (
@@ -5464,10 +5474,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2044 and 2046-2048 CODE 3 worker captures"]
-    fn mac_r15_january_2031_through_2048_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2044 and 2046-2049 CODE 3 worker captures"]
+    fn mac_r15_january_2031_through_2049_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2048_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2049_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5659,6 +5669,18 @@ mod tests {
                 0x6383_6643,
                 0x91b5,
                 0x389f,
+                112,
+                100,
+            ),
+            (
+                2049,
+                44_700,
+                624_495,
+                624_497,
+                0x3e87_2484,
+                0x6de3_db3e,
+                0xec7d,
+                0xc30f,
                 112,
                 100,
             ),

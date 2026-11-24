@@ -5474,10 +5474,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2044 and 2046-2049 CODE 3 worker captures"]
-    fn mac_r15_january_2031_through_2049_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2044 and 2046-2050 CODE 3 worker captures"]
+    fn mac_r15_january_2031_through_2050_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2049_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2050_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5684,20 +5684,22 @@ mod tests {
                 112,
                 100,
             ),
+            (
+                2050,
+                45_000,
+                637_079,
+                637_081,
+                0x42e2_837c,
+                0x44ac_a095,
+                0x9906,
+                0x29f9,
+                112,
+                100,
+            ),
         ];
 
-        for (
-            year,
-            age,
-            entry_tick,
-            return_tick,
-            qd_in,
-            qd_out,
-            lfsr_in,
-            lfsr_out,
-            crime,
-            power,
-        ) in cases
+        for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, crime, power) in
+            cases
         {
             let stem =
                 |role: &str, tick: u32| format!("code3-export162-{role}-age{age}-tick{tick}");

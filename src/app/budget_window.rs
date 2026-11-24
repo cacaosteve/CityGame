@@ -5554,10 +5554,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2061 selected CODE 3 worker captures"]
-    fn mac_r15_selected_january_2031_through_2061_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2062 selected CODE 3 worker captures"]
+    fn mac_r15_selected_january_2031_through_2062_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2061_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2062_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5929,6 +5929,18 @@ mod tests {
                 0x6c9c_39c4,
                 0x87ec,
                 0x142d,
+                112,
+                100,
+            ),
+            (
+                2062,
+                48_600,
+                768_344,
+                768_346,
+                0x463f_8401,
+                0x2f88_d878,
+                0x36b0,
+                0x6d60,
                 112,
                 100,
             ),

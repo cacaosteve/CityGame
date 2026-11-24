@@ -1212,12 +1212,16 @@ fn win95_terrain_hills_water_grid_matches_native_in_all_coast_river_modes() {
         rng: (u32, u32),
     }
 
+    let header = "hills,water,trees,coast,river,altm,xter,xbit,xbld,crt,game";
     let mut lines = include_str!("win95_hills_water_native.csv").lines();
     assert_eq!(
         lines.next(),
-        Some("hills,water,trees,coast,river,altm,xter,xbit,xbld,crt,game")
+        Some(header)
     );
+    let mut sweep_lines = include_str!("win95_hills_water_slider_sweeps_native.csv").lines();
+    assert_eq!(sweep_lines.next(), Some(header));
     let cases: Vec<_> = lines
+        .chain(sweep_lines)
         .map(|line| {
             let fields: Vec<_> = line.split(',').collect();
             assert_eq!(fields.len(), 11, "native terrain row {line}");
@@ -1248,7 +1252,11 @@ fn win95_terrain_hills_water_grid_matches_native_in_all_coast_river_modes() {
             }
         })
         .collect();
-    assert_eq!(cases.len(), 256, "8×8 Hills/Water grid × coast/river modes");
+    assert_eq!(
+        cases.len(),
+        576,
+        "8×8 Hills/Water grid plus complete individual slider sweeps × coast/river modes"
+    );
 
     let mut batches: [Vec<NativeCase>; 4] = std::array::from_fn(|_| Vec::new());
     for (index, case) in cases.into_iter().enumerate() {

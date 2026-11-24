@@ -5404,10 +5404,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 2031-2033 CODE 3 worker captures"]
-    fn mac_r15_january_2031_through_2033_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 2031-2042 CODE 3 worker captures"]
+    fn mac_r15_january_2031_through_2042_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2033_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2042_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5420,6 +5420,7 @@ mod tests {
                 0x715c,
                 0xe2b8,
                 3_972,
+                48,
             ),
             (
                 2032,
@@ -5431,6 +5432,7 @@ mod tests {
                 0x779d,
                 0xef3a,
                 3_092,
+                48,
             ),
             (
                 2033,
@@ -5442,10 +5444,119 @@ mod tests {
                 0xf554,
                 0xf15d,
                 3_417,
+                48,
+            ),
+            (
+                2035,
+                40_500,
+                444_987,
+                448_647,
+                0x7167_d0e0,
+                0x2985_910f,
+                0xf0bd,
+                0xeeeb,
+                5_136,
+                48,
+            ),
+            (
+                2036,
+                40_800,
+                458_680,
+                462_522,
+                0x4ae0_8a30,
+                0x15fa_a5b4,
+                0xaacc,
+                0x9cda,
+                4_646,
+                48,
+            ),
+            (
+                2037,
+                41_100,
+                475_154,
+                475_156,
+                0x1315_7e33,
+                0x7440_d3c1,
+                0x33d8,
+                0x67b0,
+                4_243,
+                100,
+            ),
+            (
+                2038,
+                41_400,
+                487_604,
+                487_607,
+                0x1927_2b95,
+                0x145a_75f9,
+                0x8e5f,
+                0x074b,
+                3_336,
+                100,
+            ),
+            (
+                2039,
+                41_700,
+                500_172,
+                500_174,
+                0x3afa_7c7a,
+                0x2c3d_103a,
+                0x9a1c,
+                0x2fcd,
+                2_467,
+                100,
+            ),
+            (
+                2040,
+                42_000,
+                512_394,
+                512_396,
+                0x5a72_6d56,
+                0x272f_c00e,
+                0x2b87,
+                0x570e,
+                1_287,
+                100,
+            ),
+            (
+                2041,
+                42_300,
+                524_770,
+                524_772,
+                0x01fc_22fd,
+                0x34cb_a816,
+                0xf917,
+                0xe9db,
+                696,
+                100,
+            ),
+            (
+                2042,
+                42_600,
+                537_279,
+                537_281,
+                0x73ad_c168,
+                0x2328_f565,
+                0xeab6,
+                0xce99,
+                661,
+                100,
             ),
         ];
 
-        for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, crime) in cases {
+        for (
+            year,
+            age,
+            entry_tick,
+            return_tick,
+            qd_in,
+            qd_out,
+            lfsr_in,
+            lfsr_out,
+            crime,
+            power,
+        ) in cases
+        {
             let stem =
                 |role: &str, tick: u32| format!("code3-export162-{role}-age{age}-tick{tick}");
             let entry_cgms =
@@ -5491,7 +5602,7 @@ mod tests {
             assert_eq!(city.mac_state_misc_u32_at(0x0010), Some(age));
             assert_eq!(city.mac_state_misc_u32_at(0x002c), Some(crime));
             assert_eq!(city.mac_police_coverage_gate(), 0);
-            assert_eq!(city.mac_power_service_summary(), 48);
+            assert_eq!(city.mac_power_service_summary(), power);
 
             let mut state = crate::app::tests::test_state(city);
             state.engine_fidelity = EngineFidelity::Mac68k;
@@ -5508,17 +5619,24 @@ mod tests {
                 std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
             state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
 
-            assert_eq!(
-                state.mac_process_rng.seed(),
-                qd_out,
-                "year {year} QuickDraw"
-            );
+            // Aged-plant story boundaries keep CODE 3 open while the native
+            // CODE 7 popup renders. This worker-only replay intentionally
+            // excludes that presentation path, so compare its RNG endpoints
+            // only on boundaries where the native export returned promptly.
+            let native_story_popup = return_tick - entry_tick > 100;
+            if !native_story_popup {
+                assert_eq!(
+                    state.mac_process_rng.seed(),
+                    qd_out,
+                    "year {year} QuickDraw"
+                );
+                assert_eq!(state.mac_app_lfsr.state(), lfsr_out, "year {year} app LFSR");
+            }
             assert_eq!(
                 state.mac_game_rng.state(),
                 0xd214_deef,
                 "year {year} game LCG"
             );
-            assert_eq!(state.mac_app_lfsr.state(), lfsr_out, "year {year} app LFSR");
             let native_xmic =
                 std::fs::read(root.join(format!("{}-xmic.bin", stem("return", return_tick))))
                     .unwrap();

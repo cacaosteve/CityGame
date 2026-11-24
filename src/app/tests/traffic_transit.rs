@@ -4632,6 +4632,25 @@ fn pe_newspaper_gift_place_stadium_483767_advances_sports_teams() {
 }
 
 #[test]
+fn pe_newspaper_gift_place_stadium_without_xtxt_does_not_consume_crt() {
+    let mut city =
+        City::new_blank("/tmp/sc2000-gift-stadium-no-xtxt.sc2", "NoXtxt").expect("blank city");
+    city.set_pe_w_sports_teams(0x1f);
+    while city
+        .provision_microsim_for_building(STADIUM_BUILDING_ID)
+        .is_some()
+    {}
+    let mut crt = Win95CrtRand::new(0x34d5_4e84);
+    assert_eq!(city.text_overlay_at(20, 20), Some(0));
+
+    assert!(!pe_newspaper_gift_place_stadium_483767(
+        &mut city, &mut crt, 20, 20
+    ));
+    assert_eq!(crt.seed(), 0x34d5_4e84);
+    assert_eq!(city.pe_w_sports_teams(), 0x1f);
+}
+
+#[test]
 fn pe_newspaper_gift_entry_483250_hospital_church_stadium_sports() {
     // PE zone-paint JT hospital/church @ `0x483df1`/`0x483e14` (stories `0x199`/`0x1a2`);
     // stadium PlaceTile-size + sports join @ `0x483767` (story `0x30b`); zone-type-only

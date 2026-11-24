@@ -1652,23 +1652,55 @@ mod music_open_tests {
                 .unwrap(),
         );
         let city_name = source.file_stem().unwrap().to_string_lossy().to_string();
+        let native_capture = std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_STATE").map(|path| {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(path).expect("read native Classic CTY header state"),
+            )
+            .expect("decode native header state")
+        });
+        let native_u32 = |address: &str| {
+            let text = native_capture.as_ref().unwrap()["published_state_bytes"][address]
+                .as_str()
+                .expect("native published state bytes");
+            let mut bytes = [0; 4];
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
+                    .expect("hex native published-state byte");
+            }
+            u32::from_le_bytes(bytes)
+        };
+        let native_u16 = |address: &str| {
+            let text = native_capture.as_ref().unwrap()["published_state_bytes"][address]
+                .as_str()
+                .expect("native published state bytes");
+            u16::from_le_bytes([
+                u8::from_str_radix(&text[0..2], 16).expect("hex native word byte"),
+                u8::from_str_radix(&text[2..4], 16).expect("hex native word byte"),
+            ])
+        };
         let (native_year, native_month) = match city_name.as_str() {
             "BAZ" => (2000, 1),
             "BERN" => (1977, 10),
             "METROPOL" => (2099, 8),
             "BIGMEG" => (2273, 1),
+            _ if native_capture.is_some() => (
+                native_u16("0x004ca5f4") + native_u16("0x004cb020"),
+                native_u16("0x004cb01c") as u8 + 1,
+            ),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let native_auto_budget = match city_name.as_str() {
             "BAZ" | "BERN" => 0,
             "METROPOL" => 1,
             "BIGMEG" => 1,
+            _ if native_capture.is_some() => native_u32("0x004cc4b0"),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let native_auto_goto = match city_name.as_str() {
             "BAZ" => 0,
             "BERN" | "METROPOL" => 1,
             "BIGMEG" => 0,
+            _ if native_capture.is_some() => native_u32("0x004ca5d8"),
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let native_funds = match city_name.as_str() {
@@ -1676,6 +1708,7 @@ mod music_open_tests {
             "BERN" => 0x0206,
             "METROPOL" => 0x9989,
             "BIGMEG" => 0x9e3f,
+            _ if native_capture.is_some() => native_u32("0x004ca444") as i32,
             other => panic!("unsupported native Classic CTY fixture {other}"),
         };
         let (planes_env, expected_crt, expected_game_rand) = match city_name.as_str() {
@@ -1695,9 +1728,29 @@ mod music_open_tests {
                 0xd72c_1d0c,
                 0xb1ff_f6f7,
             ),
+            _ if native_capture.is_some() => (
+                "CITYGAME_CLASSIC_CTY_NATIVE_PLANES",
+                std::env::var("CITYGAME_CLASSIC_CTY_NATIVE_OPEN_CRT_RETURN")
+                    .expect("native open-service CRT endpoint")
+                    .parse()
+                    .expect("decimal native CRT endpoint"),
+                u32::from_str_radix(
+                    std::env::var("CITYGAME_CLASSIC_CTY_NATIVE_GAME_LCG_RETURN")
+                        .expect("native game LCG endpoint")
+                        .trim_start_matches("0x"),
+                    16,
+                )
+                .expect("hex native game LCG endpoint"),
+            ),
             _ => unreachable!(),
         };
-        let native_audio = if city_name == "BIGMEG" { 0 } else { 1 };
+        let native_audio = if city_name == "BIGMEG" {
+            0
+        } else if native_capture.is_some() {
+            native_u32("0x004c71f0")
+        } else {
+            1
+        };
         let mut expected_open_crt = crate::win95_random::Win95CrtRand::new(expected_crt);
         crate::city::City::pe_sample_city_reset_neighbors_40e250(&mut expected_open_crt);
         let native_planes_path = std::path::PathBuf::from(std::env::var_os(planes_env).unwrap());
@@ -1746,12 +1799,53 @@ mod music_open_tests {
         state.engine_fidelity = EngineFidelity::Win95;
         state.pe_process_crt = crate::win95_random::Win95CrtRand::new(2_503_793_637);
         state.pe_process_game_rand = crate::win95_random::Win95GameRand::new(1);
+        if let Some(native_reader_path) =
+            std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_READER_PLANES")
+        {
+            let native_reader: BTreeMap<String, String> = serde_json::from_slice(
+                &std::fs::read(native_reader_path).expect("read native reader-return planes"),
+            )
+            .expect("decode native reader-return planes");
+            let mut payload_crt = crate::win95_random::Win95CrtRand::new(2_503_793_637);
+            let mut payload_game = crate::win95_random::Win95GameRand::new(1);
+            let payload = crate::app::classic_cty_import::load_classic_cty(
+                &source,
+                &mut payload_crt,
+                &mut payload_game,
+            )
+            .expect("import CTY payload at native reader-return boundary");
+            let payload_planes = collect_planes(&payload);
+            for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {
+                let native = native_reader
+                    .get(name)
+                    .unwrap_or_else(|| panic!("missing native reader-return {name}"))
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect::<Vec<_>>();
+                let differences = payload_planes[name]
+                    .iter()
+                    .zip(&native)
+                    .enumerate()
+                    .filter_map(|(index, (citygame, retail))| {
+                        (citygame != retail).then_some((index, *citygame, *retail))
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    differences.is_empty(),
+                    "reader-return {name} for {city_name} has {} differing cells; first differences: {:?}",
+                    differences.len(),
+                    &differences[..differences.len().min(12)]
+                );
+            }
+        }
         assert!(classic_cty_confirmation_required(
             &AppCommand::OpenConfirmedCityPath(source.clone()),
             state.engine_fidelity,
             false,
         ));
 
+        crate::app::classic_cty_import::clear_classic_cty_tile_entry_crt_trace();
         let callbacks = RefCell::new(Vec::new());
         open_city_document_with_title_tail(
             &mut state,
@@ -1835,6 +1929,60 @@ mod music_open_tests {
         )
         .expect("normal confirmed document-open path imports CTY");
         assert_eq!(*callbacks.borrow(), ["music", "finish"]);
+        if let Some(native_tile_crt_path) = std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_TILE_CRT")
+        {
+            let native_tile_crt: Vec<u32> = serde_json::from_slice(
+                &std::fs::read(native_tile_crt_path).expect("read native CTY tile CRT entries"),
+            )
+            .expect("decode native CTY tile CRT entries");
+            let citygame_tile_crt =
+                crate::app::classic_cty_import::take_classic_cty_tile_entry_crt_trace();
+            if let Some(output) = std::env::var_os("CITYGAME_CLASSIC_CTY_TILE_CRT_OUTPUT") {
+                std::fs::write(
+                    output,
+                    serde_json::to_vec(&citygame_tile_crt).expect("encode CityGame tile CRT trace"),
+                )
+                .expect("write CityGame tile CRT trace");
+            }
+            assert_eq!(citygame_tile_crt.len(), native_tile_crt.len());
+            if citygame_tile_crt != native_tile_crt {
+                let first = citygame_tile_crt
+                    .iter()
+                    .zip(&native_tile_crt)
+                    .position(|(citygame, native)| citygame != native)
+                    .unwrap();
+                panic!(
+                    "{city_name} tile CRT first diverges before input {}: CityGame {:#010x}, native {:#010x}",
+                    first, citygame_tile_crt[first], native_tile_crt[first]
+                );
+            }
+        } else {
+            let _ = crate::app::classic_cty_import::take_classic_cty_tile_entry_crt_trace();
+        }
+        if let Some(native_tile_xbld_path) =
+            std::env::var_os("CITYGAME_CLASSIC_CTY_NATIVE_TILE_XBLD")
+        {
+            let native_tile_xbld: Vec<u8> = serde_json::from_slice(
+                &std::fs::read(native_tile_xbld_path).expect("read native CTY tile XBLD entries"),
+            )
+            .expect("decode native CTY tile XBLD entries");
+            let citygame_tile_xbld =
+                crate::app::classic_cty_import::take_classic_cty_tile_entry_xbld_trace();
+            assert_eq!(citygame_tile_xbld.len(), native_tile_xbld.len());
+            if citygame_tile_xbld != native_tile_xbld {
+                let first = citygame_tile_xbld
+                    .iter()
+                    .zip(&native_tile_xbld)
+                    .position(|(citygame, native)| citygame != native)
+                    .unwrap();
+                panic!(
+                    "{city_name} tile XBLD first diverges before input {first}: CityGame {:#04x}, native {:#04x}",
+                    citygame_tile_xbld[first], native_tile_xbld[first]
+                );
+            }
+        } else {
+            let _ = crate::app::classic_cty_import::take_classic_cty_tile_entry_xbld_trace();
+        }
         assert_eq!(
             state.pe_process_crt_seed(),
             expected_open_crt.seed(),
@@ -1844,6 +1992,14 @@ mod music_open_tests {
             state.pe_process_game_rand_state(),
             expected_game_rand,
             "confirmed {city_name} open preserves the native border LCG sequence"
+        );
+        assert!(
+            state
+                .city
+                .land_value_slice()
+                .is_some_and(|values| values.len() == crate::city::CITY_TILES
+                    && values.iter().all(|value| *value == 0)),
+            "normal {city_name} open starts with the native zeroed XVAL plane"
         );
         let opened_planes = collect_planes(&state.city);
         for name in ["XBLD", "XZON", "XBIT", "ALTM", "XTXT"] {
@@ -1876,6 +2032,13 @@ mod music_open_tests {
         assert_eq!(reopened.saved_date(), state.city.saved_date());
         assert_eq!(reopened.year_founded(), state.city.year_founded());
         assert_eq!(reopened.year_founded(), Some(1900));
+        assert!(
+            reopened
+                .land_value_slice()
+                .is_some_and(|values| values.len() == crate::city::CITY_TILES
+                    && values.iter().all(|value| *value == 0)),
+            "saved/reloaded {city_name} retains the native initial XVAL plane"
+        );
         assert_eq!(
             reopened.city_funds(),
             native_funds,

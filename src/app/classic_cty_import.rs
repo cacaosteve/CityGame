@@ -9,6 +9,42 @@ use anyhow::Result;
 
 const CLASSIC_CTY_FOUNDED_YEAR: u16 = 1_900;
 
+#[cfg(test)]
+thread_local! {
+    static CLASSIC_CTY_TILE_ENTRY_CRT: std::cell::RefCell<Vec<u32>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+    static CLASSIC_CTY_TILE_ENTRY_XBLD: std::cell::RefCell<Vec<u8>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn clear_classic_cty_tile_entry_crt_trace() {
+    CLASSIC_CTY_TILE_ENTRY_CRT.with(|trace| trace.borrow_mut().clear());
+    CLASSIC_CTY_TILE_ENTRY_XBLD.with(|trace| trace.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn take_classic_cty_tile_entry_crt_trace() -> Vec<u32> {
+    CLASSIC_CTY_TILE_ENTRY_CRT.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn take_classic_cty_tile_entry_xbld_trace() -> Vec<u8> {
+    CLASSIC_CTY_TILE_ENTRY_XBLD.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+}
+
+#[cfg(test)]
+fn record_classic_cty_tile_entry_crt(seed: u32) {
+    CLASSIC_CTY_TILE_ENTRY_CRT.with(|trace| trace.borrow_mut().push(seed));
+}
+
+#[cfg(test)]
+fn record_classic_cty_tile_entry_xbld(building: u8) {
+    CLASSIC_CTY_TILE_ENTRY_XBLD.with(|trace| trace.borrow_mut().push(building));
+}
+
 pub(crate) fn load_classic_cty(
     path: &std::path::Path,
     crt: &mut Win95CrtRand,
@@ -22,6 +58,11 @@ pub(crate) fn load_classic_cty(
         .unwrap_or("Classic City");
     let mut city = City::new_blank(path, name)?;
     clear_classic_cty_target_map(&mut city);
+    // Retail's new-city/open target has an allocated 64x64 XVAL plane cleared
+    // to zero before the Classic reader runs. Residential zone-paint CTY IDs
+    // consult that plane while selecting size-1 building variants; an absent
+    // CityGame plane takes a different chooser fallback.
+    city.sync_land_value_from_slice(&vec![0; crate::city::CITY_TILES]);
     apply_cty_tiles(&mut city, crt, game_rand, &classic.tiles);
     let date = classic.date();
     // FUN_004829F0 word-swaps header dword +0x64 and publishes it as funds
@@ -105,6 +146,12 @@ fn apply_cty_payload_tiles(city: &mut City, crt: &mut Win95CrtRand, tiles: &[Cla
     // empty XBLD cells before the 12,000 interior words are placed.
     city.pe_dw_tile_count[0] = 128 * 128;
     for tile in tiles {
+        #[cfg(test)]
+        record_classic_cty_tile_entry_crt(crt.seed());
+        #[cfg(test)]
+        record_classic_cty_tile_entry_xbld(
+            city.building_at(usize::from(tile.x), usize::from(tile.y)),
+        );
         super::newspaper_gifts::pe_newspaper_gift_entry_483250(
             city,
             crt,
@@ -345,7 +392,9 @@ fn normalize_cty_water_bridges(city: &mut City) {
                     | 2,
             );
             let bits = city.tile_bits_at(x, y).unwrap_or_default();
-            city.set_tile_bits(x, y, crate::city::TileBits::new(bits.raw_bits() & 0x39));
+            // Native normalization keeps powerable bit 0x80 on the converted
+            // bridge cell while clearing the powered, water, and rotation bits.
+            city.set_tile_bits(x, y, crate::city::TileBits::new(bits.raw_bits() & 0xb9));
 
             let network = match building {
                 0x57 => Some(super::network::NetworkKind::Road),
@@ -532,6 +581,23 @@ mod tests {
         assert_eq!(city.tile_bits_at(30, 30).unwrap().raw_bits(), 0);
         assert_eq!(city.pe_dw_tile_count[0x56], 1);
         assert_eq!(city.pe_dw_tile_count[0], 128 * 128 - 1);
+    }
+
+    #[test]
+    fn bridge_normalizer_preserves_powerable_bit_on_power_bridge_endpoint() {
+        let mut city =
+            City::new_blank("classic-power-bridge-normalize.sc2", "Power bridge").unwrap();
+        city.set_building(30, 30, 0x5c);
+        city.set_building(31, 30, 0x5c);
+        city.set_tile_bits(30, 30, crate::city::TileBits::new(0xc6));
+        city.set_terrain(30, 30, 0x21);
+        city.pe_dw_tile_count[0] = 128 * 128 - 2;
+        city.pe_dw_tile_count[0x5c] = 2;
+
+        normalize_cty_water_bridges(&mut city);
+
+        assert_eq!(city.building_at(30, 30), 18);
+        assert_eq!(city.tile_bits_at(30, 30).unwrap().raw_bits(), 0x80);
     }
 
     #[test]

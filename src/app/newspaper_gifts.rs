@@ -21,7 +21,10 @@ pub(super) fn pe_newspaper_gift_place_stadium_483767(
     if !pe_place_tile_size_440c50(city, nw_x, nw_y, STADIUM_BUILDING_ID, STADIUM_BUILDING_SIZE) {
         return false;
     }
-    let Some(xtxt) = city.text_overlay_at(x, y) else {
+    // The native caller tests the XTXT byte before entering the team reward.
+    // `text_overlay_at` returns `Some(0)` for an allocated, empty map plane,
+    // which must not advance the sports-team fallback RNG path.
+    let Some(xtxt) = city.text_overlay_at(x, y).filter(|&xtxt| xtxt != 0) else {
         return false;
     };
     city.pe_newspaper_stadium_sports_reward_4837a5(xtxt, crt)

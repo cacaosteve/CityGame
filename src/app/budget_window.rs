@@ -3909,10 +3909,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R14 January 2057–2120 CODE 3 export-162 boundary captures"]
-    fn mac_r14_january_2057_through_2120_code3_annual_xmic_matches_native_worker() {
+    #[ignore = "requires private R14 January 2057–2121 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2121_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2120_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2121_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -4554,6 +4554,16 @@ mod tests {
                 0x7bb3_ede7,
                 0x9bb5,
                 0x2c9f,
+            ),
+            (
+                2121,
+                66300,
+                1984800,
+                1984801,
+                0x2a9d_6bbf,
+                0x2990_e052,
+                0x832a,
+                0x1da1,
             ),
         ];
 

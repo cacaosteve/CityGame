@@ -6115,6 +6115,16 @@ mod tests {
                 -3_146,
             ),
             (
+                "CITYGAME_MAC_R15_JAN2059_BUDGET_CAPTURE_DIR",
+                "r15-jan2059-review-readonly-20261124",
+                2059,
+                47_700,
+                -3_146,
+                -248,
+                -248,
+                -3_394,
+            ),
+            (
                 "CITYGAME_MAC_R14_JAN2162_BUDGET_CAPTURE_DIR",
                 "current-jan2162-20261124",
                 2162,

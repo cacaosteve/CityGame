@@ -5554,10 +5554,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2044, 2046-2051, and 2058 CODE 3 worker captures"]
-    fn mac_r15_selected_january_2031_through_2058_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2044, 2046-2051, and 2058-2059 CODE 3 worker captures"]
+    fn mac_r15_selected_january_2031_through_2059_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2058_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2059_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5800,6 +5800,18 @@ mod tests {
                 112,
                 100,
             ),
+            (
+                2059,
+                47_700,
+                738_083,
+                738_085,
+                0x320d_f444,
+                0x10c6_6254,
+                0x8d92,
+                0x00d1,
+                112,
+                100,
+            ),
         ];
 
         for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, crime, power) in
@@ -5831,7 +5843,7 @@ mod tests {
                 u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
             };
             let a5 = native_u32(0x904) as usize;
-            let worker_game_lcg = if year == 2058 {
+            let worker_game_lcg = if year >= 2058 {
                 let captured = native_u32(a5 - 8);
                 assert_eq!(captured, 0xeaa9_edfc, "year {year} native game LCG");
                 captured
@@ -6308,6 +6320,80 @@ mod tests {
                 "captured January {year} projection must persist through Mac save/reload"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires private R15 January 2060 review RAM and CGMS capture"]
+    fn mac_r15_january_2060_budget_review_matches_native_panel_and_survives_save_reload() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R15_JAN2060_BUDGET_CAPTURE_DIR").unwrap(),
+        );
+        let stem = "r15-jan2060-review-readonly-20261124";
+        let cgms = std::fs::read(root.join(format!("{stem}.cgms"))).unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&cgms).unwrap();
+        city.kind = CityFileKind::MacCity;
+        city.name = "AutoDebt".to_owned();
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate { year: 2060, month: 1 })
+        );
+
+        let ram = std::fs::read(root.join(format!("{stem}.ram"))).unwrap();
+        assert_eq!(ram.len(), 16 * 1024 * 1024);
+        let native_u32 =
+            |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
+        let a5 = native_u32(0x904) as usize;
+        let age_address = a5 + 0xefa4 - 0x10000;
+        let funds_address = a5 + 0xefac - 0x10000;
+        assert_eq!(native_u32(age_address), 48_000);
+        let funds = native_u32(funds_address) as i32;
+        assert_eq!(funds, -3_394);
+        city.set_city_funds(funds);
+
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        assert!(table + 16 * 0x70 <= ram.len());
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(
+                0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4,
+                &values,
+            );
+        }
+
+        let entries = entries_for_city_for_month(&city, EngineFidelity::Mac68k, 1, true);
+        let summary = mac_cashflow_summary(&entries, i64::from(funds));
+        assert_eq!(
+            summary,
+            MacCashflowSummary {
+                year_to_date: -248,
+                estimated: -248,
+                end_of_year_funds: -3_642,
+            }
+        );
+
+        let save_path = std::env::temp_dir().join(format!(
+            "citygame-mac-annual-budget-2060-{}.city",
+            std::process::id()
+        ));
+        city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(&save_path).unwrap();
+        assert_eq!(reloaded.kind, CityFileKind::MacCity);
+        assert_eq!(
+            reloaded.saved_date(),
+            Some(crate::city::CityDate { year: 2060, month: 1 })
+        );
+        assert_eq!(reloaded.city_funds(), funds);
+        let reloaded_entries =
+            entries_for_city_for_month(&reloaded, EngineFidelity::Mac68k, 1, true);
+        assert_eq!(
+            mac_cashflow_summary(&reloaded_entries, i64::from(reloaded.city_funds())),
+            summary
+        );
     }
 
     #[test]

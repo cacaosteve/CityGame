@@ -624,11 +624,18 @@ impl ViewerState {
             .mac_loop_scheduler
             .advance_elapsed(elapsed)
             .wrapping_add(actor_wait_ticks);
+        let fiscal_notice_resumable = self
+            .mac_loop_scheduler
+            .fiscal_notice
+            .is_some_and(|notice| !notice.holds_dispatch(now));
         if self.mode != AppMode::CityView
             || self.military_base_dialog.is_some()
             || self
                 .city_info_dialog
-                .is_some_and(CityInfoDialog::holds_mac_simulation)
+                .is_some_and(|dialog| {
+                    dialog.holds_mac_simulation()
+                        && !(fiscal_notice_resumable && dialog == CityInfoDialog::FiscalCrisis)
+                })
         {
             return GameClockAdvance::default();
         }
@@ -652,31 +659,23 @@ impl ViewerState {
             if notice.holds_dispatch(now) {
                 return GameClockAdvance::default();
             }
-            self.mac_loop_scheduler.fiscal_notice = None;
-            self.close_city_info_dialog();
-            self.finish_mac_monthly_budget_publication(self.game_clock.month());
-            self.mac_loop_scheduler.finish_dispatch();
+            self.resume_mac_fiscal_notice_continuation();
             true
         } else {
             false
         };
+        if resumed_notice {
+            let waits = self.begin_mac_frame_actor_phase_with_tick_refresh(
+                Duration::ZERO,
+                || Duration::ZERO,
+            );
+            now = now.wrapping_add(waits);
+        }
         let (run_state, speed) = self.mac_scheduler_inputs();
         let advance = if resumed_notice {
-            let interval = match speed {
-                2 => 36,
-                3 => 12,
-                4 => 0,
-                _ => 0,
-            };
-            let refreshed_tick = MacLoopScheduler::sample_tick(
-                self.mac_loop_scheduler.live_clock,
-                self.mac_loop_scheduler.clock_origin,
-                self.mac_loop_scheduler
-                    .elapsed
-                    .saturating_add(since_frame_start()),
-            )
-            .wrapping_add(actor_wait_ticks);
-            self.mac_loop_scheduler.deadline = refreshed_tick.wrapping_add(interval);
+            // The suspended CODE 14 callback has now returned; preserve its
+            // completion signal without admitting a second calendar step in
+            // the same frame. CODE 2 can sample the normal deadline next frame.
             GameClockAdvance { days: 1, months: 1 }
         } else if self.mac_loop_scheduler.january_budget_review_pending {
             if self.city_info_dialog.is_some_and(|dialog| {
@@ -779,6 +778,13 @@ impl ViewerState {
             }
         }
         advance
+    }
+
+    fn resume_mac_fiscal_notice_continuation(&mut self) {
+        self.mac_loop_scheduler.fiscal_notice = None;
+        self.close_city_info_dialog();
+        self.finish_mac_monthly_budget_publication(self.game_clock.month());
+        self.mac_loop_scheduler.finish_dispatch();
     }
 
     fn advance_mac_earthquake_prelude(

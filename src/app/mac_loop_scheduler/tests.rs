@@ -12303,6 +12303,7 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         state.traffic.set_speed(GameSpeed::Llama);
         state.game_clock = GameClock::new(1901, 1);
         state.open_mac_fiscal_crisis_notice();
+        state.mac_loop_scheduler.dispatch_counter = 1;
         let counter = state.mac_loop_scheduler.dispatch_counter;
         let elapsed = if early_key {
             Duration::from_secs(1)
@@ -12341,14 +12342,85 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         );
         assert_eq!(
             state.mac_loop_scheduler.dispatch_counter,
-            counter.wrapping_add(1)
+            0,
+            "the resumed actor helper resets the dispatch counter after phase completion; dismissed={early_key}"
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.actor_smoother,
+            1,
+            "the actor helper observes the completed phase increment before resetting it; dismissed={early_key}"
         );
         assert_eq!(state.city_info_dialog, None);
         assert_eq!(
             state.mac_loop_scheduler.deadline,
-            if early_key { 73 } else { 1813 },
-            "resuming the native fiscal-notice dispatch must refresh the calendar deadline"
+            0,
+            "the notice continuation keeps the existing calendar deadline for the next CODE 2 check"
         );
+    }
+}
+
+#[test]
+fn mac_actor_phase_runs_after_fiscal_notice_continuation_returns() {
+    for (dismissed, elapsed, now) in [
+        (false, Duration::from_secs(31), 31 * 60),
+        (true, Duration::from_secs(1), 60),
+    ] {
+        let city = City::new_blank("/tmp/mac-fiscal-actor-timeout.sc2", "Fiscal").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.traffic.set_speed(GameSpeed::Llama);
+        state.game_clock = GameClock::new(1901, 1);
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+        state.mac_loop_scheduler.deadline = 0;
+        state.no_disasters_enabled = true;
+        let mut history = vec![0_u32; 16 * 52];
+        history[4 * 52] = 41;
+        state.city.set_chunk_u32_values("XGRP", 0, &history);
+        state.mac_loop_scheduler.actor_deadline = 0;
+        state.open_mac_fiscal_crisis_notice();
+        if dismissed {
+            state
+                .mac_loop_scheduler
+                .fiscal_notice
+                .as_mut()
+                .unwrap()
+                .dismissed = true;
+        }
+        assert_eq!(mac_actor_sweep_history_inputs(&state.city), Some((41, 0, 0)));
+        assert_eq!(state.mac_loop_scheduler.current_tick(), 0);
+        assert!(!state
+            .mac_loop_scheduler
+            .fiscal_notice
+            .unwrap()
+            .holds_dispatch(now));
+
+        let initial_rng = state.mac_process_rng;
+        let mut expected_rng = state.mac_process_rng;
+        expected_rng.random_u16();
+        let waits = state.begin_mac_frame_actor_phase(elapsed);
+
+        assert_eq!(
+            state.mac_process_rng.seed(),
+            initial_rng.seed(),
+            "the actor pass waits until the suspended calendar continuation returns; dismissed={dismissed}"
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.actor_deadline,
+            0,
+            "the suspended calendar phase returns before refreshing the actor deadline; dismissed={dismissed}"
+        );
+        let start = state.game_clock;
+        let advance = state.finish_mac_frame_calendar_phase(Duration::ZERO, waits);
+        assert_eq!(advance.days, 1);
+        assert_eq!(
+            state.game_clock,
+            start,
+            "the fiscal continuation returns without admitting a second calendar step; dismissed={dismissed}"
+        );
+        assert_eq!(state.mac_process_rng.seed(), expected_rng.seed());
+        assert_eq!(state.mac_loop_scheduler.actor_deadline, now + 45);
     }
 }
 

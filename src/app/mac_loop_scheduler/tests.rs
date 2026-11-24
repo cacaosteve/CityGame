@@ -8664,6 +8664,13 @@ fn mac_earthquake_r15_age39043_worker_matches_live_rng_and_map() {
     let native_worker =
         std::fs::read(worker_path).expect("read R15 age-39043 Earthquake worker-return CGMS");
     city.prepare_mac_fidelity_from_saved_city();
+    assert_eq!(
+        city.mac_state_misc_u32_at(0x1044),
+        Some(u32::from(scenario_action::EARTHQUAKE_ACTION)),
+        "the live MISC selector is part of the captured CODE 10 input state"
+    );
+    assert_eq!(city.mac_state_misc_u32_at(0x1048), Some(0));
+    assert!(!scenario_action::mac_scenario_action_active(&city));
     city.set_mac_pending_action(6);
 
     // The native MouseUp EventRecord is at TickCount 388417; the GDB sample

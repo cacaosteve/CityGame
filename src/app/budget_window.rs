@@ -3909,10 +3909,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R14 January 2057–2139 CODE 3 export-162 boundary captures"]
-    fn mac_r14_january_2057_through_2139_code3_annual_xmic_matches_native_worker() {
+    #[ignore = "requires private R14 January 2057–2149 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2149_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2139_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2149_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -4745,6 +4745,106 @@ mod tests {
                 0x568f,
                 0xad1e,
             ),
+            (
+                2140,
+                72000,
+                2160156,
+                2160157,
+                0x37fd_4eca,
+                0x635b_d413,
+                0xb6be,
+                0x7689,
+            ),
+            (
+                2141,
+                72300,
+                2206997,
+                2206999,
+                0x3626_7470,
+                0x3626_7470,
+                0x1cae,
+                0x395c,
+            ),
+            (
+                2142,
+                72600,
+                2217277,
+                2217278,
+                0x1de8_090c,
+                0x1de8_090c,
+                0x01e6,
+                0x03cc,
+            ),
+            (
+                2143,
+                72900,
+                2227578,
+                2227580,
+                0x642a_41b0,
+                0x642a_41b0,
+                0x62ac,
+                0xc558,
+            ),
+            (
+                2144,
+                73200,
+                2237019,
+                2237020,
+                0x1339_4eb1,
+                0x1339_4eb1,
+                0xf982,
+                0xe8f1,
+            ),
+            (
+                2145,
+                73500,
+                2246321,
+                2246322,
+                0x5b3b_e045,
+                0x5b3b_e045,
+                0xb421,
+                0x73b7,
+            ),
+            (
+                2146,
+                73800,
+                2255715,
+                2255717,
+                0x22e8_d825,
+                0x22e8_d825,
+                0x76a7,
+                0xed4e,
+            ),
+            (
+                2147,
+                74100,
+                2265953,
+                2265954,
+                0x22b4_a502,
+                0x22b4_a502,
+                0x0cc8,
+                0x1990,
+            ),
+            (
+                2148,
+                74400,
+                2275967,
+                2275968,
+                0x7bf1_6668,
+                0x7bf1_6668,
+                0x958a,
+                0x30e1,
+            ),
+            (
+                2149,
+                74700,
+                2285732,
+                2285733,
+                0x0f84_aee7,
+                0x0f84_aee7,
+                0x7c06,
+                0xf80c,
+            ),
         ];
 
         for (
@@ -4803,7 +4903,11 @@ mod tests {
 
             let mut state = crate::app::tests::test_state(city);
             state.engine_fidelity = EngineFidelity::Mac68k;
-            assert_eq!(state.city.microsim_at(11).unwrap().tile_id, 0xd3);
+            assert_eq!(
+                state.city.microsim_at(11).unwrap().tile_id,
+                entry_xmic[11 * 8],
+                "native entry XMIC row 11 tile id for year {year}"
+            );
             for mode in 0..3 {
                 state.city.set_mac_transit_accumulator(mode, 0);
             }

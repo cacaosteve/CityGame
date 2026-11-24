@@ -61,6 +61,8 @@ pub(super) struct MacLoopScheduler {
     pub(super) january_budget_review_started_at: Option<u32>,
     /// TickCount at which the automatic CODE 7 story window was shown.
     pub(super) mac_story_window_started_at: Option<u32>,
+    /// Deferred CODE 4 monthly-budget tail after a CODE 3 plant story returns.
+    pub(super) mac_annual_story_continuation: Option<u8>,
     /// Suspended CODE 8 phase-21 technology/story call, resumed after CODE 7 returns.
     pub(super) mac_phase21_event_continuation: Option<super::rci::MacPhase21EventContinuation>,
     pub(super) fiscal_notice: Option<MacFiscalNotice>,

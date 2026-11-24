@@ -324,9 +324,13 @@ impl ViewerState {
     }
 
     pub(super) fn open_mac_story_window(&mut self) {
-        let started_at = self.mac_loop_scheduler.current_tick();
         self.city
             .mac_poll_for_newspaper(|| self.mac_process_rng.random_u16());
+        self.open_mac_story_window_after_poll();
+    }
+
+    pub(super) fn open_mac_story_window_after_poll(&mut self) {
+        let started_at = self.mac_loop_scheduler.current_tick();
         self.open_city_info_dialog(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow));
         if self.city_info_dialog
             == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
@@ -337,6 +341,10 @@ impl ViewerState {
 
     pub(super) fn close_city_info_dialog(&mut self) {
         let closed = self.city_info_dialog.take();
+        let resume_mac_annual_story = (closed
+            == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow)))
+        .then(|| self.mac_loop_scheduler.mac_annual_story_continuation.take())
+        .flatten();
         if closed == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow)) {
             self.mac_loop_scheduler.mac_story_window_started_at = None;
         }
@@ -373,6 +381,9 @@ impl ViewerState {
             } else {
                 self.mac_power_tool_post_place_recalc();
             }
+        }
+        if let Some(month) = resume_mac_annual_story {
+            self.resume_mac_annual_story_continuation(month);
         }
     }
 

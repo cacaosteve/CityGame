@@ -5439,6 +5439,16 @@ fn mac_aging_plant_poll_updates_later_mayor_rows_and_quickdraw() {
             let case = (kind, age, extra, growth, land);
             assert_eq!(row(9).0, age + 1, "{case:?}");
             assert_eq!(row(9).2, 5, "{case:?}");
+            let aged_plant_story = kind == CityFileKind::MacCity && age + 1 > 48;
+            assert_eq!(
+                city.mac_story_record(0),
+                if aged_plant_story {
+                    [0x24, 1_000, 0, 255, 255, 255]
+                } else {
+                    [0; 6]
+                },
+                "plant-age story is Mac-only and starts above age 48: {case:?}"
+            );
             assert_eq!(row(8), (7, 1955, 63, 0), "{case:?}");
             assert_eq!(row(10), (0, 1955, approval, 0), "{case:?}");
             assert_eq!(row(60), (7, 1955, approval, 0), "{case:?}");

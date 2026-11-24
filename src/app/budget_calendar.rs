@@ -33,7 +33,8 @@ impl ViewerState {
         let arcology_count = self.city.mac_arcology_count_snapshot();
         let mut arcology_total = 0_u32;
         let game_rng = &mut self.mac_game_rng;
-        self.city
+        let mac_story_window_requested = self
+            .city
             .refresh_mac_monthly_random_xmic_rows_with_external_slots(
                 funding[0],
                 funding[1],
@@ -66,6 +67,12 @@ impl ViewerState {
         // CODE 3 adds the value immediately after each arcology row, even if
         // a later slot removes that row before the sweep finishes.
         self.city.set_mac_arcology_resident_total(arcology_total);
+        if mac_story_window_requested {
+            // The plant-age branch has already run the Extra-gated poll in
+            // CODE 3 order. CODE 7 now opens its automatic story window from
+            // that in-worker gateway call; do not sample the poll twice.
+            self.open_mac_story_window_after_poll();
+        }
     }
 
     pub(super) fn open_pe_negative_auto_budget_notice(&mut self) {
@@ -293,25 +300,37 @@ impl ViewerState {
                     ],
                     tax_rates,
                 );
-                // Export 225 already skipped the review while Auto-Budget
-                // was enabled. Export 227 clears it after the annual XMIC
-                // sweep when the remaining cash is negative.
-                if self.city.city_funds() < 0
-                    && mac_auto_budget_enabled_for_city(&self.city)
-                    && set_auto_budget_enabled_for_engine(
-                        &mut self.city,
-                        EngineFidelity::Mac68k,
-                        false,
-                    )
+                if self.city_info_dialog
+                    == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
                 {
-                    self.sync_edit_map_menu();
-                    self.open_mac_fiscal_crisis_notice();
+                    self.mac_loop_scheduler.mac_annual_story_continuation = Some(month);
                     return;
                 }
+                self.finish_mac_annual_story_continuation(month);
+                return;
             }
 
             self.finish_mac_monthly_budget_publication(month);
         }
+    }
+
+    pub(super) fn resume_mac_annual_story_continuation(&mut self, month: u8) {
+        self.finish_mac_annual_story_continuation(month);
+    }
+
+    fn finish_mac_annual_story_continuation(&mut self, month: u8) {
+        // Export 225 already skipped the review while Auto-Budget was enabled.
+        // Export 227 clears it after CODE 3 returns if the remaining cash is
+        // negative, then completes the January budget publication.
+        if self.city.city_funds() < 0
+            && mac_auto_budget_enabled_for_city(&self.city)
+            && set_auto_budget_enabled_for_engine(&mut self.city, EngineFidelity::Mac68k, false)
+        {
+            self.sync_edit_map_menu();
+            self.open_mac_fiscal_crisis_notice();
+            return;
+        }
+        self.finish_mac_monthly_budget_publication(month);
     }
 
     pub(super) fn finish_mac_monthly_budget_publication(&mut self, month: u8) {

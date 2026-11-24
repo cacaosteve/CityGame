@@ -5268,6 +5268,129 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R15 2034 CODE 3 capture and Mac paper resources"]
+    fn mac_r15_january_2034_aged_plant_opens_native_story_path() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R15_2031_2033_CODE3_CAPTURE_DIR").unwrap(),
+        );
+        let paper_pack =
+            std::path::PathBuf::from(std::env::var_os("CITYGAME_MAC_PAPER_PACK").unwrap());
+        let stem = |role: &str, tick: u32| format!("code3-export162-{role}-age40200-tick{tick}");
+        let entry_tick = 431_614;
+        let return_tick = 435_271;
+        let entry_cgms =
+            std::fs::read(root.join(format!("{}.cgms", stem("entry", entry_tick)))).unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&entry_cgms).unwrap();
+        city.name = "AutoDebt".to_owned();
+        city.kind = crate::city::CityFileKind::MacCity;
+        let entry_xmic =
+            std::fs::read(root.join(format!("{}-xmic.bin", stem("entry", entry_tick)))).unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+
+        let entry_ram = std::fs::read(root.join(format!(
+            "code3-export162-entry-age40200-tick{entry_tick}.ram"
+        )))
+        .unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let native_u16 = |address: usize| {
+            u16::from_be_bytes(entry_ram[address..address + 2].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        let qd_port = native_u32(a5) as usize;
+        let qd_seed = native_u32(qd_port - 126);
+        let game_lcg = native_u32(a5 - 8);
+        let app_lfsr = native_u16(a5 - 2);
+        let budget_table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = budget_table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+
+        let settings = std::env::temp_dir().join(format!(
+            "citygame-r15-2034-paper-settings-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &settings,
+            serde_json::json!({"schema_version": 1, "original_graphics": paper_pack}).to_string(),
+        )
+        .unwrap();
+        let profile = crate::asset_profile::AssetProfile::load_from(settings.clone()).unwrap();
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mode = AppMode::CityView;
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(qd_seed);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(game_lcg);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(app_lfsr);
+        state.mac_newspaper.tick_word = Some(entry_tick as u16 as i16);
+        // The CGMS fixture retains the native game's unrelated option word at
+        // 0x100c; this capture's visible newspaper is the AutoDebt Picayune.
+        state
+            .city
+            .set_mac_state_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET, 0);
+        // CGMS MISC carries stale route totals (including 330 bus passengers),
+        // while the native CODE 3 entry XMIC shows all three transit words at
+        // zero. Restore the worker input from the paired entry boundary.
+        for mode in 0..3 {
+            state.city.set_mac_transit_accumulator(mode, 0);
+        }
+        state.configure_original_newspaper_data(&profile);
+
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert!(
+            (0..7).any(|slot| {
+                let row = state.city.mac_story_record(slot);
+                row[0] == 0x24 && row[2] == 6
+            }),
+            "the coal-plant story is priority-inserted into the live queue"
+        );
+        // The CGMS fixture preserves annual XMIC and city bookkeeping but not
+        // a usable Mac story queue; its queue dwords decode as native pointer
+        // fragments. The separate production regression covers first paint.
+
+        let native_xmic =
+            std::fs::read(root.join(format!("{}-xmic.bin", stem("return", return_tick)))).unwrap();
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "annual plant story XMIC slot {slot}"
+            );
+        }
+        std::fs::remove_file(settings).unwrap();
+    }
+
+    #[test]
     #[ignore = "requires private R14 and R15 January budget-panel RAM and CGMS captures"]
     fn mac_captured_annual_budget_panel_projection_matches_and_survives_save_reload() {
         let cases = [

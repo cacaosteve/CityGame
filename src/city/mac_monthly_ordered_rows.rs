@@ -22,7 +22,7 @@ impl City {
         no_disasters: bool,
         rng: &mut MacToolboxRng,
     ) {
-        self.refresh_mac_monthly_random_xmic_rows_with_external_slots(
+        let _ = self.refresh_mac_monthly_random_xmic_rows_with_external_slots(
             police_funding,
             fire_funding,
             health_funding,
@@ -46,7 +46,7 @@ impl City {
         rng: &mut MacToolboxRng,
         app_lfsr: &mut MacAppLfsrRng,
         mut external_slot: impl FnMut(&mut City, usize, &mut MacAppLfsrRng),
-    ) {
+    ) -> bool {
         let plant_power = self.mac_power_service_summary() as u16;
         let hospital_tiles = self.mac_xbld_tile_count(0xd1);
         let school_tiles = self.mac_xbld_tile_count(0xd6);
@@ -88,7 +88,7 @@ impl City {
             self.mac_monthly_arrest_total = 0;
             self.persist_mac_police_arrest_subtotal();
             self.clear_mac_monthly_transit_accumulators();
-            return;
+            return false;
         };
         // Native CODE 3 clears a local subtotal for this pass. D8 reads the
         // prior value in global fffffe04; D2 rows publish this pass's subtotal
@@ -97,6 +97,7 @@ impl City {
         let mut arrest_total = 0_u16;
         let mut prison_gate_sum = 0_i16;
         let mut changed = false;
+        let mut immediate_story_window_requested = false;
 
         // Keep the live table installed: export-80/XTXT cleanup can clear
         // earlier or later rows while the ordered native slot walk is active.
@@ -123,6 +124,10 @@ impl City {
                     record.stat2 = plant_power.wrapping_add(rng.random_u16() & 7);
                     if record.stat0 > 48 {
                         self.mac_poll_for_extra(|| rng.random_u16());
+                        if !self.kind.is_win95() {
+                            immediate_story_window_requested |= self
+                                .queue_mac_newspaper_story(0x24, record.tile_id.wrapping_sub(0xc9));
+                        }
                     }
                     if record.stat0 > 50
                         && let Some(marker) = self.mac_find_xmic_marker(slot)
@@ -391,6 +396,7 @@ impl City {
         if changed {
             self.modified = true;
         }
+        immediate_story_window_requested
     }
 
     fn clear_mac_monthly_transit_accumulators(&mut self) {

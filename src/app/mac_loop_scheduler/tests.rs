@@ -30,6 +30,51 @@ fn mac_story_window_closes_at_wrapping_tickcount_deadline() {
 }
 
 #[test]
+fn mac_annual_aged_plant_opens_story_window_and_resumes_budget_tail() {
+    let mut city = City::new_blank("/tmp/mac-annual-plant-story.sc2", "Plant Story").unwrap();
+    city.kind = crate::city::CityFileKind::MacCity;
+    city.set_saved_date_and_day(
+        crate::city::CityDate {
+            year: 2033,
+            month: 12,
+        },
+        24,
+    );
+    city.set_mac_state_misc_u32_at(MISC_YEAR_END_OFFSET, 0xff);
+    city.set_mac_state_misc_u32_at(0x0ff0, 1); // Auto-Budget avoids a review pause.
+    city.set_mac_state_misc_u32_at(0x1008, 1); // Extra!!! admits selector 0x24.
+    city.set_mac_state_misc_u32_at(0x102c, 100);
+    city.set_microsim_tile_id(9, 0xcf);
+    city.set_microsim_stat0(9, 48);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.sim_calendar_day0_budget_and_date_at(2034, 1, 0);
+
+    assert_eq!(state.city.microsim_at(9).unwrap().stat0, 49);
+    assert_eq!(
+        state.city.mac_story_record(0),
+        [0x24, 1_000, 6, 255, 255, 255]
+    );
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow))
+    );
+    assert_eq!(
+        state.mac_loop_scheduler.mac_annual_story_continuation,
+        Some(1)
+    );
+    assert_eq!(state.city.saved_date().unwrap().month, 1);
+
+    state.close_city_info_dialog();
+
+    assert_eq!(state.city_info_dialog, None);
+    assert_eq!(state.mac_loop_scheduler.mac_annual_story_continuation, None);
+    assert_eq!(state.mac_loop_scheduler.mac_story_window_started_at, None);
+}
+
+#[test]
 fn mac_successful_disaster_resets_earlier_effects_before_alert() {
     for enabled in [false, true] {
         let city = City::new_blank("/tmp/mac-action-sound-reset.sc2", "Sound reset").unwrap();

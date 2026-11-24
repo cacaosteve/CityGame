@@ -4096,6 +4096,30 @@ fn win95_captured_clocks_january_with_december_gate() {
     state.city = reloaded;
     check_rng(&state, "armed-run/armed-return");
     check_planes(&state, "armed-run/armed-return");
+    let mut reloaded_budget_differences = Vec::new();
+    for row in 0..16 {
+        for field in 0..27 {
+            let native_offset = row * 0x70
+                + match field {
+                    0 => 0x60,
+                    1 => 0x64,
+                    2 => 0x68,
+                    _ if field % 2 == 1 => ((field - 3) / 2) * 4,
+                    _ => 0x30 + ((field - 4) / 2) * 4,
+                };
+            let expected =
+                u32::from_le_bytes(bytes[native_offset..native_offset + 4].try_into().unwrap());
+            let offset = budget_row_misc_offset_for_city(&state.city, row, field).unwrap();
+            let actual = state.city.budget_misc_u32_at(offset).unwrap();
+            if actual != expected {
+                reloaded_budget_differences.push((row, field, actual, expected));
+            }
+        }
+    }
+    assert!(
+        reloaded_budget_differences.is_empty(),
+        "post-reload budget differences: {reloaded_budget_differences:?}"
+    );
     let _ = std::fs::remove_file(round_trip_path);
 }
 

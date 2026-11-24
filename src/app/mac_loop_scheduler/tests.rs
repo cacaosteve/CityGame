@@ -8621,15 +8621,44 @@ fn mac_earthquake_r15_age39043_worker_matches_live_rng_and_map() {
     city.prepare_mac_fidelity_from_saved_city();
     city.set_mac_pending_action(6);
 
+    // The native MouseUp EventRecord is at TickCount 388417; the GDB sample
+    // at that event has QuickDraw seed 0x2570a2df. The next GetNextEvent trap
+    // at 388435 sees 0x5f4697d8, exactly two `_Random` advances that select
+    // menu point (4,65).
+    let mut menu_city = city.clone();
+    menu_city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    let mut menu_state = test_state(menu_city);
+    menu_state.engine_fidelity = EngineFidelity::Mac68k;
+    menu_state.mode = AppMode::CityView;
+    menu_state.traffic.set_speed(GameSpeed::Paused);
+    menu_state.mac_process_rng = MacToolboxRng::new(0x2570_a2df);
+    let command = crate::app::command_bus::app_command_for_menu_command(
+        crate::menu_model::CMD_START_EARTHQUAKE,
+    )
+    .expect("native Earthquake menu command is routed");
+    let effect = menu_state
+        .apply_state_app_command(&command)
+        .expect("Earthquake menu command is handled");
+    assert_eq!(effect.disaster_log, Some((DisasterKind::Earthquake, true)));
+    assert_eq!(
+        menu_state.mac_loop_scheduler.pending_action_point,
+        Some((4, 65))
+    );
+    assert_eq!(menu_state.mac_process_rng.seed(), 0x5f46_97d8);
+    let mut dispatch_rng = MacToolboxRng::new(menu_state.mac_process_rng.seed());
+    for _ in 0..158 {
+        dispatch_rng.random_u16();
+    }
+    assert_eq!(dispatch_rng.seed(), 0x72a5_694c);
+
     let mut state = test_state(city);
     state.engine_fidelity = EngineFidelity::Mac68k;
     state.traffic.set_speed(GameSpeed::Paused);
-    // The paired 2026-11-23 RAM snapshots are CODE 10 entry/return at
-    // TickCounts 388439/388641 (age 39043). The live scan made 4,225 `_Random`
-    // calls but no conditional candidate calls; the captured map and XBLD
-    // census are unchanged. The menu-selected point was not captured in the
-    // RAM pair, so this worker-boundary case checks that no-op scan and stream
-    // result only; it does not claim menu-point parity.
+    // CODE 14 then advances the stream from the post-menu seed 0x5f4697d8 to
+    // the captured CODE 10 entry seed 0x72a5694c. The paired 2026-11-23 RAM
+    // snapshots are CODE 10 entry/return at TickCounts 388439/388641 (age
+    // 39043). The live scan made 4,225 `_Random` calls but no conditional
+    // candidate calls; the captured map and XBLD census are unchanged.
     state.mac_process_rng = MacToolboxRng::new(0x72a5_694c);
     state.mac_game_rng = MacGameLcgRng::new(0xd214_deef);
     state.mac_app_lfsr = MacAppLfsrRng::new(0xa5ce);
@@ -8637,7 +8666,7 @@ fn mac_earthquake_r15_age39043_worker_matches_live_rng_and_map() {
 
     scenario_action::seed_earthquake(
         &mut state.city,
-        (70, 12),
+        (4, 65),
         &mut state.mac_process_rng,
         &mut now,
         &mut state.mac_app_lfsr,

@@ -4002,10 +4002,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R14 January 2057–2158 and 2162–2167 CODE 3 export-162 boundary captures"]
-    fn mac_r14_january_2057_through_2167_code3_annual_xmic_matches_native_worker() {
+    #[ignore = "requires private R14 January 2057–2158 and 2162–2169 CODE 3 export-162 boundary captures"]
+    fn mac_r14_january_2057_through_2169_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2167_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R14_CODE3_2057_2169_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5088,6 +5088,16 @@ mod tests {
                 0xae36,
                 0x4799,
             ),
+            (
+                2169,
+                80700,
+                2491990,
+                2491991,
+                0x4ea8_4158,
+                0x4ea8_4158,
+                0x3a1c,
+                0x7438,
+            ),
         ];
 
         for (
@@ -5474,10 +5484,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R15 January 2031-2044 and 2046-2050 CODE 3 worker captures"]
-    fn mac_r15_january_2031_through_2050_code3_annual_xmic_matches_native_workers() {
+    #[ignore = "requires private R15 January 2031-2044 and 2046-2051 CODE 3 worker captures"]
+    fn mac_r15_january_2031_through_2051_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R15_2031_2050_CODE3_CAPTURE_DIR").unwrap(),
+            std::env::var_os("CITYGAME_MAC_R15_2031_2051_CODE3_CAPTURE_DIR").unwrap(),
         );
         let cases = [
             (
@@ -5693,6 +5703,18 @@ mod tests {
                 0x44ac_a095,
                 0x9906,
                 0x29f9,
+                112,
+                100,
+            ),
+            (
+                2051,
+                45_300,
+                648_099,
+                648_101,
+                0x6612_8655,
+                0x083f_cab6,
+                0xec73,
+                0xc313,
                 112,
                 100,
             ),

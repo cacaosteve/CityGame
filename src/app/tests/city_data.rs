@@ -4073,6 +4073,30 @@ fn win95_captured_clocks_january_with_december_gate() {
         budget_differences.is_empty(),
         "budget differences: {budget_differences:?}"
     );
+
+    // The native capture verifies the January settlement before this local
+    // persistence check. Saving and reopening must retain that settled state
+    // without consuming any of the process RNG streams.
+    let round_trip_path = std::env::temp_dir().join(format!(
+        "citygame-win95-annual-settlement-{}.sc2",
+        std::process::id()
+    ));
+    state.city.save(&round_trip_path).unwrap();
+    let reloaded = City::load(&round_trip_path).unwrap();
+    assert_eq!(reloaded.kind, CityFileKind::WinSc2);
+    assert_eq!(reloaded.city_age_days(), Some(28_500));
+    assert_eq!(
+        reloaded.misc_u32_at(MISC_YEAR_END_OFFSET),
+        budget["annual_flag"].as_u64().map(|value| value as u32)
+    );
+    assert_eq!(
+        i64::from(reloaded.city_funds()),
+        budget["funds"].as_i64().unwrap()
+    );
+    state.city = reloaded;
+    check_rng(&state, "armed-run/armed-return");
+    check_planes(&state, "armed-run/armed-return");
+    let _ = std::fs::remove_file(round_trip_path);
 }
 
 /// The original reopens the same city without creating another view or reseeding.

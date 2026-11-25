@@ -3112,33 +3112,63 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
     }
 
-    // The 3x3 refresh deletes the road inside its edge, then reclassifies the
-    // surviving two-tile run outside it as straight road (tile ID 29).
-    let mut crossing = flat_win95_terrain_fixture(CityFileKind::WinSc2);
-    crossing.pe_w_city_mode = 1;
-    for y in [17, 18, 19] {
-        crossing.set_building(20, y, 0x1d);
-    }
-    crossing.set_city_funds(100);
-    let mut crt = Win95CrtRand::new(1);
-    assert_eq!(
-        pe_raise_land_inc_443c60_with_crt(&mut crossing, Some(&mut crt), 20, 20, 2),
-        Some(18)
-    );
-    assert_eq!(crossing.city_funds(), 75);
-    assert_eq!(crt.seed(), 415_139_642);
-    assert_eq!(crossing.building_at(20, 19), 0);
-    assert_eq!(crossing.building_at(20, 18), 29);
-    assert_eq!(crossing.building_at(20, 17), 29);
-    assert_eq!(
-        win95_terrain_plane_fingerprints(&crossing),
-        [
-            NATIVE_PLANES[0],
-            NATIVE_PLANES[1],
+    // The 3x3 refresh deletes the road at its edge, then reclassifies the
+    // surviving two-tile run outside it. Cover all four cardinal directions.
+    for (label, inside, outside, xbl_final) in [
+        (
+            "north",
+            (20, 19),
+            [(20, 18), (20, 17)],
             0x1129_5db1_7063_2bc3,
-            NATIVE_PLANES[3],
-        ]
-    );
+        ),
+        (
+            "south",
+            (20, 21),
+            [(20, 22), (20, 23)],
+            0x6bcd_3f7f_6120_e007,
+        ),
+        (
+            "west",
+            (19, 20),
+            [(18, 20), (17, 20)],
+            0xd5d2_9105_5039_a925,
+        ),
+        (
+            "east",
+            (21, 20),
+            [(22, 20), (23, 20)],
+            0x1a95_da70_e3fd_a925,
+        ),
+    ] {
+        let mut crossing = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        crossing.pe_w_city_mode = 1;
+        for (x, y) in [inside, outside[0], outside[1]] {
+            crossing.set_building(x, y, 0x1d);
+        }
+        crossing.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut crossing, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(crossing.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
+        assert_eq!(crossing.building_at(inside.0, inside.1), 0, "{label} cleared");
+        for (x, y) in outside {
+            assert_eq!(crossing.building_at(x, y), 29, "{label} road at ({x},{y})");
+        }
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&crossing),
+            [
+                NATIVE_PLANES[0],
+                NATIVE_PLANES[1],
+                xbl_final,
+                NATIVE_PLANES[3],
+            ],
+            "{label} planes"
+        );
+    }
 
     let mut wet_dry = flat_win95_terrain_fixture(CityFileKind::WinSc2);
     wet_dry.pe_w_city_mode = 1;

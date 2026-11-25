@@ -90,6 +90,25 @@ fn lower_pointer_plane_fingerprints(city: &City) -> [u64; 5] {
     ]
 }
 
+fn win95_flat_lower_map_input_state() -> ViewerState {
+    let mut state = fixture(
+        EditTool::LowerTerrain,
+        AppMode::EditNewMap,
+        EngineFidelity::Win95,
+    );
+    state.city.kind = CityFileKind::WinSc2;
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            state.city.set_altitude(x, y, 10, 0);
+            state.city.set_terrain(x, y, 0);
+        }
+    }
+    state.city.set_city_funds(100);
+    state.city.prepare_pe_fidelity_from_saved_city();
+    state.pe_process_crt = Win95CrtRand::new(1);
+    state
+}
+
 #[test]
 fn map_down_matrix_retains_mouse_painting_only_on_the_audited_no_action_paths() {
     // City tools that retain the entry flag when Shift blocks the drag.
@@ -467,21 +486,7 @@ fn win95_editor_raise_repeats_stationary_native_samples_until_release() {
 
 #[test]
 fn win95_editor_lower_pointer_motion_only_retargets_the_next_held_sample() {
-    let mut state = fixture(
-        EditTool::LowerTerrain,
-        AppMode::EditNewMap,
-        EngineFidelity::Win95,
-    );
-    state.city.kind = CityFileKind::WinSc2;
-    for x in 0..CITY_WIDTH {
-        for y in 0..CITY_HEIGHT {
-            state.city.set_altitude(x, y, 10, 0);
-            state.city.set_terrain(x, y, 0);
-        }
-    }
-    state.city.set_city_funds(100);
-    state.city.prepare_pe_fidelity_from_saved_city();
-    state.pe_process_crt = Win95CrtRand::new(1);
+    let mut state = win95_flat_lower_map_input_state();
     let press = tile_screen(&state, (20, 20));
     let mut painting = false;
     let mut paint_tile = None;
@@ -543,5 +548,57 @@ fn win95_editor_lower_pointer_motion_only_retargets_the_next_held_sample() {
         lower_map_state_snapshot(&loaded),
         after_edit,
         "all terrain, zoning, and tile planes from the input sequence survive WinSc2 reload"
+    );
+}
+
+#[test]
+fn win95_editor_lower_cancel_keeps_native_press_sample_without_an_extra_worker() {
+    let mut state = win95_flat_lower_map_input_state();
+    let press = tile_screen(&state, (20, 20));
+    let mut painting = false;
+    let mut paint_tile = None;
+    begin_map_pointer_interaction(
+        &mut state,
+        press,
+        WINDOW,
+        SCALE,
+        &mut painting,
+        &mut paint_tile,
+        false,
+        |_, _| {},
+    );
+    assert!(painting);
+    assert_eq!(state.pe_process_crt.seed(), 3_884_216_597);
+
+    // Match Escape's input branch: cancel the hold, then clear its UI painting
+    // state. Cancellation preserves the already-applied press sample.
+    assert!(state.cancel_active_drag());
+    painting = false;
+    paint_tile = None;
+    let seed_after_press = state.pe_process_crt.seed();
+    let moved = tile_screen(&state, (24, 24));
+    move_map_pointer_interaction(
+        &mut state,
+        moved,
+        WINDOW,
+        SCALE,
+        painting,
+        &mut paint_tile,
+        false,
+        |_, _| {},
+    );
+    assert!(!state.tick_edit_map_height_hold(true));
+    assert_eq!(state.pe_process_crt.seed(), seed_after_press);
+    assert_eq!(state.city.city_funds(), 100);
+    assert_eq!(
+        lower_pointer_plane_fingerprints(&state.city),
+        [
+            0x608d_73f0_07cb_c5b6,
+            0x94f7_5cae_2af5_5b91,
+            0x9c1b_da7f_8c87_2325,
+            0x9c1b_da7f_8c87_2325,
+            0x9c1b_da7f_8c87_2325,
+        ],
+        "native press-only Lower sample"
     );
 }

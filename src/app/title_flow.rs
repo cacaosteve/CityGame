@@ -910,6 +910,21 @@ mod title_open_tests {
     use super::*;
 
     #[test]
+    fn mac_r20_title_startup_matches_native_seed_gateways() {
+        // R20's CODE 15 gateways sampled TickCount 3163 for the app LFSR,
+        // then 3165 for both the game LCG and QuickDraw. The title playlist
+        // choice advances only the game stream before the next captured
+        // boundary at TickCount 3173.
+        let mut ticks = [3163, 3165, 3165].into_iter();
+        let startup = MacTitleStartup::new(|| ticks.next().expect("captured startup TickCount"));
+
+        assert_eq!(startup.app_lfsr.state(), 0x0c5b);
+        assert_eq!(startup.game.state(), 0x30b7_c9d2);
+        assert_eq!(startup.quickdraw.seed(), 0x0c5d);
+        assert_eq!(startup.song, 10_004);
+    }
+
+    #[test]
     fn mac_music_queries_playback_only_after_deadline_and_rng() {
         #[derive(Default)]
         struct Playback {

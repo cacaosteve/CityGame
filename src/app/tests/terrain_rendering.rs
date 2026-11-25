@@ -3196,6 +3196,63 @@ fn pe_lower_crt_tool_matches_native_wet_boundary_reclassification() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_zone_nibble_cleanup_and_roundtrip() {
+    let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+    city.set_altitude(20, 19, 12, 0);
+    city.set_zone(20, 20, 0xa7);
+    city.set_zone(20, 19, 0xb5);
+    city.set_zone(19, 20, 0xc7);
+    city.set_city_funds(100);
+    let mut crt = Win95CrtRand::new(1);
+
+    assert_eq!(
+        pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+        Some(true)
+    );
+    assert_eq!(city.city_funds(), 100);
+    assert_eq!(crt.seed(), 3_884_216_597);
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&city),
+        [
+            0x9ec5_cb07_db43_7b55,
+            0x25cf_1506_4473_0513,
+            0x9c1b_da7f_8c87_2325,
+            0x9c1b_da7f_8c87_2325,
+        ]
+    );
+    assert_eq!(city.zone_at(20, 20).unwrap().raw_bits(), 0xa0);
+    assert_eq!(city.zone_at(20, 19).unwrap().raw_bits(), 0xb0);
+    assert_eq!(city.zone_at(19, 20).unwrap().raw_bits(), 0xc0);
+    assert_eq!(
+        pe_density_plane_fingerprint(1, |x, y| city.zone_at(x, y).unwrap().raw_bits()),
+        0x703b_fe7e_ebc2_eb35,
+        "native XZON plane"
+    );
+
+    let native_planes = win95_terrain_plane_fingerprints(&city);
+    let native_zones = pe_density_plane_fingerprint(1, |x, y| {
+        city.zone_at(x, y).unwrap().raw_bits()
+    });
+    let path = std::env::temp_dir().join(format!(
+        "citygame-pe-lower-zone-roundtrip-{}.sc2",
+        std::process::id()
+    ));
+    city.save(&path).expect("save Lower zone result");
+    let loaded = City::load(&path).expect("reload Lower zone result");
+    std::fs::remove_file(&path).expect("remove Lower zone save");
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&loaded),
+        native_planes,
+        "native-matched terrain planes survive save/reload"
+    );
+    assert_eq!(
+        pe_density_plane_fingerprint(1, |x, y| loaded.zone_at(x, y).unwrap().raw_bits()),
+        native_zones,
+        "native-matched zoning survives save/reload"
+    );
+}
+
+#[test]
 fn pe_raise_adjust_toward_dig_runs_447490_and_carries_crt() {
     let mut city =
         City::new_blank("/tmp/sc2000-adjust-dig-447490.sc2", "AdjustDig").expect("blank");

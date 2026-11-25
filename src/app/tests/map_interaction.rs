@@ -35,6 +35,61 @@ fn tile_screen(state: &ViewerState, tile: (usize, usize)) -> Vec2 {
     panic!("no screen point for tile {tile:?}");
 }
 
+fn lower_map_state_snapshot(city: &City) -> Vec<u8> {
+    let mut snapshot = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT * 8);
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            let altitude = city.altm_at(x, y);
+            snapshot.extend_from_slice(&[
+                altitude.land,
+                altitude.water,
+                altitude.tunnel_levels,
+                city.terrain_at(x, y),
+                city.building_at(x, y),
+                city.tile_bits_at(x, y).unwrap().raw_bits(),
+                city.zone_at(x, y).unwrap().raw_bits(),
+            ]);
+        }
+    }
+    snapshot
+}
+
+fn lower_pointer_plane_fingerprints(city: &City) -> [u64; 5] {
+    fn hash_bytes(bytes: impl IntoIterator<Item = u8>) -> u64 {
+        bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    let mut altm = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT * 2);
+    let mut terrain = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT);
+    let mut buildings = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT);
+    let mut bits = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT);
+    let mut zones = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT);
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            let sample = city.altm_at(x, y);
+            altm.extend_from_slice(
+                &(u16::from(sample.land)
+                    | u16::from(sample.water) << 5
+                    | u16::from(sample.tunnel_levels) << 10)
+                    .to_le_bytes(),
+            );
+            terrain.push(city.terrain_at(x, y));
+            buildings.push(city.building_at(x, y));
+            bits.push(city.tile_bits_at(x, y).unwrap().raw_bits());
+            zones.push(city.zone_at(x, y).unwrap().raw_bits());
+        }
+    }
+    [
+        hash_bytes(altm),
+        hash_bytes(terrain),
+        hash_bytes(buildings),
+        hash_bytes(bits),
+        hash_bytes(zones),
+    ]
+}
+
 #[test]
 fn map_down_matrix_retains_mouse_painting_only_on_the_audited_no_action_paths() {
     // City tools that retain the entry flag when Shift blocks the drag.
@@ -417,6 +472,15 @@ fn win95_editor_lower_pointer_motion_only_retargets_the_next_held_sample() {
         AppMode::EditNewMap,
         EngineFidelity::Win95,
     );
+    state.city.kind = CityFileKind::WinSc2;
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            state.city.set_altitude(x, y, 10, 0);
+            state.city.set_terrain(x, y, 0);
+        }
+    }
+    state.city.set_city_funds(100);
+    state.city.prepare_pe_fidelity_from_saved_city();
     state.pe_process_crt = Win95CrtRand::new(1);
     let press = tile_screen(&state, (20, 20));
     let mut painting = false;
@@ -434,6 +498,7 @@ fn win95_editor_lower_pointer_motion_only_retargets_the_next_held_sample() {
     assert!(painting);
     assert!(state.hover_cost_overlay().is_none());
     assert_eq!(state.pe_process_crt.seed(), 3_884_216_597);
+    let before_edit = lower_map_state_snapshot(&state.city);
 
     let next = tile_screen(&state, (24, 24));
     move_map_pointer_interaction(
@@ -453,4 +518,30 @@ fn win95_editor_lower_pointer_motion_only_retargets_the_next_held_sample() {
 
     state.release_left_mouse_drag(false);
     assert!(!state.tick_edit_map_height_hold(true));
+
+    let after_edit = lower_map_state_snapshot(&state.city);
+    assert_ne!(after_edit, before_edit, "held Lower samples should edit the map");
+    assert_eq!(
+        lower_pointer_plane_fingerprints(&state.city),
+        [
+            0xe863_943e_980a_c225,
+            0xe858_5ff9_3b0f_7d7d,
+            0x9c1b_da7f_8c87_2325,
+            0x9c1b_da7f_8c87_2325,
+            0x9c1b_da7f_8c87_2325,
+        ],
+        "native two-pick held sequence"
+    );
+    let path = std::env::temp_dir().join(format!(
+        "citygame-win95-editor-lower-pointer-roundtrip-{}.sc2",
+        std::process::id()
+    ));
+    state.city.save(&path).expect("save pointer-edited map");
+    let loaded = City::load(&path).expect("reload pointer-edited map");
+    std::fs::remove_file(&path).expect("remove pointer-edited map");
+    assert_eq!(
+        lower_map_state_snapshot(&loaded),
+        after_edit,
+        "all terrain, zoning, and tile planes from the input sequence survive WinSc2 reload"
+    );
 }

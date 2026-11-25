@@ -4631,6 +4631,10 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         std::env::var_os("CITYGAME_MAC_R20_FLINT_TRACE_DIR")
             .expect("CITYGAME_MAC_R20_FLINT_TRACE_DIR must point to the R20 capture"),
     );
+    let code3_root = PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_R20_FLINT_CODE3_CAPTURE_DIR")
+            .expect("CITYGAME_MAC_R20_FLINT_CODE3_CAPTURE_DIR must point to R20 CODE 3 fixtures"),
+    );
     let mut ticks = [3163, 3165, 3165].into_iter();
     let mut startup = super::super::title_flow::MacTitleStartup::new(|| {
         ticks.next().expect("captured CODE 15 startup TickCount")
@@ -4838,6 +4842,29 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     assert_eq!(state.mac_process_rng.seed(), 0x5a42_b2f2, "QuickDraw at CODE 14 return");
     assert_eq!(state.mac_game_rng.state(), 0xbd87_efc5, "game LCG at CODE 14 return");
     assert_eq!(state.mac_app_lfsr.state(), 0x8b3b, "app LFSR at CODE 14 return");
+    let native_xmic = std::fs::read(code3_root.join(
+        "r20-live-inputs-code3-export162-return-age22500-tick5746-xmic.bin",
+    ))
+    .expect("R20 native CODE 3 return XMIC");
+    assert_eq!(native_xmic.len(), 150 * 8);
+    for (slot, native_row) in native_xmic.chunks_exact(8).enumerate() {
+        let row = state.city.microsim_at(slot).unwrap();
+        let citygame_row = [
+            row.tile_id,
+            row.stat0,
+            (row.stat1 >> 8) as u8,
+            row.stat1 as u8,
+            (row.stat2 >> 8) as u8,
+            row.stat2 as u8,
+            (row.stat3 >> 8) as u8,
+            row.stat3 as u8,
+        ];
+        assert_eq!(
+            &citygame_row,
+            native_row,
+            "Flint end-to-end annual CODE 3 XMIC slot {slot}"
+        );
+    }
     assert_eq!(state.game_clock.year(), 1975);
     assert_eq!(state.game_clock.month(), 1);
     assert_eq!(

@@ -3278,6 +3278,44 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         pe_density_plane_fingerprint(1, |x, y| wet_dry.underground_at(x, y)),
         NATIVE_PLANES[2]
     );
+
+    // Rotate the wet/dry step through the remaining cardinal directions. The
+    // same two tiles are visited, but final ALTM is orientation-sensitive.
+    for (label, wet, dry, altm) in [
+        ("east", (21, 20), (22, 20), 0x70fb_7016_39bf_1023),
+        ("south", (20, 21), (20, 22), 0x09d7_1e65_f7a6_d437),
+        ("west", (19, 20), (18, 20), 0x081b_cfdc_156a_c9ff),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.set_mac_selected_water_height(8);
+        city.set_altitude(20, 20, 10, 0);
+        city.set_altitude(wet.0, wet.1, 8, 8);
+        city.set_altitude(dry.0, dry.1, 10, 0);
+        for (x, y) in [(20, 20), wet, dry] {
+            city.set_terrain(x, y, 0x30);
+        }
+        city.set_tile_bits(wet.0, wet.1, TileBits::new(4));
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(36),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 50, "{label} cash");
+        assert_eq!(crt.seed(), 1, "{label} CRT");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            [altm, NATIVE_PLANES[1], NATIVE_PLANES[2], NATIVE_PLANES[3]],
+            "{label} planes"
+        );
+        assert_eq!(
+            pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
+            NATIVE_PLANES[2],
+            "{label} XUND"
+        );
+    }
 }
 
 #[test]

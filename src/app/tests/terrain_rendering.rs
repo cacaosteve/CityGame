@@ -3016,6 +3016,102 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         ]
     );
 
+    // Native PE reclassifies the clipped 3x3 neighborhood at every map edge
+    // and corner. Keep the road one tile inward so it is inside that region.
+    for (label, center, road, expected) in [
+        (
+            "right edge",
+            (127, 20),
+            (126, 20),
+            [
+                0x5087_47f9_df4c_0464,
+                0xe68f_30ed_faea_9753,
+                NATIVE_PLANES[2],
+                NATIVE_PLANES[3],
+            ],
+        ),
+        (
+            "bottom edge",
+            (20, 127),
+            (20, 126),
+            [
+                0xcd4e_eb54_9731_a7fc,
+                0x3033_bd89_0cf3_0c58,
+                NATIVE_PLANES[2],
+                NATIVE_PLANES[3],
+            ],
+        ),
+        (
+            "northwest corner",
+            (0, 0),
+            (1, 0),
+            [
+                0x027e_fe14_4f9c_2324,
+                0x7699_f61b_2e77_9dd1,
+                NATIVE_PLANES[2],
+                NATIVE_PLANES[3],
+            ],
+        ),
+        (
+            "northeast corner",
+            (127, 0),
+            (126, 0),
+            [
+                0x6029_5689_a39c_9b24,
+                0xe9db_14c2_b097_46fe,
+                NATIVE_PLANES[2],
+                NATIVE_PLANES[3],
+            ],
+        ),
+        (
+            "southwest corner",
+            (0, 127),
+            (1, 127),
+            [
+                0xf024_cde7_bfc2_07fc,
+                0xeb1e_625e_f5e0_ac2a,
+                NATIVE_PLANES[2],
+                NATIVE_PLANES[3],
+            ],
+        ),
+        (
+            "southeast corner",
+            (127, 127),
+            (126, 127),
+            [
+                0xf470_3c85_a95d_3ffc,
+                0x395f_e5ba_ed51_d3f7,
+                NATIVE_PLANES[2],
+                NATIVE_PLANES[3],
+            ],
+        ),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.set_building(road.0, road.1, 0x1d);
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(
+                &mut city,
+                Some(&mut crt),
+                center.0,
+                center.1,
+                2,
+            ),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
+        assert_eq!(city.building_at(road.0, road.1), 0, "{label} road cleanup");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "{label} planes"
+        );
+    }
+
     let mut wet_dry = flat_win95_terrain_fixture(CityFileKind::WinSc2);
     wet_dry.pe_w_city_mode = 1;
     wet_dry.set_mac_selected_water_height(8);

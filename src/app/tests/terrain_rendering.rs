@@ -3316,6 +3316,64 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
             "{label} XUND"
         );
     }
+
+    // A diagonal water tile is not admitted into the wet-dry multi-tile walk;
+    // the center alone is raised, with orientation-specific contour repair.
+    for (label, wet, dry, altm, xter) in [
+        (
+            "northeast",
+            (21, 19),
+            (22, 18),
+            0xd4fa_e223_a118_102c,
+            0xb7d0_79ee_da75_e0b5,
+        ),
+        (
+            "southeast",
+            (21, 21),
+            (22, 22),
+            0xd466_a22f_84f0_462c,
+            0xef23_4747_2cea_50d6,
+        ),
+        (
+            "southwest",
+            (19, 21),
+            (18, 22),
+            0x8646_cfdd_6da2_3800,
+            0x8ffc_6d3e_9932_8d57,
+        ),
+        (
+            "northwest",
+            (19, 19),
+            (18, 18),
+            0xc033_cbc0_c78b_4fc0,
+            0x766b_f7e9_9a09_c204,
+        ),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.set_mac_selected_water_height(8);
+        city.set_altitude(20, 20, 10, 0);
+        city.set_altitude(wet.0, wet.1, 8, 8);
+        city.set_altitude(dry.0, dry.1, 10, 0);
+        for (x, y) in [(20, 20), wet, dry] {
+            city.set_terrain(x, y, 0x30);
+        }
+        city.set_tile_bits(wet.0, wet.1, TileBits::new(4));
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 1, "{label} CRT");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            [altm, xter, NATIVE_PLANES[2], NATIVE_PLANES[3]],
+            "{label} planes"
+        );
+    }
 }
 
 #[test]

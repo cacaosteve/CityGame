@@ -2903,6 +2903,25 @@ fn pe_lower_crt_tool_matches_native_wet_boundary_reclassification() {
             0x73e7_b754_7c48_3b25,
         ]
     );
+
+    let native_planes = win95_terrain_plane_fingerprints(&city);
+    let path = std::env::temp_dir().join(format!(
+        "citygame-pe-lower-wet-roundtrip-{}.sc2",
+        std::process::id()
+    ));
+    city.save(&path).expect("save Lower wet-boundary result");
+    let loaded = City::load(&path).expect("reload Lower wet-boundary result");
+    std::fs::remove_file(&path).expect("remove Lower wet-boundary save");
+    assert_eq!(
+        loaded.mac_selected_water_height(),
+        Some(9),
+        "selected water height must persist"
+    );
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&loaded),
+        native_planes,
+        "native-matched terrain result must survive save/reload"
+    );
 }
 
 #[test]

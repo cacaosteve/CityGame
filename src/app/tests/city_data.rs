@@ -4635,6 +4635,10 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         std::env::var_os("CITYGAME_MAC_R20_FLINT_CODE3_CAPTURE_DIR")
             .expect("CITYGAME_MAC_R20_FLINT_CODE3_CAPTURE_DIR must point to R20 CODE 3 fixtures"),
     );
+    let replay_end_tick = std::env::var("CITYGAME_MAC_R20_FLINT_REPLAY_END_TICK")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(5751);
     let capture_u32 = |name: &str, relative: usize| {
         let ram = std::fs::read(code3_root.join(name)).expect("R20 native RAM boundary");
         let a5 = u32::from_be_bytes(ram[0x904..0x908].try_into().unwrap()) as usize;
@@ -4706,7 +4710,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         ) else {
             continue;
         };
-        if matches!(what, 1 | 2) && (3571..=5746).contains(&when) {
+        if matches!(what, 1 | 2) && (3571..=replay_end_tick).contains(&when) {
             input_events.push((when, what, h, v));
         }
     }
@@ -4716,6 +4720,8 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let mut calendar_ticks = Vec::new();
     let mut actor_check_ticks = Vec::new();
     let mut post_actor_tickcounts = Vec::new();
+    let mut native_calendar_dispatch_ticks = Vec::new();
+    let mut citygame_calendar_dispatch_ticks = Vec::new();
     let clock_file = std::fs::File::open(trace_root.join("gdb-clock.csv"))
         .expect("R20 CODE 2 TickCount capture");
     for line in BufReader::new(clock_file).lines().skip(1) {
@@ -4724,7 +4730,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         let Ok(tick) = fields[2].parse::<u32>() else {
             continue;
         };
-        if !(3571..=5751).contains(&tick) {
+        if !(3571..=replay_end_tick).contains(&tick) {
             continue;
         }
         match fields[1] {
@@ -4739,6 +4745,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             {
                 post_actor_tickcounts.push(tick);
             }
+            "CODE14.export210_dispatch" => native_calendar_dispatch_ticks.push(tick),
             _ => {}
         }
     }
@@ -4771,12 +4778,14 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     replay_ticks.extend(input_events.iter().map(|event| event.0));
     replay_ticks.sort_unstable();
     replay_ticks.dedup();
+    let replay_last_tick = replay_ticks.last().copied().unwrap_or(3571);
     let calendar_ticks: std::collections::HashSet<_> = calendar_ticks.into_iter().collect();
     let actor_check_ticks: std::collections::HashSet<_> = actor_check_ticks.into_iter().collect();
     let event_ticks: std::collections::HashSet<_> =
         input_events.iter().map(|event| event.0).collect();
 
     for tick in replay_ticks {
+        let mut actor_wait_ticks = 0;
         if actor_check_ticks.contains(&tick) {
             let refresh_tick = post_actor_tickcounts
                 .iter()
@@ -4784,7 +4793,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 .find(|sample| *sample >= tick)
                 .unwrap_or(tick);
             let rng_before_actor = state.mac_process_rng.seed();
-            state.begin_mac_frame_actor_phase_with_tick_refresh(
+            actor_wait_ticks = state.begin_mac_frame_actor_phase_with_tick_refresh(
                 ticks_duration(tick.wrapping_sub(last_frame_tick)),
                 || ticks_duration(refresh_tick.wrapping_sub(tick)),
             );
@@ -4858,6 +4867,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             next_input += 1;
         }
         if !calendar_ticks.contains(&tick) && !event_ticks.contains(&tick) {
+            last_frame_tick = tick.wrapping_add(actor_wait_ticks);
             continue;
         }
         if tick == 5742 {
@@ -4879,14 +4889,14 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         }
         let rng_before_calendar = state.mac_process_rng.seed();
         let budget_pending_before = state.mac_loop_scheduler.january_budget_review_pending;
-        state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+        let advance = state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
             ticks_duration(tick.wrapping_sub(last_frame_tick)),
-            // The next captured TickCount sample accounts for elapsed CODE 6
-            // waits; adding City's modeled waits here would count them twice.
-            0,
+            actor_wait_ticks,
             pointer_down,
             || std::time::Duration::ZERO,
         );
+        citygame_calendar_dispatch_ticks
+            .extend(std::iter::repeat(tick).take(advance.days as usize));
         if tick == 5742 {
             assert_eq!(
                 state.mac_process_rng.seed(),
@@ -4951,19 +4961,21 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 state.mac_game_rng.state(),
                 state.mac_app_lfsr.state(),
             );
-            assert_eq!(
-                state.city.city_funds(),
-                native_review_funds,
-                "funds at native January review boundary"
-            );
-            for (row, native) in native_review_rows.iter().enumerate() {
-                let offset = 0x077c + row * 27 * 4;
-                let values = state.city.budget_misc_u32_values(offset, 3);
-                let local: [i32; 3] = std::array::from_fn(|field| values[field] as i32);
+            if tick <= 5751 {
                 assert_eq!(
-                    &local, native,
-                    "Mac budget current/funding/YTD at review-open row {row}"
+                    state.city.city_funds(),
+                    native_review_funds,
+                    "funds at native January review boundary"
                 );
+                for (row, native) in native_review_rows.iter().enumerate() {
+                    let offset = 0x077c + row * 27 * 4;
+                    let values = state.city.budget_misc_u32_values(offset, 3);
+                    let local: [i32; 3] = std::array::from_fn(|field| values[field] as i32);
+                    assert_eq!(
+                        &local, native,
+                        "Mac budget current/funding/YTD at review-open row {row}"
+                    );
+                }
             }
         }
         if state.mac_process_rng.seed() != rng_before_calendar && tick <= 3600 {
@@ -4984,7 +4996,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             );
         }
         previous_rng = current_rng;
-        last_frame_tick = tick;
+        last_frame_tick = tick.wrapping_add(actor_wait_ticks);
         if calendar_ticks.contains(&tick) {
             poll_count += 1;
         }
@@ -4999,27 +5011,68 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         state.city_info_dialog,
         state.mac_loop_scheduler.january_budget_review_pending,
     );
-    assert_eq!(
-        state.mac_process_rng.seed(),
-        0x5780_b143,
-        "QuickDraw after captured post-review actor boundary"
+    let first_calendar_dispatch_mismatch = citygame_calendar_dispatch_ticks
+        .iter()
+        .skip(1)
+        .zip(&native_calendar_dispatch_ticks)
+        .position(|(citygame, native)| citygame != native);
+    eprintln!(
+        "R20 calendar dispatches CityGame={} Quadra={} first_tick_mismatch={:?}",
+        citygame_calendar_dispatch_ticks.len(),
+        native_calendar_dispatch_ticks.len(),
+        first_calendar_dispatch_mismatch.map(|index| {
+            let citygame_index = index + 1;
+            (
+                index,
+                citygame_calendar_dispatch_ticks[citygame_index],
+                native_calendar_dispatch_ticks[index],
+            )
+        }),
     );
-    assert_eq!(
-        state.mac_game_rng.state(),
-        0xba1f_4627,
-        "game LCG after captured post-review actor boundary"
+    eprintln!(
+        "R20 calendar dispatch first ticks CityGame={:?} Quadra={:?}",
+        &citygame_calendar_dispatch_ticks[..citygame_calendar_dispatch_ticks.len().min(20)],
+        &native_calendar_dispatch_ticks[..native_calendar_dispatch_ticks.len().min(20)],
     );
-    assert_eq!(
-        state.mac_app_lfsr.state(),
-        0x4cdf,
-        "app LFSR after captured post-review actor boundary"
-    );
-    assert_eq!(state.game_clock.year(), 1975);
-    assert_eq!(state.game_clock.month(), 1);
-    assert_eq!(
-        state.city_info_dialog, None,
-        "captured Done click resumes simulation"
-    );
+    if replay_end_tick == 5751 {
+        assert_eq!(
+            state.mac_process_rng.seed(),
+            0x5780_b143,
+            "QuickDraw after captured post-review actor boundary"
+        );
+        assert_eq!(
+            state.mac_game_rng.state(),
+            0xba1f_4627,
+            "game LCG after captured post-review actor boundary"
+        );
+        assert_eq!(
+            state.mac_app_lfsr.state(),
+            0x4cdf,
+            "app LFSR after captured post-review actor boundary"
+        );
+        assert_eq!(state.game_clock.year(), 1975);
+        assert_eq!(state.game_clock.month(), 1);
+        assert_eq!(
+            state.city_info_dialog, None,
+            "captured Done click resumes simulation"
+        );
+    } else {
+        eprintln!(
+            "R20 extended replay end tick={replay_end_tick} last_capture_tick={replay_last_tick} last_frame={last_frame_tick} date={:?} qd={:08x} game={:08x} app={:04x} modal={:?} pending={}",
+            state.game_clock,
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+            state.city_info_dialog,
+            state.mac_loop_scheduler.january_budget_review_pending,
+        );
+        assert!(
+            last_frame_tick >= replay_last_tick
+                || (state.mac_loop_scheduler.january_budget_review_pending
+                    && state.city_info_dialog == Some(CityInfoDialog::Budget)),
+            "replay ended before target TickCount outside a captured January modal"
+        );
+    }
 }
 
 /// The original map captures were taken at the new-city naming dialog, before

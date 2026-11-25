@@ -3556,6 +3556,77 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
             "{label} planes"
         );
     }
+
+    // Two diagonal wet cells remain excluded from the wet/dry multi-tile
+    // walk; contour repair clears the near XBIT marker but preserves the
+    // farther wet cell, with orientation-specific ALTM/XTER output.
+    for (label, near, far, dry, altm, xter, xbit) in [
+        (
+            "northeast chain",
+            (21, 19),
+            (22, 18),
+            (23, 17),
+            0xf937_373c_8e40_0e75,
+            0x6689_3756_2e12_c3c5,
+            0x01a3_1d5d_0cf2_e7c1,
+        ),
+        (
+            "southeast chain",
+            (21, 21),
+            (22, 22),
+            (23, 23),
+            0xd814_f19a_e5cf_3e35,
+            0x1374_b033_210a_7a06,
+            0xf90b_fc5a_1ca5_5c01,
+        ),
+        (
+            "southwest chain",
+            (19, 21),
+            (18, 22),
+            (17, 23),
+            0x8128_75dc_4b94_8d61,
+            0x998d_9ff0_4859_cf87,
+            0x0571_96ba_0224_3c01,
+        ),
+        (
+            "northwest chain",
+            (19, 19),
+            (18, 18),
+            (17, 17),
+            0x9357_e08d_93f8_7da1,
+            0x078b_68ca_c815_28d4,
+            0xfbf8_1cbb_964f_c7c1,
+        ),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.set_mac_selected_water_height(8);
+        city.set_altitude(20, 20, 10, 0);
+        for (x, y) in [near, far] {
+            city.set_altitude(x, y, 8, 8);
+            city.set_tile_bits(x, y, TileBits::new(4));
+        }
+        city.set_altitude(dry.0, dry.1, 10, 0);
+        for (cell_x, cell_y) in [(20, 20), near, far, dry] {
+            city.set_terrain(cell_x, cell_y, 0x30);
+        }
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 1, "{label} CRT");
+        assert_eq!(city.tile_bits_at(near.0, near.1).unwrap().raw_bits(), 0);
+        assert_eq!(city.tile_bits_at(far.0, far.1).unwrap().raw_bits(), 4);
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            [altm, xter, NATIVE_PLANES[2], xbit],
+            "{label} planes"
+        );
+    }
 }
 
 #[test]

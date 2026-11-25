@@ -4582,6 +4582,42 @@ fn mac_native_edited_budget_save_launch_uses_captured_startup_clocks() {
     );
 }
 
+#[test]
+#[ignore = "requires the private R20 source Flint.city"]
+fn mac_r20_flint_title_and_city_open_rng_match_first_calendar_boundary() {
+    let city_path = PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_R20_FLINT_CITY")
+            .expect("CITYGAME_MAC_R20_FLINT_CITY must point to the original Flint.city"),
+    );
+    let mut ticks = [3163, 3165, 3165].into_iter();
+    let mut startup = super::super::title_flow::MacTitleStartup::new(|| {
+        ticks.next().expect("captured CODE 15 startup TickCount")
+    });
+    // CODE 7's captured title seed boundary at 0x49ceec.
+    startup.initialize_newspaper(3173);
+
+    let mut state = test_state(City::new_blank("/tmp/mac-r20-flint-open.sc2", "Blank").unwrap());
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    startup.install(&mut state);
+    state.load_city(&city_path, (640, 480), 1.0).unwrap();
+    // Native CODE 5's two title/music callbacks advance the game LCG before
+    // CODE 2 begins the first city calendar loop at TickCount 3571.
+    state.mac_music_callback(3565, true);
+    state.mac_music_callback(3571, true);
+
+    assert_eq!(
+        state.mac_process_rng.seed(),
+        0x17fc_b8f5,
+        "QuickDraw at CODE 2"
+    );
+    assert_eq!(
+        state.mac_game_rng.state(),
+        0x398a_31a0,
+        "game LCG at CODE 2"
+    );
+    assert_eq!(state.mac_app_lfsr.state(), 0x0c5b, "app LFSR at CODE 2");
+}
+
 /// The original map captures were taken at the new-city naming dialog, before
 /// its later newspaper/confirmation work. They are private original-build data.
 #[test]

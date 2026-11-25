@@ -4138,57 +4138,86 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
 }
 
 #[test]
-fn pe_raise_marked_tool_matches_native_connected_road_branches() {
-    // Pinned retail SIMCITY.EXE f7a51b...; native `0x443c60` plus the
-    // 3x3 transport refresh at `0x447490`. These layouts exercise connected
-    // road branches rather than only a straight run or a single adjacent tile.
-    let cases = [
+fn pe_raise_marked_tool_matches_native_connected_network_branches() {
+    // Both pinned retail PE builds (4f560f7a… and f7a51b62…) execute native
+    // `0x443c60` plus the `0x447490` refresh identically for these connected
+    // branch layouts across road, rail, and power.
+    let shapes = [
         (
             "t-east",
             &[(20, 19), (20, 18), (19, 19), (21, 19)][..],
             1_766_988_168,
-            0x9366_6e11_485b_7bb0,
         ),
         (
             "cross",
             &[(20, 19), (20, 18), (20, 21), (19, 20), (21, 20)][..],
             1_844_513_277,
-            0x9366_6e11_485b_7bb0,
         ),
         (
             "branch-west",
             &[(20, 19), (20, 18), (19, 19), (19, 18), (18, 18)][..],
             1_030_492_215,
-            0xce5c_b81c_3edc_11b0,
         ),
     ];
-    for (label, road_cells, crt_seed, xblt) in cases {
-        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
-        city.pe_w_city_mode = 1;
-        for &(x, y) in road_cells {
-            city.set_building(x, y, 0x1d);
-        }
-        city.set_city_funds(100);
-        let mut crt = Win95CrtRand::new(1);
-
-        let citygame_waits =
-            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2);
-        assert!(
-            citygame_waits.is_some_and(|waits| waits > 0),
-            "{label} raise accepted"
-        );
-        assert_eq!(city.city_funds(), 75, "{label} cash");
-        assert_eq!(crt.seed(), crt_seed, "{label} CRT endpoint");
-        assert_eq!(
-            win95_terrain_plane_fingerprints(&city),
+    let networks = [
+        (
+            "road",
+            0x1d,
             [
-                0xd2a8_65cf_8809_2c64,
-                0xe705_34f7_e0d0_9729,
-                xblt,
-                0x9c1b_da7f_8c87_2325,
+                0x9366_6e11_485b_7bb0,
+                0x9366_6e11_485b_7bb0,
+                0xce5c_b81c_3edc_11b0,
             ],
-            "{label} native ALTM/XTER/XBLD/XBIT"
-        );
+        ),
+        (
+            "rail",
+            0x2c,
+            [
+                0x712b_6626_1f07_65d9,
+                0x712b_6626_1f07_65d9,
+                0x1064_7d85_54fe_cdd9,
+            ],
+        ),
+        (
+            "power",
+            0x0e,
+            [
+                0x63cd_ee99_c518_a6ab,
+                0x63cd_ee99_c518_a6ab,
+                0x9f43_a275_3a16_b2ab,
+            ],
+        ),
+    ];
+    for (network, tile, expected_xbld) in networks {
+        for (shape_index, (shape, cells, crt_seed)) in shapes.iter().enumerate() {
+            let label = format!("{network}-{shape}");
+            let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+            city.pe_w_city_mode = 1;
+            for &(x, y) in *cells {
+                city.set_building(x, y, tile);
+            }
+            city.set_city_funds(100);
+            let mut crt = Win95CrtRand::new(1);
+
+            let citygame_waits =
+                pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2);
+            assert!(
+                citygame_waits.is_some_and(|waits| waits > 0),
+                "{label} raise accepted"
+            );
+            assert_eq!(city.city_funds(), 75, "{label} cash");
+            assert_eq!(crt.seed(), *crt_seed, "{label} CRT endpoint");
+            assert_eq!(
+                win95_terrain_plane_fingerprints(&city),
+                [
+                    0xd2a8_65cf_8809_2c64,
+                    0xe705_34f7_e0d0_9729,
+                    expected_xbld[shape_index],
+                    0x9c1b_da7f_8c87_2325,
+                ],
+                "{label} native ALTM/XTER/XBLD/XBIT"
+            );
+        }
     }
 }
 

@@ -7003,7 +7003,11 @@ mod tests {
             |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
         let a5 = native_u32(0x904) as usize;
         let at_a5 = |offset: usize| a5 + offset - 0x10000;
+        let native_auto_budget = ram[a5 - 0x29fa];
+        assert_eq!(native_auto_budget, 0);
         let table = native_u32(at_a5(0xfd66)) as usize;
+        let native_annual_flag = ram[at_a5(0xe4ae)];
+        assert_eq!(native_annual_flag, 0xff);
         assert!(table + 16 * 0x70 <= ram.len());
 
         let source_city = root
@@ -7042,6 +7046,14 @@ mod tests {
 
         let mut state = crate::app::tests::test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
+        state.game_clock = crate::app::GameClock::new(1996, 1);
+        // The source save predates this captured session. Restore the option
+        // byte from the paired live panel RAM rather than inheriting a stale
+        // Auto-Budget setting from the older AutoDebt file.
+        state
+            .city
+            .set_mac_state_misc_u32_at(AUTO_BUDGET_MISC_OFFSET, u32::from(native_auto_budget));
+        assert!(!crate::app::budget::mac_auto_budget_enabled_for_city(&state.city));
         assert_eq!(
             crate::app::dialog_input::city_info_dialog_hit_test_for_engine(
                 Vec2::new(329.0, 228.0),
@@ -7102,24 +7114,35 @@ mod tests {
             u32::from_be_bytes(after_done_ram[address..address + 4].try_into().unwrap())
         };
         let after_done_a5 = after_done_u32(0x904) as usize;
+        assert_eq!(after_done_ram[after_done_a5 - 0x29fa], native_auto_budget);
         let native_settled_funds = after_done_u32(after_done_a5 + 0xefac - 0x10000) as i32;
         assert_eq!(native_settled_funds, -9_203);
+        let after_done_table = after_done_u32(after_done_a5 + 0xfd66 - 0x10000) as usize;
+        assert!(after_done_table + BUDGET_TOTAL_COUNT * 0x70 <= after_done_ram.len());
 
-        // Follow the production January-close accounting sequence. The native
-        // after-Done capture is three age units later, so compare the settled
-        // cash result here and check CityGame's immediate year-reset boundary
-        // separately before any simulated January accrual can run.
-        state.apply_budget_year_end_settlement();
+        // Follow CityGame's complete January review close, including the
+        // annual worker and the CODE 4 monthly budget tail. The native paired
+        // capture is three age units later, after this publication boundary.
+        // Restore the captured armed annual flag because the older source save
+        // predates the 1996 review boundary.
+        state
+            .city
+            .set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, native_annual_flag);
+        assert!(state.mac_annual_budget_due(1996, 1));
+        state.finish_mac_january_budget_review();
         assert_eq!(state.city.city_funds(), native_settled_funds);
-        state.clear_budget_year_history();
+        assert_eq!(state.city_info_dialog, None);
         for row in 0..BUDGET_TOTAL_COUNT {
-            let offset = budget_row_misc_offset_for_city(
-                &state.city,
-                row,
-                BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
-            )
-            .unwrap();
-            assert_eq!(state.city.budget_misc_u32_at(offset), Some(0), "row {row}");
+            let native_start = after_done_table + row * 0x70 + 0x60;
+            let native: [i32; 3] =
+                std::array::from_fn(|field| after_done_u32(native_start + field * 4) as i32);
+            let offset = 0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4;
+            let values = state.city.budget_misc_u32_values(offset, 3);
+            let local: [i32; 3] = std::array::from_fn(|field| values[field] as i32);
+            assert_eq!(
+                local, native,
+                "Mac budget current/funding/YTD after the native January 1996 Done path, row {row}"
+            );
         }
 
         let settled_path = std::env::temp_dir().join(format!(
@@ -7129,10 +7152,19 @@ mod tests {
         state.city.save(&settled_path).unwrap();
         let settled_reload = City::load(&settled_path).unwrap();
         std::fs::remove_file(&settled_path).unwrap();
-        let mut settled_state = crate::app::tests::test_state(settled_reload);
-        settled_state.engine_fidelity = EngineFidelity::Mac68k;
-        settled_state.apply_budget_year_end_settlement();
-        assert_eq!(settled_state.city.city_funds(), native_settled_funds);
+        assert_eq!(settled_reload.city_funds(), native_settled_funds);
+        for row in 0..BUDGET_TOTAL_COUNT {
+            let native_start = after_done_table + row * 0x70 + 0x60;
+            let offset = 0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4;
+            let values = settled_reload.budget_misc_u32_values(offset, 3);
+            let local: [i32; 3] = std::array::from_fn(|field| values[field] as i32);
+            let native: [i32; 3] =
+                std::array::from_fn(|field| after_done_u32(native_start + field * 4) as i32);
+            assert_eq!(
+                local, native,
+                "Mac post-Done budget row survives save/reload, row {row}"
+            );
+        }
 
         let after_ram = std::fs::read(root.join("jan1996-budget-panel-police-95-ram.bin")).unwrap();
         let after_native_u32 = |address: usize| {

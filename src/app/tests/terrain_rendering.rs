@@ -2810,6 +2810,69 @@ fn pe_lower_crt_tool_matches_native_full_worker_road_planes() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_full_worker_additional_crt_seeds() {
+    for (seed, expected) in [
+        (
+            2,
+            [
+                0x5869_dd95_3d22_0ede,
+                0xf411_e70f_de6c_22c1,
+                0x9c1b_da7f_8c87_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+        ),
+        (
+            12_345,
+            [
+                0x5915_e21b_7d3c_bb16,
+                0x003f_c145_88ea_7921,
+                0x9c1b_da7f_8c87_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+        ),
+        (
+            0x1234_5678,
+            [
+                0xbf3e_ea7c_0b71_c676,
+                0x844f_35cf_459f_b851,
+                0x9c1b_da7f_8c87_2325,
+                0x9c1b_da7f_8c87_2325,
+            ],
+        ),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(seed);
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "seed {seed:#x} Lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "seed {seed:#x} no-charge dig");
+        assert_eq!(
+            crt.seed(),
+            match seed {
+                2 => 3_313_746_278,
+                12_345 => 1_449_997_005,
+                0x1234_5678 => 3_768_712_380,
+                _ => unreachable!(),
+            },
+            "seed {seed:#x} CRT endpoint"
+        );
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "seed {seed:#x} native full planes"
+        );
+    }
+}
+
+#[test]
 fn pe_raise_adjust_toward_dig_runs_447490_and_carries_crt() {
     let mut city =
         City::new_blank("/tmp/sc2000-adjust-dig-447490.sc2", "AdjustDig").expect("blank");

@@ -3081,6 +3081,84 @@ fn pe_lower_crt_tool_matches_native_connected_network_t_junctions() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_subway_and_pipe_branches() {
+    let shapes = [
+        (
+            "tee",
+            [
+                (20, 20, 10),
+                (20, 19, 0),
+                (20, 18, 0),
+                (21, 20, 1),
+                (22, 20, 1),
+                (19, 20, 1),
+                (18, 20, 1),
+            ]
+            .as_slice(),
+            0x1ca4_89c1_6181_2a45,
+        ),
+        (
+            "cross",
+            [
+                (20, 20, 14),
+                (20, 19, 0),
+                (20, 18, 0),
+                (20, 21, 0),
+                (20, 22, 0),
+                (19, 20, 1),
+                (18, 20, 1),
+                (21, 20, 1),
+                (22, 20, 1),
+            ]
+            .as_slice(),
+            0x63e7_795c_c19d_dfc5,
+        ),
+    ];
+    for (shape, cells, expected_xbit) in shapes {
+        for (network, family, starting_occupancy) in [("subway", 1, cells.len()), ("pipe", 16, 0)] {
+            let label = format!("{network}-{shape}");
+            let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+            for y in 18..23 {
+                for x in 18..23 {
+                    city.set_terrain(x, y, 0);
+                }
+            }
+            for &(x, y, offset) in cells {
+                city.set_underground(x, y, family + offset);
+                city.set_tile_bits(x, y, TileBits::new(0x20));
+            }
+            city.pe_xund_occupancy = starting_occupancy as u16;
+            city.set_city_funds(100);
+            let mut crt = Win95CrtRand::new(1);
+
+            assert_eq!(
+                pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+                Some(true),
+                "{label} Lower result"
+            );
+            assert_eq!(city.city_funds(), 100, "{label} no-charge dig");
+            assert_eq!(crt.seed(), 3_884_216_597, "{label} CRT endpoint");
+            assert_eq!(city.pe_xund_occupancy, 0, "{label} subway occupancy");
+            assert_eq!(
+                win95_terrain_plane_fingerprints(&city),
+                [
+                    0x13e4_507d_9840_eb16,
+                    0x4e9a_2fbb_855e_6921,
+                    0x9c1b_da7f_8c87_2325,
+                    expected_xbit,
+                ],
+                "{label} native ALTM/XTER/XBLD/XBIT"
+            );
+            assert_eq!(
+                pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
+                0x9c1b_da7f_8c87_2325,
+                "{label} native cleared XUND"
+            );
+        }
+    }
+}
+
+#[test]
 fn pe_lower_crt_tool_matches_native_full_worker_additional_crt_seeds() {
     for (seed, expected) in [
         (

@@ -4222,6 +4222,125 @@ fn pe_raise_marked_tool_matches_native_connected_network_branches() {
 }
 
 #[test]
+fn pe_raise_marked_tool_matches_native_rail_and_power_curves_at_refresh_edge() {
+    // Both pinned Win95 PE builds agree when a four-tile curve touches the
+    // boundary of the marked Raise 3x3 refresh, leaving part of each arm
+    // outside the reclassifier.
+    let orientations = [
+        (
+            "NE",
+            (20, 19),
+            0,
+            [
+                (20, 18, false),
+                (20, 17, false),
+                (21, 19, true),
+                (22, 19, true),
+            ],
+        ),
+        (
+            "ES",
+            (21, 20),
+            1,
+            [
+                (22, 20, true),
+                (23, 20, true),
+                (21, 21, false),
+                (21, 22, false),
+            ],
+        ),
+        (
+            "SW",
+            (20, 21),
+            2,
+            [
+                (20, 22, false),
+                (20, 23, false),
+                (19, 21, true),
+                (18, 21, true),
+            ],
+        ),
+        (
+            "WN",
+            (19, 20),
+            3,
+            [
+                (18, 20, true),
+                (17, 20, true),
+                (19, 19, false),
+                (19, 18, false),
+            ],
+        ),
+    ];
+    let networks = [
+        (
+            "rail",
+            0x2c,
+            0x2c,
+            0x2d,
+            [
+                0x124f_102e_b622_7476,
+                0xe28d_eea4_c089_d299,
+                0x1f63_cf34_1191_6936,
+                0x39a2_6df2_d933_33d9,
+            ],
+        ),
+        (
+            "power",
+            0x0e,
+            0x0e,
+            0x0f,
+            [
+                0x6002_cebc_a657_f0a8,
+                0x304f_f0fc_2a9d_cf4b,
+                0xf8ed_ccab_a830_408c,
+                0x88df_2390_95f5_1cab,
+            ],
+        ),
+    ];
+    for (network, base, vertical, horizontal, expected_xbld) in networks {
+        for (orientation, (name, curve, rotation, arms)) in orientations.iter().enumerate() {
+            let label = format!("{network}-{name}");
+            let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+            city.pe_w_city_mode = 1;
+            city.set_building(curve.0, curve.1, base + 6 + rotation);
+            for &(x, y, horizontal_axis) in arms {
+                city.set_building(
+                    x,
+                    y,
+                    if horizontal_axis {
+                        horizontal
+                    } else {
+                        vertical
+                    },
+                );
+            }
+            city.set_city_funds(100);
+            let mut crt = Win95CrtRand::new(1);
+
+            let citygame_waits =
+                pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2);
+            assert!(
+                citygame_waits.is_some_and(|waits| waits > 0),
+                "{label} raise accepted"
+            );
+            assert_eq!(city.city_funds(), 75, "{label} cash");
+            assert_eq!(crt.seed(), 1_030_492_215, "{label} CRT endpoint");
+            assert_eq!(
+                win95_terrain_plane_fingerprints(&city),
+                [
+                    0xd2a8_65cf_8809_2c64,
+                    0xe705_34f7_e0d0_9729,
+                    expected_xbld[orientation],
+                    0x9c1b_da7f_8c87_2325,
+                ],
+                "{label} native ALTM/XTER/XBLD/XBIT"
+            );
+        }
+    }
+}
+
+#[test]
 fn pe_lower_crt_oob_jitter_refuses() {
     // PE Lower `0x443900`: out-of-bounds CRT jitter tile → no dig.
     let mut city = City::new_blank("/tmp/sc2000-lower-oob.sc2", "LowerOob").expect("blank");

@@ -3243,6 +3243,7 @@ fn pe_lower_crt_tool_matches_native_subway_and_pipe_curves() {
 #[test]
 fn pe_lower_crt_tool_matches_native_special_underground_tiles() {
     for (name, tile, starting_occupancy) in [
+        ("building pipe tee", 28, 0),
         ("crossover pipes TB/subway LR", 31, 1),
         ("crossover pipes LR/subway TB", 32, 1),
         ("building pipes", 33, 0),

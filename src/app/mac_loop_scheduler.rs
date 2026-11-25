@@ -124,6 +124,15 @@ struct MacEarthquakePrelude {
 }
 
 impl MacLoopScheduler {
+    #[cfg(test)]
+    pub(super) fn actor_timer_diagnostics(&self) -> (u32, u16, i16) {
+        (
+            self.actor_deadline,
+            self.dispatch_counter,
+            self.actor_smoother,
+        )
+    }
+
     /// CODE 2 initializes both loop deadlines from one TickCount sample.
     pub(super) fn start_live_clock(&mut self, tick: u32) {
         self.live_clock = true;

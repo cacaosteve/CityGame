@@ -4621,7 +4621,7 @@ fn mac_r20_flint_title_and_city_open_rng_match_first_calendar_boundary() {
 #[test]
 #[ignore = "requires the private R20 Flint city and CODE 2 TickCount/EventRecord traces"]
 fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
 
     let city_path = PathBuf::from(
         std::env::var_os("CITYGAME_MAC_R20_FLINT_CITY")
@@ -4688,10 +4688,19 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         state.traffic.speed()
     );
 
-    // Feed only captured CODE 2 TickCount samples as clock inputs. The test
-    // does not use native worker entries or phase outcomes; CityGame chooses
-    // actor/calendar dispatch order and generates the RNG draws.
+    // Feed captured CODE 2 TickCount samples as clock inputs. The optional
+    // sample-order diagnostic also preserves the observed order of actor and
+    // calendar sample sites at equal ticks; it never uses native worker
+    // entries or outcomes. CityGame's own deadlines gate the dispatches and
+    // CityGame generates the random draws.
     state.mac_loop_scheduler.start_captured_clock(3571);
+    let mut phase_rng_trace = std::fs::File::create("/tmp/r20-citygame-phase-rng.csv")
+        .expect("create R20 CityGame phase RNG trace");
+    writeln!(
+        phase_rng_trace,
+        "tick,phase,age,qd_before,game_before,app_before,qd_after,game_after,app_after,days"
+    )
+    .unwrap();
     let ticks_duration = |ticks: u32| {
         let nanos = (u64::from(ticks) * 1_000_000_000 + 59) / 60;
         std::time::Duration::from_nanos(nanos)
@@ -4719,12 +4728,14 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let mut last_frame_tick = 3571_u32;
     let mut calendar_ticks = Vec::new();
     let mut actor_check_ticks = Vec::new();
+    let mut captured_sample_order =
+        std::collections::HashMap::<u32, (Option<usize>, Option<usize>)>::new();
     let mut post_actor_tickcounts = Vec::new();
     let mut native_calendar_dispatch_ticks = Vec::new();
     let mut citygame_calendar_dispatch_ticks = Vec::new();
     let clock_file = std::fs::File::open(trace_root.join("gdb-clock.csv"))
         .expect("R20 CODE 2 TickCount capture");
-    for line in BufReader::new(clock_file).lines().skip(1) {
+    for (capture_row_order, line) in BufReader::new(clock_file).lines().skip(1).enumerate() {
         let line = line.unwrap();
         let fields: Vec<_> = line.split(',').collect();
         let Ok(tick) = fields[2].parse::<u32>() else {
@@ -4736,9 +4747,19 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         match fields[1] {
             "CODE2.tick_sample_a" if calendar_ticks.last() != Some(&tick) => {
                 calendar_ticks.push(tick);
+                captured_sample_order
+                    .entry(tick)
+                    .or_default()
+                    .0
+                    .get_or_insert(capture_row_order);
             }
             "CODE2.actor_deadline_tick_return" if actor_check_ticks.last() != Some(&tick) => {
                 actor_check_ticks.push(tick);
+                captured_sample_order
+                    .entry(tick)
+                    .or_default()
+                    .1
+                    .get_or_insert(capture_row_order);
             }
             "CODE2.post_export109_tickcount_trap"
                 if post_actor_tickcounts.last() != Some(&tick) =>
@@ -4783,20 +4804,101 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let actor_check_ticks: std::collections::HashSet<_> = actor_check_ticks.into_iter().collect();
     let event_ticks: std::collections::HashSet<_> =
         input_events.iter().map(|event| event.0).collect();
+    let diagnostic_calendar_first_tick = std::env::var("CITYGAME_MAC_R20_CALENDAR_FIRST_TICK")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let use_captured_sample_order = std::env::var_os("CITYGAME_MAC_R20_CAPTURED_SAMPLE_ORDER")
+        .is_some_and(|value| value == "1");
 
     for tick in replay_ticks {
+        let calendar_rng_before_diagnostic = (
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+        );
+        let captured_calendar_precedes_actor =
+            captured_sample_order
+                .get(&tick)
+                .is_some_and(|(calendar, actor)| match (calendar, actor) {
+                    (Some(calendar), Some(actor)) => calendar < actor,
+                    _ => false,
+                });
+        let run_calendar_first = calendar_ticks.contains(&tick)
+            && (diagnostic_calendar_first_tick == Some(tick)
+                || (use_captured_sample_order && captured_calendar_precedes_actor));
+        let diagnostic_calendar_advance = if run_calendar_first {
+            let advance = state
+                .finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+                    ticks_duration(tick.wrapping_sub(last_frame_tick)),
+                    0,
+                    pointer_down,
+                    || std::time::Duration::ZERO,
+                );
+            writeln!(
+                phase_rng_trace,
+                "{tick},calendar-first,{}, {:08x},{:08x},{:04x},{:08x},{:08x},{:04x},{}",
+                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                calendar_rng_before_diagnostic.0,
+                calendar_rng_before_diagnostic.1,
+                calendar_rng_before_diagnostic.2,
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+                advance.days,
+            )
+            .unwrap();
+            last_frame_tick = tick;
+            Some(advance)
+        } else {
+            None
+        };
+        let rng_before_actor = (
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+        );
         let mut actor_wait_ticks = 0;
         if actor_check_ticks.contains(&tick) {
+            let actor_timer_before = state.mac_loop_scheduler.actor_timer_diagnostics();
             let refresh_tick = post_actor_tickcounts
                 .iter()
                 .copied()
                 .find(|sample| *sample >= tick)
                 .unwrap_or(tick);
-            let rng_before_actor = state.mac_process_rng.seed();
             actor_wait_ticks = state.begin_mac_frame_actor_phase_with_tick_refresh(
                 ticks_duration(tick.wrapping_sub(last_frame_tick)),
                 || ticks_duration(refresh_tick.wrapping_sub(tick)),
             );
+            if (6000..=6150).contains(&tick) {
+                eprintln!(
+                    "R20 phase audit actor-check tick={tick} refresh={refresh_tick} wait={actor_wait_ticks} last_frame_before={} timer={actor_timer_before:?}->{:?} age={} qd={:08x} game={:08x} app={:04x}",
+                    last_frame_tick,
+                    state.mac_loop_scheduler.actor_timer_diagnostics(),
+                    state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                    state.mac_process_rng.seed(),
+                    state.mac_game_rng.state(),
+                    state.mac_app_lfsr.state(),
+                );
+            }
+            let rng_after_actor = (
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            );
+            if rng_after_actor != rng_before_actor {
+                writeln!(
+                    phase_rng_trace,
+                    "{tick},actor,{}, {:08x},{:08x},{:04x},{:08x},{:08x},{:04x},0",
+                    state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                    rng_before_actor.0,
+                    rng_before_actor.1,
+                    rng_before_actor.2,
+                    rng_after_actor.0,
+                    rng_after_actor.1,
+                    rng_after_actor.2,
+                )
+                .unwrap();
+            }
             if tick == 5748 {
                 assert_eq!(
                     state.mac_process_rng.seed(),
@@ -4819,11 +4921,11 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                     "city age after post-review actor work"
                 );
             }
-            if state.mac_process_rng.seed() != rng_before_actor && tick <= 3600 {
+            if rng_after_actor.0 != rng_before_actor.0 && tick <= 3600 {
                 eprintln!(
                     "R20 local actor phase tick={tick} qd={:08x}->{:08x} counts kind1={} kind2={} kind3={} kind5={} kind16={} tornado={} rail={}",
-                    rng_before_actor,
-                    state.mac_process_rng.seed(),
+                    rng_before_actor.0,
+                    rng_after_actor.0,
                     state.city.mac_kind1_actor_counter,
                     state.city.mac_kind2_actor_counter,
                     state.city.mac_kind3_actor_counter,
@@ -4866,6 +4968,20 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             }
             next_input += 1;
         }
+        if let Some(advance) = diagnostic_calendar_advance {
+            citygame_calendar_dispatch_ticks
+                .extend(std::iter::repeat(tick).take(advance.days as usize));
+            previous_rng = (
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            );
+            last_frame_tick = tick.wrapping_add(actor_wait_ticks);
+            if calendar_ticks.contains(&tick) {
+                poll_count += 1;
+            }
+            continue;
+        }
         if !calendar_ticks.contains(&tick) && !event_ticks.contains(&tick) {
             last_frame_tick = tick.wrapping_add(actor_wait_ticks);
             continue;
@@ -4887,7 +5003,90 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 "Flint traffic overlays before native CODE 3"
             );
         }
+        if tick == 18403 {
+            let native_xmic = std::fs::read(
+                code3_root
+                    .join("r20-live-inputs-code3-export162-entry-age22800-tick18397-xmic.bin"),
+            )
+            .expect("R20 January 1976 native CODE 3 entry XMIC");
+            let xmic_mismatches = native_xmic
+                .chunks_exact(8)
+                .enumerate()
+                .filter(|(slot, native)| {
+                    let row = state.city.microsim_at(*slot).unwrap();
+                    let local = [
+                        row.tile_id,
+                        row.stat0,
+                        (row.stat1 >> 8) as u8,
+                        row.stat1 as u8,
+                        (row.stat2 >> 8) as u8,
+                        row.stat2 as u8,
+                        (row.stat3 >> 8) as u8,
+                        row.stat3 as u8,
+                    ];
+                    local != *native
+                })
+                .count();
+            let native_cgms = std::fs::read(
+                code3_root.join("r20-live-inputs-code3-export162-entry-age22800-tick18397.cgms"),
+            )
+            .expect("R20 January 1976 native CODE 3 entry CGMS");
+            let local_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+            std::fs::write("/tmp/r20-citygame-jan1976-pre-code3.cgms", &local_cgms)
+                .expect("write R20 CityGame January 1976 pre-CODE 3 CGMS");
+            let map_and_traffic_mismatches = local_cgms[..cgms_map_and_traffic_end]
+                .iter()
+                .zip(&native_cgms[..cgms_map_and_traffic_end])
+                .filter(|(local, native)| local != native)
+                .count();
+            let map_plane_mismatches: Vec<_> = (0..12)
+                .map(|plane| {
+                    let start = 20 + plane * 128 * 128;
+                    local_cgms[start..start + 128 * 128]
+                        .iter()
+                        .zip(&native_cgms[start..start + 128 * 128])
+                        .filter(|(local, native)| local != native)
+                        .count()
+                })
+                .collect();
+            let xthg_mismatches = local_cgms[cgms_xthg_start..]
+                .iter()
+                .zip(&native_cgms[cgms_xthg_start..])
+                .filter(|(local, native)| local != native)
+                .count();
+            let native_budget_rows =
+                std::fs::read_to_string(code3_root.join(
+                    "r20-live-inputs-code3-export162-entry-age22800-tick18397-budget-rows.csv",
+                ))
+                .expect("R20 January 1976 native CODE 3 entry budget rows");
+            let budget_row_differences: Vec<_> = native_budget_rows
+                .lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let fields: Vec<_> = line.split(',').collect();
+                    let row = fields[0].parse::<usize>().ok()?;
+                    let native: [u32; 3] =
+                        std::array::from_fn(|field| fields[field + 1].parse().unwrap());
+                    let local = state.city.budget_misc_u32_values(0x077c + row * 27 * 4, 3);
+                    (local[..3] != native).then_some((row, local[..3].to_vec(), native))
+                })
+                .collect();
+            eprintln!(
+                "R20 Jan 1976 pre-CODE3 tick={tick} date={:?} funds={} xmic_mismatches={xmic_mismatches} map_traffic_byte_mismatches={map_and_traffic_mismatches} map_plane_mismatches={map_plane_mismatches:?} xthg_byte_mismatches={xthg_mismatches} budget_row_differences={budget_row_differences:?} qd={:08x} game={:08x} app={:04x}",
+                state.game_clock,
+                state.city.city_funds(),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            );
+        }
         let rng_before_calendar = state.mac_process_rng.seed();
+        let full_rng_before_calendar = (
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+        );
+        let calendar_elapsed_ticks = tick.wrapping_sub(last_frame_tick);
         let budget_pending_before = state.mac_loop_scheduler.january_budget_review_pending;
         let advance = state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
             ticks_duration(tick.wrapping_sub(last_frame_tick)),
@@ -4895,6 +5094,178 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             pointer_down,
             || std::time::Duration::ZERO,
         );
+        if (6000..=6150).contains(&tick) {
+            eprintln!(
+                "R20 phase audit calendar tick={tick} elapsed={calendar_elapsed_ticks} actor_wait={actor_wait_ticks} age={} days={} qd={:08x}->{:08x} game={:08x}->{:08x} app={:04x}->{:04x}",
+                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                advance.days,
+                full_rng_before_calendar.0,
+                state.mac_process_rng.seed(),
+                full_rng_before_calendar.1,
+                state.mac_game_rng.state(),
+                full_rng_before_calendar.2,
+                state.mac_app_lfsr.state(),
+            );
+        }
+        let rng_after_calendar = (
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+        );
+        if advance.days > 0 || rng_after_calendar != full_rng_before_calendar {
+            writeln!(
+                phase_rng_trace,
+                "{tick},calendar,{}, {:08x},{:08x},{:04x},{:08x},{:08x},{:04x},{}",
+                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                full_rng_before_calendar.0,
+                full_rng_before_calendar.1,
+                full_rng_before_calendar.2,
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+                advance.days,
+            )
+            .unwrap();
+        }
+        if tick == 18403 {
+            let native_funds =
+                capture_u32("code3-export162-return-age22800-tick18398.ram", 0xefac) as i32;
+            let native_xmic = std::fs::read(
+                code3_root
+                    .join("r20-live-inputs-code3-export162-return-age22800-tick18398-xmic.bin"),
+            )
+            .expect("R20 January 1976 native CODE 3 return XMIC");
+            let xmic_mismatches = native_xmic
+                .chunks_exact(8)
+                .enumerate()
+                .filter(|(slot, native)| {
+                    let row = state.city.microsim_at(*slot).unwrap();
+                    let local = [
+                        row.tile_id,
+                        row.stat0,
+                        (row.stat1 >> 8) as u8,
+                        row.stat1 as u8,
+                        (row.stat2 >> 8) as u8,
+                        row.stat2 as u8,
+                        (row.stat3 >> 8) as u8,
+                        row.stat3 as u8,
+                    ];
+                    local != *native
+                })
+                .count();
+            let native_cgms = std::fs::read(
+                code3_root.join("r20-live-inputs-code3-export162-return-age22800-tick18398.cgms"),
+            )
+            .expect("R20 January 1976 native CODE 3 return CGMS");
+            let local_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+            std::fs::write("/tmp/r20-citygame-jan1976-return-code3.cgms", &local_cgms)
+                .expect("write R20 CityGame January 1976 CODE 3 return CGMS");
+            let map_and_traffic_mismatches = local_cgms[..cgms_map_and_traffic_end]
+                .iter()
+                .zip(&native_cgms[..cgms_map_and_traffic_end])
+                .filter(|(local, native)| local != native)
+                .count();
+            let map_plane_mismatches: Vec<_> = (0..12)
+                .map(|plane| {
+                    let start = 20 + plane * 128 * 128;
+                    local_cgms[start..start + 128 * 128]
+                        .iter()
+                        .zip(&native_cgms[start..start + 128 * 128])
+                        .filter(|(local, native)| local != native)
+                        .count()
+                })
+                .collect();
+            let xthg_mismatches = local_cgms[cgms_xthg_start..]
+                .iter()
+                .zip(&native_cgms[cgms_xthg_start..])
+                .filter(|(local, native)| local != native)
+                .count();
+            let native_budget_rows =
+                std::fs::read_to_string(code3_root.join(
+                    "r20-live-inputs-code3-export162-return-age22800-tick18398-budget-rows.csv",
+                ))
+                .expect("R20 January 1976 native CODE 3 return budget rows");
+            let budget_row_mismatches: Vec<_> = native_budget_rows
+                .lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let fields: Vec<_> = line.split(',').collect();
+                    let row = fields[0].parse::<usize>().ok()?;
+                    let native: [u32; 3] =
+                        std::array::from_fn(|field| fields[field + 1].parse::<u32>().unwrap());
+                    let local = state.city.budget_misc_u32_values(0x077c + row * 27 * 4, 3);
+                    (local[..3] != native).then_some(row)
+                })
+                .collect();
+            eprintln!(
+                "R20 Jan 1976 return-boundary tick={tick} local_funds={} native_funds={native_funds} xmic_mismatches={xmic_mismatches} map_traffic_byte_mismatches={map_and_traffic_mismatches} map_plane_mismatches={map_plane_mismatches:?} xthg_byte_mismatches={xthg_mismatches} budget_row_mismatches={budget_row_mismatches:?} qd={:08x} game={:08x} app={:04x} modal={:?} pending={}",
+                state.city.city_funds(),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+                state.city_info_dialog,
+                state.mac_loop_scheduler.january_budget_review_pending,
+            );
+        }
+        if tick == 30601 {
+            let entry_ram =
+                std::fs::read(code3_root.join("code3-export162-entry-age23100-tick30595.ram"))
+                    .expect("R20 January 1977 native CODE 3 entry RAM");
+            let entry_a5 = u32::from_be_bytes(entry_ram[0x904..0x908].try_into().unwrap()) as usize;
+            let entry_funds_offset = entry_a5 + 0xefac - 0x1_0000;
+            let entry_funds = i32::from_be_bytes(
+                entry_ram[entry_funds_offset..entry_funds_offset + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            let native_xmic = std::fs::read(
+                code3_root
+                    .join("r20-live-inputs-code3-export162-entry-age23100-tick30595-xmic.bin"),
+            )
+            .expect("R20 January 1977 native CODE 3 entry XMIC");
+            let xmic_mismatches = native_xmic
+                .chunks_exact(8)
+                .enumerate()
+                .filter(|(slot, native)| {
+                    let row = state.city.microsim_at(*slot).unwrap();
+                    let local = [
+                        row.tile_id,
+                        row.stat0,
+                        (row.stat1 >> 8) as u8,
+                        row.stat1 as u8,
+                        (row.stat2 >> 8) as u8,
+                        row.stat2 as u8,
+                        (row.stat3 >> 8) as u8,
+                        row.stat3 as u8,
+                    ];
+                    local != *native
+                })
+                .count();
+            let native_cgms = std::fs::read(
+                code3_root.join("r20-live-inputs-code3-export162-entry-age23100-tick30595.cgms"),
+            )
+            .expect("R20 January 1977 native CODE 3 entry CGMS");
+            let local_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+            let map_and_traffic_mismatches = local_cgms[..cgms_map_and_traffic_end]
+                .iter()
+                .zip(&native_cgms[..cgms_map_and_traffic_end])
+                .filter(|(local, native)| local != native)
+                .count();
+            let xthg_mismatches = local_cgms[cgms_xthg_start..]
+                .iter()
+                .zip(&native_cgms[cgms_xthg_start..])
+                .filter(|(local, native)| local != native)
+                .count();
+            eprintln!(
+                "R20 Jan 1977 entry-boundary tick={tick} local_funds={} native_funds={entry_funds} xmic_mismatches={xmic_mismatches} map_traffic_byte_mismatches={map_and_traffic_mismatches} xthg_byte_mismatches={xthg_mismatches} qd={:08x} game={:08x} app={:04x} modal={:?} pending={}",
+                state.city.city_funds(),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+                state.city_info_dialog,
+                state.mac_loop_scheduler.january_budget_review_pending,
+            );
+        }
         citygame_calendar_dispatch_ticks
             .extend(std::iter::repeat(tick).take(advance.days as usize));
         if tick == 5742 {

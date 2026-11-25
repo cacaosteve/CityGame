@@ -3112,6 +3112,34 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
     }
 
+    // The 3x3 refresh deletes the road inside its edge, then reclassifies the
+    // surviving two-tile run outside it as straight road (tile ID 29).
+    let mut crossing = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+    crossing.pe_w_city_mode = 1;
+    for y in [17, 18, 19] {
+        crossing.set_building(20, y, 0x1d);
+    }
+    crossing.set_city_funds(100);
+    let mut crt = Win95CrtRand::new(1);
+    assert_eq!(
+        pe_raise_land_inc_443c60_with_crt(&mut crossing, Some(&mut crt), 20, 20, 2),
+        Some(18)
+    );
+    assert_eq!(crossing.city_funds(), 75);
+    assert_eq!(crt.seed(), 415_139_642);
+    assert_eq!(crossing.building_at(20, 19), 0);
+    assert_eq!(crossing.building_at(20, 18), 29);
+    assert_eq!(crossing.building_at(20, 17), 29);
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&crossing),
+        [
+            NATIVE_PLANES[0],
+            NATIVE_PLANES[1],
+            0x1129_5db1_7063_2bc3,
+            NATIVE_PLANES[3],
+        ]
+    );
+
     let mut wet_dry = flat_win95_terrain_fixture(CityFileKind::WinSc2);
     wet_dry.pe_w_city_mode = 1;
     wet_dry.set_mac_selected_water_height(8);

@@ -2810,6 +2810,42 @@ fn pe_lower_crt_tool_matches_native_full_worker_road_planes() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_cross_network_reclassification() {
+    let expected = [
+        0x13e4_507d_9840_eb16,
+        0x4e9a_2fbb_855e_6921,
+        0x9ce6_5966_7b9a_0847,
+        0x9c1b_da7f_8c87_2325,
+    ];
+    for (label, tile) in [("road", 0x1d), ("rail", 0x2c), ("power", 0x0e)] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        for (x, y) in [(21, 20), (20, 21), (19, 20), (20, 19)] {
+            city.set_building(x, y, tile);
+        }
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "{label} cross Lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "{label} cross no-charge dig");
+        assert_eq!(crt.seed(), 2_179_684_817, "{label} cross CRT endpoint");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "{label} cross native ALTM/XTER/XBLD/XBIT"
+        );
+    }
+}
+
+#[test]
 fn pe_lower_crt_tool_matches_native_full_worker_additional_crt_seeds() {
     for (seed, expected) in [
         (

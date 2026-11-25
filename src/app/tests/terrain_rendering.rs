@@ -2810,7 +2810,7 @@ fn pe_lower_crt_tool_matches_native_full_worker_road_planes() {
 }
 
 #[test]
-fn pe_lower_crt_tool_matches_native_cross_network_reclassification() {
+fn pe_lower_crt_tool_matches_native_uniform_network_neighbor_probes() {
     let expected = [
         0x13e4_507d_9840_eb16,
         0x4e9a_2fbb_855e_6921,
@@ -2841,6 +2841,48 @@ fn pe_lower_crt_tool_matches_native_cross_network_reclassification() {
             win95_terrain_plane_fingerprints(&city),
             expected,
             "{label} cross native ALTM/XTER/XBLD/XBIT"
+        );
+    }
+}
+
+#[test]
+fn pe_lower_crt_tool_matches_native_connected_network_crossings() {
+    let expected = [
+        0x13e4_507d_9840_eb16,
+        0x4e9a_2fbb_855e_6921,
+        0xa077_6e63_3ea4_e263,
+        0x9c1b_da7f_8c87_2325,
+    ];
+    for (label, center, vertical, horizontal) in [
+        ("road", 0x2b, 0x1d, 0x1e),
+        ("rail", 0x3a, 0x2c, 0x2d),
+        ("power", 0x1c, 0x0e, 0x0f),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        city.set_building(20, 20, center);
+        city.set_building(20, 19, vertical);
+        city.set_building(20, 21, vertical);
+        city.set_building(19, 20, horizontal);
+        city.set_building(21, 20, horizontal);
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "{label} connected crossing Lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "{label} crossing no-charge dig");
+        assert_eq!(crt.seed(), 316_395_082, "{label} crossing CRT endpoint");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "{label} crossing native ALTM/XTER/XBLD/XBIT"
         );
     }
 }

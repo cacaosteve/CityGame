@@ -4642,6 +4642,23 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         u32::from_be_bytes(ram[offset..offset + 4].try_into().unwrap())
     };
     let native_review_funds = capture_u32("r20-jan1975-budget-entry.ram", 0xefac) as i32;
+    let review_ram = std::fs::read(code3_root.join("r20-jan1975-budget-entry.ram"))
+        .expect("R20 January review RAM");
+    let review_a5 = u32::from_be_bytes(review_ram[0x904..0x908].try_into().unwrap()) as usize;
+    let review_ptr = |relative: usize| {
+        let offset = review_a5 + relative - 0x1_0000;
+        u32::from_be_bytes(review_ram[offset..offset + 4].try_into().unwrap()) as usize
+    };
+    let native_budget_table = review_ptr(0xfd66);
+    let native_review_rows: Vec<[i32; 3]> = (0..16)
+        .map(|row| {
+            let start = native_budget_table + row * 0x70 + 0x60;
+            std::array::from_fn(|field| {
+                let offset = start + field * 4;
+                i32::from_be_bytes(review_ram[offset..offset + 4].try_into().unwrap())
+            })
+        })
+        .collect();
     let native_return_age = capture_u32("code3-export162-return-age22500-tick5746.ram", 0xefa4);
     let native_return_funds =
         capture_u32("code3-export162-return-age22500-tick5746.ram", 0xefac) as i32;
@@ -4841,6 +4858,16 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 native_review_funds,
                 "funds at native January review boundary"
             );
+            for (row, native) in native_review_rows.iter().enumerate() {
+                let offset = 0x077c + row * 27 * 4;
+                let values = state.city.budget_misc_u32_values(offset, 3);
+                let local: [i32; 3] = std::array::from_fn(|field| values[field] as i32);
+                assert_eq!(
+                    &local,
+                    native,
+                    "Mac budget current/funding/YTD at review-open row {row}"
+                );
+            }
         }
         if state.mac_process_rng.seed() != rng_before_calendar && tick <= 3600 {
             eprintln!(

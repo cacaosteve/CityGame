@@ -4635,6 +4635,16 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         std::env::var_os("CITYGAME_MAC_R20_FLINT_CODE3_CAPTURE_DIR")
             .expect("CITYGAME_MAC_R20_FLINT_CODE3_CAPTURE_DIR must point to R20 CODE 3 fixtures"),
     );
+    let capture_u32 = |name: &str, relative: usize| {
+        let ram = std::fs::read(code3_root.join(name)).expect("R20 native RAM boundary");
+        let a5 = u32::from_be_bytes(ram[0x904..0x908].try_into().unwrap()) as usize;
+        let offset = a5 + relative - 0x1_0000;
+        u32::from_be_bytes(ram[offset..offset + 4].try_into().unwrap())
+    };
+    let native_review_funds = capture_u32("r20-jan1975-budget-entry.ram", 0xefac) as i32;
+    let native_return_age = capture_u32("code3-export162-return-age22500-tick5746.ram", 0xefa4);
+    let native_return_funds =
+        capture_u32("code3-export162-return-age22500-tick5746.ram", 0xefac) as i32;
     let mut ticks = [3163, 3165, 3165].into_iter();
     let mut startup = super::super::title_flow::MacTitleStartup::new(|| {
         ticks.next().expect("captured CODE 15 startup TickCount")
@@ -4826,6 +4836,11 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 state.mac_game_rng.state(),
                 state.mac_app_lfsr.state(),
             );
+            assert_eq!(
+                state.city.city_funds(),
+                native_review_funds,
+                "funds at native January review boundary"
+            );
         }
         if state.mac_process_rng.seed() != rng_before_calendar && tick <= 3600 {
             eprintln!(
@@ -4904,6 +4919,16 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     );
     assert_eq!(state.game_clock.year(), 1975);
     assert_eq!(state.game_clock.month(), 1);
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(0x10),
+        Some(native_return_age),
+        "city age after annual settlement"
+    );
+    assert_eq!(
+        state.city.city_funds(),
+        native_return_funds,
+        "funds after annual settlement"
+    );
     assert_eq!(
         state.city_info_dialog, None,
         "captured Done click resumes simulation"

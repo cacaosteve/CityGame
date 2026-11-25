@@ -2745,6 +2745,71 @@ fn pe_lower_worker_runs_447490_demolition_and_preserves_xtrf() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_full_worker_road_planes() {
+    for (label, raised_neighbors, expected_road_terrain, expected) in [
+        (
+            "flat",
+            false,
+            3,
+            [
+                0x13e4_507d_9840_eb16,
+                0x4e9a_2fbb_855e_6921,
+                0xb703_5f77_5783_7956,
+                0x9c1b_da7f_8c87_2325,
+            ],
+        ),
+        (
+            "relaxed slope",
+            true,
+            0,
+            [
+                0xee3d_4ab8_b78c_45f4,
+                0x325d_ea8d_75d2_05f5,
+                0xb703_5f77_5783_7956,
+                0x9c1b_da7f_8c87_2325,
+            ],
+        ),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        if raised_neighbors {
+            for y in 19..=21 {
+                for x in 19..=21 {
+                    if (x, y) != (20, 20) {
+                        city.set_altitude(x, y, 12, 0);
+                    }
+                }
+            }
+        }
+        city.set_building(21, 20, 0x1d);
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "{label} lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "{label} no-charge dig");
+        assert_eq!(crt.seed(), 752_224_798, "{label} CRT");
+        assert_eq!(city.building_at(21, 20), 3, "{label} native rubble tile");
+        assert_eq!(
+            city.terrain_at(21, 20),
+            expected_road_terrain,
+            "{label} road-cell contour"
+        );
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "{label} native ALTM/XTER/XBLD/XBIT"
+        );
+    }
+}
+
+#[test]
 fn pe_raise_adjust_toward_dig_runs_447490_and_carries_crt() {
     let mut city =
         City::new_blank("/tmp/sc2000-adjust-dig-447490.sc2", "AdjustDig").expect("blank");

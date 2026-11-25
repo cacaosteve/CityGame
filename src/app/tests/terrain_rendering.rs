@@ -2888,6 +2888,46 @@ fn pe_lower_crt_tool_matches_native_connected_network_crossings() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_connected_network_curves() {
+    let expected = [
+        0x13e4_507d_9840_eb16,
+        0x4e9a_2fbb_855e_6921,
+        0xea5d_4e5b_36d9_95ef,
+        0x9c1b_da7f_8c87_2325,
+    ];
+    for (label, center, vertical, horizontal) in [
+        ("road", 0x23, 0x1d, 0x1e),
+        ("rail", 0x32, 0x2c, 0x2d),
+        ("power", 0x14, 0x0e, 0x0f),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        city.set_building(20, 20, center);
+        city.set_building(20, 19, vertical);
+        city.set_building(21, 20, horizontal);
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "{label} connected curve Lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "{label} curve no-charge dig");
+        assert_eq!(crt.seed(), 3_673_273_548, "{label} curve CRT endpoint");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "{label} curve native ALTM/XTER/XBLD/XBIT"
+        );
+    }
+}
+
+#[test]
 fn pe_lower_crt_tool_matches_native_full_worker_additional_crt_seeds() {
     for (seed, expected) in [
         (

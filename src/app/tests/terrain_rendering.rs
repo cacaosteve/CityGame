@@ -3170,6 +3170,83 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
     }
 
+    // Surface rail and power follow the same bounded reclassification but
+    // retain their own network IDs outside the 3x3 window.
+    for (label, network, xbl_final) in [
+        ("rail", 0x2c, 0x3a65_928e_800e_033d),
+        ("power", 0x0e, 0xaec3_bac5_e61f_8165),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        for y in [17, 18, 19] {
+            city.set_building(20, y, network);
+        }
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
+        assert_eq!(city.building_at(20, 19), 0, "{label} in-window tile");
+        assert_eq!(city.building_at(20, 18), network, "{label} at y=18");
+        assert_eq!(city.building_at(20, 17), network, "{label} at y=17");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            [NATIVE_PLANES[0], NATIVE_PLANES[1], xbl_final, NATIVE_PLANES[3]],
+            "{label} planes"
+        );
+    }
+
+    // Underground subway and pipe runs keep the outside XUND records and
+    // XBIT flags, while only the in-window record is removed.
+    for (label, underground, occupancy, xund_final) in [
+        ("subway", 1, 3, 0xebd9_9d24_bd32_6f43),
+        ("pipe", 0x10, 0, 0x4a31_dec0_190d_89e5),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        city.pe_w_city_mode = 1;
+        city.pe_xund_occupancy = occupancy;
+        for y in [17, 18, 19] {
+            city.set_underground(20, y, underground);
+            city.set_tile_bits(20, y, TileBits::new(0x20));
+        }
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(city.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 1, "{label} CRT");
+        assert_eq!(city.underground_at(20, 19), 0, "{label} in-window tile");
+        for y in [17, 18] {
+            assert_eq!(city.underground_at(20, y), underground, "{label} at y={y}");
+        }
+        for y in [17, 18, 19] {
+            assert_eq!(city.tile_bits_at(20, y).unwrap().raw_bits(), 0x20);
+        }
+        assert_eq!(city.pe_xund_occupancy, occupancy - u16::from(underground == 1));
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            [
+                NATIVE_PLANES[0],
+                NATIVE_PLANES[1],
+                NATIVE_PLANES[2],
+                0xd090_daf4_676a_ed45,
+            ],
+            "{label} planes"
+        );
+        assert_eq!(
+            pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
+            xund_final,
+            "{label} XUND"
+        );
+    }
+
     let mut wet_dry = flat_win95_terrain_fixture(CityFileKind::WinSc2);
     wet_dry.pe_w_city_mode = 1;
     wet_dry.set_mac_selected_water_height(8);

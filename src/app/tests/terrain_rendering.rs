@@ -4341,6 +4341,77 @@ fn pe_raise_marked_tool_matches_native_rail_and_power_curves_at_refresh_edge() {
 }
 
 #[test]
+fn pe_raise_marked_tool_matches_native_subway_and_pipe_curves_at_refresh_edge() {
+    // Both pinned Win95 PE builds agree on these underground curve paths at
+    // the boundary of the marked Raise 3x3 refresh. Each curve has two cells
+    // outside the window and two within it.
+    let orientations = [
+        (
+            "NE",
+            [(20, 17, 0), (20, 18, 7), (21, 18, 8), (21, 19, 0)],
+            0x9ccf_fefd_e520_e2e5,
+            [0xbd81_0844_f2b8_ad43, 0xd998_505d_d703_3822],
+        ),
+        (
+            "ES",
+            [(23, 20, 1), (22, 20, 8), (22, 21, 9), (21, 21, 1)],
+            0xaef7_5638_92f0_d225,
+            [0x10c4_bf8a_0659_a188, 0x44f3_2128_aba8_d3db],
+        ),
+        (
+            "SW",
+            [(20, 23, 0), (20, 22, 9), (19, 22, 6), (19, 21, 0)],
+            0x7afd_e9d9_7cab_46e5,
+            [0x6a91_efc5_e96d_4683, 0x6d9e_4205_0bac_2652],
+        ),
+        (
+            "WN",
+            [(17, 20, 1), (18, 20, 6), (18, 19, 7), (19, 19, 1)],
+            0xabf6_7e2c_39cc_e7a5,
+            [0xf698_1368_c67f_c018, 0xad45_5305_59b6_fb07],
+        ),
+    ];
+    for (name, cells, expected_xbit, expected_xund) in orientations {
+        for (family, label, index, starting_occupancy, ending_occupancy) in
+            [(1, "subway", 0, 4, 3), (16, "pipe", 1, 0, 0)]
+        {
+            let case = format!("{label}-{name}");
+            let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+            city.pe_w_city_mode = 1;
+            for &(x, y, tile_offset) in &cells {
+                city.set_underground(x, y, family + tile_offset);
+                city.set_tile_bits(x, y, TileBits::new(0x20));
+            }
+            city.pe_xund_occupancy = starting_occupancy;
+            city.set_city_funds(100);
+            let mut crt = Win95CrtRand::new(1);
+
+            let citygame_waits =
+                pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2);
+            assert_eq!(citygame_waits, Some(18), "{case} waits");
+            assert_eq!(city.city_funds(), 75, "{case} cash");
+            assert_eq!(crt.seed(), 1, "{case} CRT endpoint");
+            assert_eq!(city.pe_xund_occupancy, ending_occupancy, "{case} occupancy");
+            assert_eq!(
+                win95_terrain_plane_fingerprints(&city),
+                [
+                    0xd2a8_65cf_8809_2c64,
+                    0xe705_34f7_e0d0_9729,
+                    0x9c1b_da7f_8c87_2325,
+                    expected_xbit,
+                ],
+                "{case} native ALTM/XTER/XBLD/XBIT"
+            );
+            assert_eq!(
+                pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
+                expected_xund[index],
+                "{case} native XUND"
+            );
+        }
+    }
+}
+
+#[test]
 fn pe_lower_crt_oob_jitter_refuses() {
     // PE Lower `0x443900`: out-of-bounds CRT jitter tile → no dig.
     let mut city = City::new_blank("/tmp/sc2000-lower-oob.sc2", "LowerOob").expect("blank");

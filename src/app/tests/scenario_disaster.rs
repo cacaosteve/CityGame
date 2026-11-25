@@ -16357,6 +16357,10 @@ fn assert_win95_joined_calendar(
 
     let hash = |hash: u64, byte: u8| (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
     let basis = 0xcbf2_9ce4_8422_2325_u64;
+    let initial_city = &state.city;
+    let mut previous_xbld: Vec<u8> = (0..128)
+        .flat_map(|x| (0..128).map(move |y| initial_city.building_at(x, y)))
+        .collect();
     for (age, expected) in (first_age..).zip(checkpoints.iter().copied()) {
         state.tick_pe_disaster_xthg_actors_in_slot_order();
         state.game_clock = state.game_clock.wrapping_add_days(1);
@@ -16384,6 +16388,9 @@ fn assert_win95_joined_calendar(
                 .flat_map(|x| (0..128).map(move |y| at(x, y)))
                 .fold(basis, hash)
         };
+        let xbld: Vec<u8> = (0..128)
+            .flat_map(|x| (0..128).map(move |y| city.building_at(x, y)))
+            .collect();
         let components = [
             u64::from(state.pe_process_crt_seed()),
             u64::from(state.pe_process_lfsr_state()),
@@ -16395,7 +16402,7 @@ fn assert_win95_joined_calendar(
             density_fingerprint(city.crime_density_slice().unwrap()),
             density_fingerprint(city.pollution_density_slice().unwrap()),
             density_fingerprint(city.traffic_density_slice().unwrap()),
-            map_fingerprint(&|x, y| city.building_at(x, y)),
+            xbld.iter().copied().fold(basis, hash),
             map_fingerprint(&|x, y| city.zone_at(x, y).unwrap().raw_bits()),
         ];
         let actual = components
@@ -16403,10 +16410,20 @@ fn assert_win95_joined_calendar(
             .flat_map(u64::to_le_bytes)
             .fold(basis, hash);
         assert_eq!(city.city_age_days(), Some(age));
-        assert_eq!(
-            actual, expected,
-            "{save} age {age}, state {components:016x?}"
-        );
+        if actual != expected {
+            let xbld_changes: Vec<_> = previous_xbld
+                .iter()
+                .zip(&xbld)
+                .enumerate()
+                .filter_map(|(index, (&before, &after))| {
+                    (before != after).then_some((index / 128, index % 128, before, after))
+                })
+                .collect();
+            panic!(
+                "{save} age {age}: native state hash {expected:016x}, CityGame {actual:016x}; components={components:016x?}; XBLD changes since prior day={xbld_changes:?}"
+            );
+        }
+        previous_xbld = xbld;
         verify_day(age, city);
     }
 }

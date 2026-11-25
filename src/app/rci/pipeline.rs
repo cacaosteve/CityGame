@@ -589,15 +589,34 @@ impl ViewerState {
                 );
                 let quality_band = rci_development_quality_band_for_score(quality_score);
                 let pop = size_to_default_pop_level(size)?;
-                let building = rci_choose_and_place_for_city_optional(
-                    &self.city,
-                    zone_id,
-                    pop,
-                    x,
-                    y,
-                    quality_band,
-                    process_crt.as_deref_mut(),
-                )?;
+                let (building, place_as_construction) = if self.engine_fidelity.uses_win95() {
+                    // PE StartBuilding passes the pop level directly to mode-3
+                    // ChooseAndPlace, which selects one construction tile. The
+                    // growth dispatcher stamps that selected tile without another
+                    // construction-picker draw.
+                    (
+                        construction_building_for_pop_optional(
+                            pop,
+                            x,
+                            y,
+                            process_crt.as_deref_mut(),
+                        )?,
+                        false,
+                    )
+                } else {
+                    (
+                        rci_choose_and_place_for_city_optional(
+                            &self.city,
+                            zone_id,
+                            pop,
+                            x,
+                            y,
+                            quality_band,
+                            process_crt.as_deref_mut(),
+                        )?,
+                        true,
+                    )
+                };
                 return Some(RciDevelopmentCandidate {
                     plan: ZoneDevelopmentPlan {
                         origin: (x, y),
@@ -606,7 +625,7 @@ impl ViewerState {
                         footprint,
                         // Vacant pop-NONE StartBuilding always stamps construction.
                         // Abandoned already returned via ChooseAndPlace above.
-                        place_as_construction: true,
+                        place_as_construction,
                     },
                 });
             }

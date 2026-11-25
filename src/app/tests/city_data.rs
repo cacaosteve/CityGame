@@ -4618,6 +4618,234 @@ fn mac_r20_flint_title_and_city_open_rng_match_first_calendar_boundary() {
     assert_eq!(state.mac_app_lfsr.state(), 0x0c5b, "app LFSR at CODE 2");
 }
 
+#[test]
+#[ignore = "requires the private R20 Flint city and CODE 2 TickCount/EventRecord traces"]
+fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
+    use std::io::{BufRead, BufReader};
+
+    let city_path = PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_R20_FLINT_CITY")
+            .expect("CITYGAME_MAC_R20_FLINT_CITY must point to the original Flint.city"),
+    );
+    let trace_root = PathBuf::from(
+        std::env::var_os("CITYGAME_MAC_R20_FLINT_TRACE_DIR")
+            .expect("CITYGAME_MAC_R20_FLINT_TRACE_DIR must point to the R20 capture"),
+    );
+    let mut ticks = [3163, 3165, 3165].into_iter();
+    let mut startup = super::super::title_flow::MacTitleStartup::new(|| {
+        ticks.next().expect("captured CODE 15 startup TickCount")
+    });
+    startup.initialize_newspaper(3173);
+
+    let mut state =
+        test_state(City::new_blank("/tmp/mac-r20-flint-calendar.sc2", "Blank").unwrap());
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    startup.install(&mut state);
+    state.load_city(&city_path, (640, 480), 1.0).unwrap();
+    state.mac_music_callback(3565, true);
+    state.mac_music_callback(3571, true);
+    assert_eq!(state.mac_process_rng.seed(), 0x17fc_b8f5);
+    assert_eq!(state.mac_game_rng.state(), 0x398a_31a0);
+    assert_eq!(state.mac_app_lfsr.state(), 0x0c5b);
+    eprintln!(
+        "R20 CityGame open date={:?} speed={:?}",
+        state.game_clock,
+        state.traffic.speed()
+    );
+
+    // Feed only captured CODE 2 TickCount samples as clock inputs. The test
+    // does not use native worker entries or phase outcomes; CityGame chooses
+    // actor/calendar dispatch order and generates the RNG draws.
+    state.mac_loop_scheduler.start_captured_clock(3571);
+    let ticks_duration = |ticks: u32| {
+        let nanos = (u64::from(ticks) * 1_000_000_000 + 59) / 60;
+        std::time::Duration::from_nanos(nanos)
+    };
+    let mut input_events = Vec::new();
+    let event_file = std::fs::File::open(trace_root.join("toolbox-event-records-v2.csv"))
+        .expect("R20 Toolbox event capture");
+    for line in BufReader::new(event_file).lines().skip(1) {
+        let line = line.unwrap();
+        let fields: Vec<_> = line.split(',').collect();
+        let (Ok(what), Ok(when), Ok(h), Ok(v)) = (
+            u16::from_str_radix(fields[7], 16),
+            fields[9].parse::<u32>(),
+            fields[11].parse::<i16>(),
+            fields[10].parse::<i16>(),
+        ) else {
+            continue;
+        };
+        if matches!(what, 1 | 2) && (3571..=5746).contains(&when) {
+            input_events.push((when, what, h, v));
+        }
+    }
+    input_events.sort_by_key(|event| event.0);
+    let mut next_input = 0;
+    let mut last_frame_tick = 3571_u32;
+    let mut calendar_ticks = Vec::new();
+    let mut actor_check_ticks = Vec::new();
+    let mut post_actor_tickcounts = Vec::new();
+    let clock_file = std::fs::File::open(trace_root.join("gdb-clock.csv"))
+        .expect("R20 CODE 2 TickCount capture");
+    for line in BufReader::new(clock_file).lines().skip(1) {
+        let line = line.unwrap();
+        let fields: Vec<_> = line.split(',').collect();
+        let Ok(tick) = fields[2].parse::<u32>() else {
+            continue;
+        };
+        if !(3571..=5751).contains(&tick) {
+            continue;
+        }
+        match fields[1] {
+            "CODE2.tick_sample_a" if calendar_ticks.last() != Some(&tick) => {
+                calendar_ticks.push(tick);
+            }
+            "CODE2.actor_deadline_tick_return" if actor_check_ticks.last() != Some(&tick) => {
+                actor_check_ticks.push(tick);
+            }
+            "CODE2.post_export109_tickcount_trap"
+                if post_actor_tickcounts.last() != Some(&tick) =>
+            {
+                post_actor_tickcounts.push(tick);
+            }
+            _ => {}
+        }
+    }
+    let mut next_actor_check = 0;
+    let mut pointer_down = false;
+    let mut poll_count = 0_u32;
+    let mut previous_rng = (
+        state.mac_process_rng.seed(),
+        state.mac_game_rng.state(),
+        state.mac_app_lfsr.state(),
+    );
+
+    for tick in calendar_ticks {
+        while actor_check_ticks
+            .get(next_actor_check)
+            .is_some_and(|actor_tick| *actor_tick <= tick)
+        {
+            let actor_tick = actor_check_ticks[next_actor_check];
+            next_actor_check += 1;
+            let refresh_tick = post_actor_tickcounts
+                .iter()
+                .copied()
+                .find(|sample| *sample >= actor_tick)
+                .unwrap_or(actor_tick);
+            let rng_before_actor = state.mac_process_rng.seed();
+            state.begin_mac_frame_actor_phase_with_tick_refresh(
+                ticks_duration(actor_tick.wrapping_sub(last_frame_tick)),
+                || ticks_duration(refresh_tick.wrapping_sub(actor_tick)),
+            );
+            if state.mac_process_rng.seed() != rng_before_actor && actor_tick <= 3600 {
+                eprintln!(
+                    "R20 local actor phase tick={actor_tick} qd={:08x}->{:08x} counts kind1={} kind2={} kind3={} kind5={} kind16={} tornado={} rail={}",
+                    rng_before_actor,
+                    state.mac_process_rng.seed(),
+                    state.city.mac_kind1_actor_counter,
+                    state.city.mac_kind2_actor_counter,
+                    state.city.mac_kind3_actor_counter,
+                    state.city.mac_kind5_actor_counter,
+                    state.city.mac_kind16_actor_counter,
+                    state.city.mac_tornado_actor_counter,
+                    state.city.mac_rail_actor_counter,
+                );
+            }
+            last_frame_tick = actor_tick;
+        }
+        while input_events
+            .get(next_input)
+            .is_some_and(|event| event.0 <= tick)
+        {
+            let (_, what, h, v) = input_events[next_input];
+            if what == 1 && (h, v) == (461, 122) {
+                eprintln!(
+                    "R20 captured Done MouseDown tick={tick} date={:?} modal={:?} pending={} qd={:08x} game={:08x} app={:04x}",
+                    state.game_clock,
+                    state.city_info_dialog,
+                    state.mac_loop_scheduler.january_budget_review_pending,
+                    state.mac_process_rng.seed(),
+                    state.mac_game_rng.state(),
+                    state.mac_app_lfsr.state(),
+                );
+            }
+            match what {
+                1 if (h, v) == (461, 122)
+                    && state.city_info_dialog == Some(CityInfoDialog::Budget) =>
+                {
+                    assert!(state.mac_loop_scheduler.january_budget_review_pending);
+                    pointer_down = true;
+                }
+                2 if pointer_down && (h, v) == (461, 122) => {
+                    state.close_city_info_dialog();
+                    pointer_down = false;
+                }
+                _ => {}
+            }
+            next_input += 1;
+        }
+        let rng_before_calendar = state.mac_process_rng.seed();
+        let budget_pending_before = state.mac_loop_scheduler.january_budget_review_pending;
+        state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+            ticks_duration(tick.wrapping_sub(last_frame_tick)),
+            // The next captured TickCount sample accounts for elapsed CODE 6
+            // waits; adding City's modeled waits here would count them twice.
+            0,
+            pointer_down,
+            || std::time::Duration::ZERO,
+        );
+        if !budget_pending_before && state.mac_loop_scheduler.january_budget_review_pending {
+            eprintln!(
+                "R20 local January review opened tick={tick} date={:?} modal={:?} qd={:08x} game={:08x} app={:04x}",
+                state.game_clock,
+                state.city_info_dialog,
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            );
+        }
+        if state.mac_process_rng.seed() != rng_before_calendar && tick <= 3600 {
+            eprintln!(
+                "R20 local calendar/event phase tick={tick} qd={rng_before_calendar:08x}->{:08x}",
+                state.mac_process_rng.seed(),
+            );
+        }
+        let current_rng = (
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+        );
+        if current_rng != previous_rng {
+            eprintln!(
+                "R20 local RNG tick={tick} date={:?} qd={:08x} game={:08x} app={:04x}",
+                state.game_clock, current_rng.0, current_rng.1, current_rng.2,
+            );
+        }
+        previous_rng = current_rng;
+        last_frame_tick = tick;
+        poll_count += 1;
+    }
+
+    eprintln!(
+        "R20 replay polls={poll_count} date={:?} qd={:08x} game={:08x} app={:04x} modal={:?} pending={}",
+        state.game_clock,
+        state.mac_process_rng.seed(),
+        state.mac_game_rng.state(),
+        state.mac_app_lfsr.state(),
+        state.city_info_dialog,
+        state.mac_loop_scheduler.january_budget_review_pending,
+    );
+    assert_eq!(state.mac_process_rng.seed(), 0x5a42_b2f2, "QuickDraw at CODE 14 return");
+    assert_eq!(state.mac_game_rng.state(), 0xbd87_efc5, "game LCG at CODE 14 return");
+    assert_eq!(state.mac_app_lfsr.state(), 0x8b3b, "app LFSR at CODE 14 return");
+    assert_eq!(state.game_clock.year(), 1975);
+    assert_eq!(state.game_clock.month(), 1);
+    assert_eq!(
+        state.city_info_dialog, None,
+        "captured Done click resumes simulation"
+    );
+}
+
 /// The original map captures were taken at the new-city naming dialog, before
 /// its later newspaper/confirmation work. They are private original-build data.
 #[test]

@@ -1202,6 +1202,16 @@ fn win95_terrain_every_tree_slider_value_matches_native_in_all_coast_river_modes
 
 #[test]
 fn win95_terrain_hills_water_grid_matches_native_in_all_coast_river_modes() {
+    verify_win95_terrain_hills_water_native_grid(false);
+}
+
+#[test]
+#[ignore = "full 48×48 Hills/Water matrix; run explicitly for exhaustive native parity"]
+fn win95_terrain_full_hills_water_grid_matches_native_in_all_coast_river_modes() {
+    verify_win95_terrain_hills_water_native_grid(true);
+}
+
+fn verify_win95_terrain_hills_water_native_grid(include_full_grid: bool) {
     #[derive(Clone, Copy)]
     struct NativeCase {
         hills: u8,
@@ -1214,14 +1224,17 @@ fn win95_terrain_hills_water_grid_matches_native_in_all_coast_river_modes() {
 
     let header = "hills,water,trees,coast,river,altm,xter,xbit,xbld,crt,game";
     let mut lines = include_str!("win95_hills_water_native.csv").lines();
-    assert_eq!(
-        lines.next(),
-        Some(header)
-    );
+    assert_eq!(lines.next(), Some(header));
     let mut sweep_lines = include_str!("win95_hills_water_slider_sweeps_native.csv").lines();
     assert_eq!(sweep_lines.next(), Some(header));
-    let cases: Vec<_> = lines
-        .chain(sweep_lines)
+    let mut full_grid_lines = include_str!("win95_hills_water_full_grid_native.csv").lines();
+    assert_eq!(full_grid_lines.next(), Some(header));
+    let mut case_lines: Vec<_> = lines.chain(sweep_lines).collect();
+    if include_full_grid {
+        case_lines.extend(full_grid_lines);
+    }
+    let cases: Vec<_> = case_lines
+        .into_iter()
         .map(|line| {
             let fields: Vec<_> = line.split(',').collect();
             assert_eq!(fields.len(), 11, "native terrain row {line}");
@@ -1252,11 +1265,19 @@ fn win95_terrain_hills_water_grid_matches_native_in_all_coast_river_modes() {
             }
         })
         .collect();
-    assert_eq!(
-        cases.len(),
-        576,
-        "8×8 Hills/Water grid plus complete individual slider sweeps × coast/river modes"
-    );
+    if include_full_grid {
+        assert_eq!(
+            cases.len(),
+            9_792,
+            "full 48×48 Hills/Water grid plus 8×8 grid and individual slider sweeps × coast/river modes"
+        );
+    } else {
+        assert_eq!(
+            cases.len(),
+            576,
+            "8×8 Hills/Water grid plus complete individual slider sweeps × coast/river modes"
+        );
+    }
 
     let mut batches: [Vec<NativeCase>; 4] = std::array::from_fn(|_| Vec::new());
     for (index, case) in cases.into_iter().enumerate() {

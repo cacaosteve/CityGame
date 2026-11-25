@@ -2873,6 +2873,39 @@ fn pe_lower_crt_tool_matches_native_full_worker_additional_crt_seeds() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_wet_boundary_reclassification() {
+    let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+    city.set_mac_selected_water_height(9);
+    city.set_altitude(20, 20, 8, 0);
+    city.set_altitude(19, 20, 8, 0);
+    city.set_terrain(20, 20, 0x30);
+    city.set_terrain(19, 20, 0x20);
+    city.set_tile_bits(20, 20, TileBits::new(4));
+    city.set_tile_bits(19, 20, TileBits::new(4));
+    city.set_city_funds(100);
+    let mut crt = Win95CrtRand::new(1);
+
+    assert_eq!(
+        pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+        Some(true)
+    );
+    assert_eq!(city.city_funds(), 100);
+    assert_eq!(crt.seed(), 3_884_216_597);
+    assert_eq!(city.altitude_at(20, 20), 8);
+    assert_eq!(city.terrain_at(20, 20), 0x23);
+    assert_eq!(city.tile_bits_at(20, 20).unwrap().raw_bits(), 4);
+    assert_eq!(
+        win95_terrain_plane_fingerprints(&city),
+        [
+            0xd0d2_43f5_19b8_9b59,
+            0xf8c6_68d8_a4c8_aea9,
+            0x9c1b_da7f_8c87_2325,
+            0x73e7_b754_7c48_3b25,
+        ]
+    );
+}
+
+#[test]
 fn pe_raise_adjust_toward_dig_runs_447490_and_carries_crt() {
     let mut city =
         City::new_blank("/tmp/sc2000-adjust-dig-447490.sc2", "AdjustDig").expect("blank");

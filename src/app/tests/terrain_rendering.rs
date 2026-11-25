@@ -3227,6 +3227,49 @@ fn pe_lower_crt_tool_matches_native_subway_and_pipe_curves() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_special_underground_tiles() {
+    for (name, tile, starting_occupancy) in [
+        ("crossover pipes TB/subway LR", 31, 1),
+        ("crossover pipes LR/subway TB", 32, 1),
+        ("building pipes", 33, 0),
+        ("grey box 1", 34, 1),
+        ("subway entrance / grey box 2", 35, 1),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        city.set_underground(20, 20, tile);
+        city.set_tile_bits(20, 20, TileBits::new(0x20));
+        city.pe_xund_occupancy = starting_occupancy;
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "{name} Lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "{name} no-charge dig");
+        assert_eq!(crt.seed(), 3_884_216_597, "{name} CRT endpoint");
+        assert_eq!(city.pe_xund_occupancy, 0, "{name} occupancy");
+        assert_eq!(city.underground_at(20, 20), 0, "{name} cleared XUND");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            [
+                0x13e4_507d_9840_eb16,
+                0x4e9a_2fbb_855e_6921,
+                0x9c1b_da7f_8c87_2325,
+                0x3fb1_b7de_dd20_1d05,
+            ],
+            "{name} native ALTM/XTER/XBLD/XBIT"
+        );
+    }
+}
+
+#[test]
 fn pe_lower_crt_tool_matches_native_full_worker_additional_crt_seeds() {
     for (seed, expected) in [
         (

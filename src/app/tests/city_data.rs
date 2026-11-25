@@ -4718,6 +4718,8 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let mut next_actor_check = 0;
     let mut pointer_down = false;
     let mut poll_count = 0_u32;
+    let cgms_map_and_traffic_end = 20 + 9 * 128 * 128 + 2 * 128 * 128 + 128 * 128;
+    let cgms_xthg_start = cgms_map_and_traffic_end + 1200 * 4;
     let mut previous_rng = (
         state.mac_process_rng.seed(),
         state.mac_game_rng.state(),
@@ -4787,6 +4789,23 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 _ => {}
             }
             next_input += 1;
+        }
+        if tick == 5751 {
+            let native_entry = std::fs::read(
+                code3_root.join("r20-live-inputs-code3-export162-entry-age22500-tick5746.cgms"),
+            )
+            .expect("R20 native CODE 3 entry CGMS");
+            let local_entry = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+            assert_eq!(
+                &local_entry[..cgms_map_and_traffic_end],
+                &native_entry[..cgms_map_and_traffic_end],
+                "Flint map layers and traffic density before native CODE 3"
+            );
+            assert_eq!(
+                &local_entry[cgms_xthg_start..],
+                &native_entry[cgms_xthg_start..],
+                "Flint traffic overlays before native CODE 3"
+            );
         }
         let rng_before_calendar = state.mac_process_rng.seed();
         let budget_pending_before = state.mac_loop_scheduler.january_budget_review_pending;
@@ -4865,6 +4884,24 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             "Flint end-to-end annual CODE 3 XMIC slot {slot}"
         );
     }
+    let native_cgms = std::fs::read(
+        code3_root.join("r20-live-inputs-code3-export162-return-age22500-tick5746.cgms"),
+    )
+    .expect("R20 native CODE 3 return CGMS");
+    let local_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    // The CGMS prefix contains the nine byte-sized map planes, packed ALTM,
+    // and traffic density. MISC has remaining differences; keep the map
+    // boundary explicit while also checking the separate traffic table.
+    assert_eq!(
+        &local_cgms[..cgms_map_and_traffic_end],
+        &native_cgms[..cgms_map_and_traffic_end],
+        "Flint map layers and traffic density at native CODE 14 return"
+    );
+    assert_eq!(
+        &local_cgms[cgms_xthg_start..],
+        &native_cgms[cgms_xthg_start..],
+        "Flint traffic overlays at native CODE 14 return"
+    );
     assert_eq!(state.game_clock.year(), 1975);
     assert_eq!(state.game_clock.month(), 1);
     assert_eq!(

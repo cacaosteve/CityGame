@@ -3170,6 +3170,60 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
     }
 
+    // The same clipped reclassifier must preserve and correctly refresh an
+    // L-shaped road continuing beyond each side of the 3x3 Raise window.
+    for (label, inside, outside, xbl_final) in [
+        (
+            "north-east bend",
+            (20, 19),
+            [(20, 18), (20, 17), (21, 17)],
+            0xb600_8f8e_1462_2c6c,
+        ),
+        (
+            "east-south bend",
+            (21, 20),
+            [(22, 20), (23, 20), (23, 21)],
+            0x6060_9d59_70ff_f0c6,
+        ),
+        (
+            "south-west bend",
+            (20, 21),
+            [(20, 22), (20, 23), (19, 23)],
+            0xfa0e_51c8_596b_bfcc,
+        ),
+        (
+            "west-north bend",
+            (19, 20),
+            [(18, 20), (17, 20), (17, 19)],
+            0x3a24_5e74_dc1c_20be,
+        ),
+    ] {
+        let mut bent = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        bent.pe_w_city_mode = 1;
+        bent.set_building(inside.0, inside.1, 0x1d);
+        for (x, y) in outside {
+            bent.set_building(x, y, 0x1d);
+        }
+        bent.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+        assert_eq!(
+            pe_raise_land_inc_443c60_with_crt(&mut bent, Some(&mut crt), 20, 20, 2),
+            Some(18),
+            "{label} waits"
+        );
+        assert_eq!(bent.city_funds(), 75, "{label} cash");
+        assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
+        assert_eq!(bent.building_at(inside.0, inside.1), 0, "{label} cleared");
+        for (x, y) in outside {
+            assert_eq!(bent.building_at(x, y), 29, "{label} road at ({x},{y})");
+        }
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&bent),
+            [NATIVE_PLANES[0], NATIVE_PLANES[1], xbl_final, NATIVE_PLANES[3]],
+            "{label} planes"
+        );
+    }
+
     // Surface rail and power follow the same bounded reclassification but
     // retain their own network IDs outside the 3x3 window in all directions.
     for (label, network, inside, outside, xbl_final) in [

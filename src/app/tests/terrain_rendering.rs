@@ -3171,15 +3171,69 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
     }
 
     // Surface rail and power follow the same bounded reclassification but
-    // retain their own network IDs outside the 3x3 window.
-    for (label, network, xbl_final) in [
-        ("rail", 0x2c, 0x3a65_928e_800e_033d),
-        ("power", 0x0e, 0xaec3_bac5_e61f_8165),
+    // retain their own network IDs outside the 3x3 window in all directions.
+    for (label, network, inside, outside, xbl_final) in [
+        (
+            "rail north",
+            0x2c,
+            (20, 19),
+            [(20, 18), (20, 17)],
+            0x3a65_928e_800e_033d,
+        ),
+        (
+            "rail south",
+            0x2c,
+            (20, 21),
+            [(20, 22), (20, 23)],
+            0x2c38_dbf0_d43e_491d,
+        ),
+        (
+            "rail west",
+            0x2c,
+            (19, 20),
+            [(18, 20), (17, 20)],
+            0x2c1b_8b02_1e56_6b25,
+        ),
+        (
+            "rail east",
+            0x2c,
+            (21, 20),
+            [(22, 20), (23, 20)],
+            0x0efb_3cd6_2186_6b25,
+        ),
+        (
+            "power north",
+            0x0e,
+            (20, 19),
+            [(20, 18), (20, 17)],
+            0xaec3_bac5_e61f_8165,
+        ),
+        (
+            "power south",
+            0x0e,
+            (20, 21),
+            [(20, 22), (20, 23)],
+            0x4437_0809_3149_6025,
+        ),
+        (
+            "power west",
+            0x0e,
+            (19, 20),
+            [(18, 20), (17, 20)],
+            0x4665_101a_6d48_6f25,
+        ),
+        (
+            "power east",
+            0x0e,
+            (21, 20),
+            [(22, 20), (23, 20)],
+            0x3a59_b323_da50_6f25,
+        ),
     ] {
         let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
         city.pe_w_city_mode = 1;
-        for y in [17, 18, 19] {
-            city.set_building(20, y, network);
+        for (x, y) in [inside, outside[0], outside[1]] {
+            city.set_building(x, y, network);
         }
         city.set_city_funds(100);
         let mut crt = Win95CrtRand::new(1);
@@ -3190,9 +3244,10 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
         assert_eq!(city.city_funds(), 75, "{label} cash");
         assert_eq!(crt.seed(), 415_139_642, "{label} CRT");
-        assert_eq!(city.building_at(20, 19), 0, "{label} in-window tile");
-        assert_eq!(city.building_at(20, 18), network, "{label} at y=18");
-        assert_eq!(city.building_at(20, 17), network, "{label} at y=17");
+        assert_eq!(city.building_at(inside.0, inside.1), 0, "{label} cleared");
+        for (x, y) in outside {
+            assert_eq!(city.building_at(x, y), network, "{label} at ({x},{y})");
+        }
         assert_eq!(
             win95_terrain_plane_fingerprints(&city),
             [NATIVE_PLANES[0], NATIVE_PLANES[1], xbl_final, NATIVE_PLANES[3]],
@@ -3201,17 +3256,87 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
     }
 
     // Underground subway and pipe runs keep the outside XUND records and
-    // XBIT flags, while only the in-window record is removed.
-    for (label, underground, occupancy, xund_final) in [
-        ("subway", 1, 3, 0xebd9_9d24_bd32_6f43),
-        ("pipe", 0x10, 0, 0x4a31_dec0_190d_89e5),
+    // XBIT flags in every direction, while only the in-window record clears.
+    for (label, underground, occupancy, inside, outside, xund_final, xbit_final) in [
+        (
+            "subway north",
+            1,
+            3,
+            (20, 19),
+            [(20, 18), (20, 17)],
+            0xebd9_9d24_bd32_6f43,
+            0xd090_daf4_676a_ed45,
+        ),
+        (
+            "subway south",
+            1,
+            3,
+            (20, 21),
+            [(20, 22), (20, 23)],
+            0x9a71_6b38_ec22_81ef,
+            0x418c_fbae_98eb_db45,
+        ),
+        (
+            "subway west",
+            1,
+            3,
+            (19, 20),
+            [(18, 20), (17, 20)],
+            0x2a64_fc3b_11bc_4125,
+            0x4ecb_374b_db67_9d05,
+        ),
+        (
+            "subway east",
+            1,
+            3,
+            (21, 20),
+            [(22, 20), (23, 20)],
+            0x5711_8bb9_7f90_4125,
+            0xe075_1447_cbd8_9d05,
+        ),
+        (
+            "pipe north",
+            0x10,
+            0,
+            (20, 19),
+            [(20, 18), (20, 17)],
+            0x4a31_dec0_190d_89e5,
+            0xd090_daf4_676a_ed45,
+        ),
+        (
+            "pipe south",
+            0x10,
+            0,
+            (20, 21),
+            [(20, 22), (20, 23)],
+            0x6e28_f6df_f2be_7d65,
+            0x418c_fbae_98eb_db45,
+        ),
+        (
+            "pipe west",
+            0x10,
+            0,
+            (19, 20),
+            [(18, 20), (17, 20)],
+            0x80ad_f637_dfd9_0325,
+            0x4ecb_374b_db67_9d05,
+        ),
+        (
+            "pipe east",
+            0x10,
+            0,
+            (21, 20),
+            [(22, 20), (23, 20)],
+            0x4b76_ee1e_bd19_0325,
+            0xe075_1447_cbd8_9d05,
+        ),
     ] {
         let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
         city.pe_w_city_mode = 1;
         city.pe_xund_occupancy = occupancy;
-        for y in [17, 18, 19] {
-            city.set_underground(20, y, underground);
-            city.set_tile_bits(20, y, TileBits::new(0x20));
+        for (x, y) in [inside, outside[0], outside[1]] {
+            city.set_underground(x, y, underground);
+            city.set_tile_bits(x, y, TileBits::new(0x20));
         }
         city.set_city_funds(100);
         let mut crt = Win95CrtRand::new(1);
@@ -3222,22 +3347,25 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         );
         assert_eq!(city.city_funds(), 75, "{label} cash");
         assert_eq!(crt.seed(), 1, "{label} CRT");
-        assert_eq!(city.underground_at(20, 19), 0, "{label} in-window tile");
-        for y in [17, 18] {
-            assert_eq!(city.underground_at(20, y), underground, "{label} at y={y}");
+        assert_eq!(
+            city.underground_at(inside.0, inside.1),
+            0,
+            "{label} in-window tile"
+        );
+        for (x, y) in outside {
+            assert_eq!(city.underground_at(x, y), underground, "{label} at ({x},{y})");
         }
-        for y in [17, 18, 19] {
-            assert_eq!(city.tile_bits_at(20, y).unwrap().raw_bits(), 0x20);
+        for (x, y) in [inside, outside[0], outside[1]] {
+            assert_eq!(city.tile_bits_at(x, y).unwrap().raw_bits(), 0x20);
         }
-        assert_eq!(city.pe_xund_occupancy, occupancy - u16::from(underground == 1));
+        assert_eq!(
+            city.pe_xund_occupancy,
+            occupancy - u16::from(underground == 1),
+            "{label} occupancy"
+        );
         assert_eq!(
             win95_terrain_plane_fingerprints(&city),
-            [
-                NATIVE_PLANES[0],
-                NATIVE_PLANES[1],
-                NATIVE_PLANES[2],
-                0xd090_daf4_676a_ed45,
-            ],
+            [NATIVE_PLANES[0], NATIVE_PLANES[1], NATIVE_PLANES[2], xbit_final],
             "{label} planes"
         );
         assert_eq!(

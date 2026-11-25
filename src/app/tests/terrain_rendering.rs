@@ -4515,6 +4515,139 @@ fn pe_raise_marked_tool_matches_native_subway_and_pipe_branches_at_refresh_edge(
 }
 
 #[test]
+fn pe_raise_marked_tool_matches_native_subway_and_pipe_cross_and_edge_branches() {
+    // Both pinned Win95 PE builds agree on a centered X and four rotated
+    // edge-offset T branches. The edge T leaves four endpoints outside the
+    // marked Raise 3x3 refresh.
+    let cross = (
+        "cross",
+        vec![
+            (20, 20, 14),
+            (20, 19, 0),
+            (20, 18, 0),
+            (20, 21, 0),
+            (20, 22, 0),
+            (19, 20, 1),
+            (18, 20, 1),
+            (21, 20, 1),
+            (22, 20, 1),
+        ],
+        0x63e7_795c_c19d_dfc5,
+        [0x40de_31a2_c49d_5615, 0x94de_581e_43d8_ec25],
+        9,
+        4,
+    );
+    let edge_t_shapes = [
+        (
+            "NE",
+            vec![
+                (21, 20, 11),
+                (22, 20, 1),
+                (23, 20, 1),
+                (21, 19, 0),
+                (21, 18, 0),
+                (21, 21, 0),
+                (21, 22, 0),
+            ],
+            0xb860_b279_d070_dfc5,
+            [0x1c9a_b79b_6b26_2a15, 0x87d4_ad12_e25e_6b45],
+            7,
+            4,
+        ),
+        (
+            "ES",
+            vec![
+                (20, 21, 12),
+                (20, 22, 0),
+                (20, 23, 0),
+                (21, 21, 1),
+                (22, 21, 1),
+                (19, 21, 1),
+                (18, 21, 1),
+            ],
+            0x94fb_6a51_a96b_db45,
+            [0xec76_7615_4ac8_6fc3, 0xd3f5_0750_d609_a565],
+            7,
+            4,
+        ),
+        (
+            "SW",
+            vec![
+                (19, 20, 13),
+                (18, 20, 1),
+                (17, 20, 1),
+                (19, 21, 0),
+                (19, 22, 0),
+                (19, 19, 0),
+                (19, 18, 0),
+            ],
+            0x9a40_b6b4_3dca_dfc5,
+            [0x244e_d280_9b49_ea15, 0xe77a_fd1f_b992_eb45],
+            7,
+            4,
+        ),
+        (
+            "WN",
+            vec![
+                (20, 19, 10),
+                (20, 18, 0),
+                (20, 17, 0),
+                (19, 19, 1),
+                (18, 19, 1),
+                (21, 19, 1),
+                (22, 19, 1),
+            ],
+            0xaa80_6a35_42ea_ed45,
+            [0x8340_f7a8_e350_8237, 0xdb81_06e8_e48b_f1e5],
+            7,
+            4,
+        ),
+    ];
+    let mut shapes = vec![cross];
+    shapes.extend(edge_t_shapes);
+
+    for (name, cells, expected_xbit, expected_xund, starting_subway, ending_subway) in shapes {
+        for (family, label, index, starting_occupancy, ending_occupancy) in [
+            (1, "subway", 0, starting_subway, ending_subway),
+            (16, "pipe", 1, 0, 0),
+        ] {
+            let case = format!("{label}-{name}");
+            let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+            city.pe_w_city_mode = 1;
+            for &(x, y, tile_offset) in &cells {
+                city.set_underground(x, y, family + tile_offset);
+                city.set_tile_bits(x, y, TileBits::new(0x20));
+            }
+            city.pe_xund_occupancy = starting_occupancy;
+            city.set_city_funds(100);
+            let mut crt = Win95CrtRand::new(1);
+
+            let citygame_waits =
+                pe_raise_land_inc_443c60_with_crt(&mut city, Some(&mut crt), 20, 20, 2);
+            assert_eq!(citygame_waits, Some(18), "{case} waits");
+            assert_eq!(city.city_funds(), 75, "{case} cash");
+            assert_eq!(crt.seed(), 1, "{case} CRT endpoint");
+            assert_eq!(city.pe_xund_occupancy, ending_occupancy, "{case} occupancy");
+            assert_eq!(
+                win95_terrain_plane_fingerprints(&city),
+                [
+                    0xd2a8_65cf_8809_2c64,
+                    0xe705_34f7_e0d0_9729,
+                    0x9c1b_da7f_8c87_2325,
+                    expected_xbit,
+                ],
+                "{case} native ALTM/XTER/XBLD/XBIT"
+            );
+            assert_eq!(
+                pe_density_plane_fingerprint(1, |x, y| city.underground_at(x, y)),
+                expected_xund[index],
+                "{case} native XUND"
+            );
+        }
+    }
+}
+
+#[test]
 fn pe_lower_crt_oob_jitter_refuses() {
     // PE Lower `0x443900`: out-of-bounds CRT jitter tile → no dig.
     let mut city = City::new_blank("/tmp/sc2000-lower-oob.sc2", "LowerOob").expect("blank");

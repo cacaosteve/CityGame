@@ -239,6 +239,19 @@ mod preview_tests {
             None
         );
         assert!(!input.mac_budget_review_pointer_is_down());
+
+        // The captured R10 Police edit used this Mac review control and
+        // activated only when MouseUp returned over the same control.
+        let police_decrease = Vec2::new(329.0, 228.0);
+        assert!(input.mac_budget_review_pointer_down(&state, police_decrease));
+        assert_eq!(
+            input.mac_budget_review_pointer_up(&state, police_decrease, (640, 480)),
+            Some(CityInfoDialogAction::AdjustBudgetFunding {
+                service_index: 0,
+                delta: -5,
+            })
+        );
+        assert!(!input.mac_budget_review_pointer_is_down());
     }
 
     #[test]

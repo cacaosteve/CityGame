@@ -3689,12 +3689,21 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
         NATIVE_PLANES[2],
         0x2cbc_e375_8077_bac5,
     ];
-    for (xund, label) in [(1, "subway"), (0x10, "pipe")] {
+    for (xund, label, starting_occupancy) in [
+        (1, "subway", 1),
+        (0x10, "pipe", 0),
+        (0x1c, "building pipe tee", 0),
+        (31, "crossover pipes TB/subway LR", 1),
+        (32, "crossover pipes LR/subway TB", 1),
+        (33, "building pipes", 0),
+        (34, "grey box 1", 1),
+        (35, "subway entrance / grey box 2", 1),
+    ] {
         let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
         city.pe_w_city_mode = 1;
         city.set_underground(20, 19, xund);
         city.set_tile_bits(20, 19, TileBits::new(0x20));
-        city.pe_xund_occupancy = u16::from(xund == 1);
+        city.pe_xund_occupancy = starting_occupancy;
         city.set_city_funds(100);
         let mut crt = Win95CrtRand::new(1);
         assert_eq!(
@@ -3720,6 +3729,20 @@ fn win95_marked_raise_matches_native_adjacent_transport_cleanup() {
             "{label} XBIT"
         );
         assert_eq!(city.pe_xund_occupancy, 0, "{label} occupancy");
+        let path = std::env::temp_dir().join(format!(
+            "citygame-pe-marked-raise-xund-{}-{xund}.sc2",
+            std::process::id()
+        ));
+        city.save(&path).expect("save marked Raise XUND result");
+        let loaded = City::load(&path).expect("reload marked Raise XUND result");
+        std::fs::remove_file(&path).expect("remove marked Raise XUND save");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&loaded),
+            piped_xbit,
+            "{label} marked Raise planes survive save/reload"
+        );
+        assert_eq!(loaded.underground_at(20, 19), 0, "{label} XUND roundtrip");
+        assert_eq!(loaded.pe_xund_occupancy, 0, "{label} occupancy roundtrip");
     }
 
     // The same native fixtures at the map boundary and across a wet/dry step.

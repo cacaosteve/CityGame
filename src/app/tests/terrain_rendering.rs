@@ -3139,14 +3139,15 @@ fn pe_lower_crt_tool_matches_native_subway_and_pipe_branches() {
             assert_eq!(city.city_funds(), 100, "{label} no-charge dig");
             assert_eq!(crt.seed(), 3_884_216_597, "{label} CRT endpoint");
             assert_eq!(city.pe_xund_occupancy, 0, "{label} subway occupancy");
+            let native_planes = [
+                0x13e4_507d_9840_eb16,
+                0x4e9a_2fbb_855e_6921,
+                0x9c1b_da7f_8c87_2325,
+                expected_xbit,
+            ];
             assert_eq!(
                 win95_terrain_plane_fingerprints(&city),
-                [
-                    0x13e4_507d_9840_eb16,
-                    0x4e9a_2fbb_855e_6921,
-                    0x9c1b_da7f_8c87_2325,
-                    expected_xbit,
-                ],
+                native_planes,
                 "{label} native ALTM/XTER/XBLD/XBIT"
             );
             assert_eq!(
@@ -3154,6 +3155,19 @@ fn pe_lower_crt_tool_matches_native_subway_and_pipe_branches() {
                 0x9c1b_da7f_8c87_2325,
                 "{label} native cleared XUND"
             );
+            let path = std::env::temp_dir().join(format!(
+                "citygame-pe-lower-xund-curve-{}-{label}.sc2",
+                std::process::id()
+            ));
+            city.save(&path).expect("save Lower XUND curve result");
+            let loaded = City::load(&path).expect("reload Lower XUND curve result");
+            std::fs::remove_file(&path).expect("remove Lower XUND curve save");
+            assert_eq!(
+                win95_terrain_plane_fingerprints(&loaded),
+                native_planes,
+                "{label} matched planes survive save/reload"
+            );
+            assert_eq!(loaded.pe_xund_occupancy, 0, "{label} occupancy roundtrip");
         }
     }
 }
@@ -3256,16 +3270,32 @@ fn pe_lower_crt_tool_matches_native_special_underground_tiles() {
         assert_eq!(crt.seed(), 3_884_216_597, "{name} CRT endpoint");
         assert_eq!(city.pe_xund_occupancy, 0, "{name} occupancy");
         assert_eq!(city.underground_at(20, 20), 0, "{name} cleared XUND");
+        let native_planes = [
+            0x13e4_507d_9840_eb16,
+            0x4e9a_2fbb_855e_6921,
+            0x9c1b_da7f_8c87_2325,
+            0x3fb1_b7de_dd20_1d05,
+        ];
         assert_eq!(
             win95_terrain_plane_fingerprints(&city),
-            [
-                0x13e4_507d_9840_eb16,
-                0x4e9a_2fbb_855e_6921,
-                0x9c1b_da7f_8c87_2325,
-                0x3fb1_b7de_dd20_1d05,
-            ],
+            native_planes,
             "{name} native ALTM/XTER/XBLD/XBIT"
         );
+        let path = std::env::temp_dir().join(format!(
+            "citygame-pe-lower-special-xund-{}-{}.sc2",
+            std::process::id(),
+            tile
+        ));
+        city.save(&path).expect("save Lower special XUND result");
+        let loaded = City::load(&path).expect("reload Lower special XUND result");
+        std::fs::remove_file(&path).expect("remove Lower special XUND save");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&loaded),
+            native_planes,
+            "{name} matched planes survive save/reload"
+        );
+        assert_eq!(loaded.underground_at(20, 20), 0, "{name} XUND roundtrip");
+        assert_eq!(loaded.pe_xund_occupancy, 0, "{name} occupancy roundtrip");
     }
 }
 

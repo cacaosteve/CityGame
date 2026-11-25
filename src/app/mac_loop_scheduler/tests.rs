@@ -7899,9 +7899,8 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             manual.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
-        // CODE 10 entry to the first shake TickCount consumes two native
-        // QuickDraw advances before its direct scan Random sites.
-        assert_eq!(manual.mac_process_rng.seed(), 984_943_658);
+        // CODE 10 clears the pending selector before the first shake sample.
+        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
         assert_eq!(manual.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
         assert_eq!(
             manual
@@ -7913,6 +7912,8 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             manual.mac_loop_scheduler.mac_earthquake_shake_phase(),
             Some(0)
         );
+        // The observed two-draw setup occurs at the first shake TickCount.
+        assert_eq!(manual.mac_process_rng.seed(), 984_943_658);
         let mut quake_sound_requests = usize::from(manual.take_pending_mac_earthquake_sound());
         assert_eq!(quake_sound_requests, 1);
         assert_eq!(manual.view_camera().x - manual.camera.x, 16.0);
@@ -7961,9 +7962,9 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             monthly.city.mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET),
             Some(CITY_MODE_GAMEPLAY)
         );
-        // CODE 10's pre-shake setup consumes two QuickDraw advances before
-        // the first TickCount sample and before the scan begins.
-        assert_eq!(monthly.mac_process_rng.seed(), 300_483_032);
+        // The natural proposal reaches CODE 10's pending-clear boundary before
+        // the first shake TickCount; its pre-shake advances happen on frame 0.
+        assert_eq!(monthly.mac_process_rng.seed(), 1_983_943_974);
         for _ in 0..25 {
             assert_eq!(
                 monthly
@@ -8016,8 +8017,9 @@ fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
     let mut expected_first_shake_seed = MacToolboxRng::new(worker_entry_seed);
     expected_first_shake_seed.random_i16();
     expected_first_shake_seed.random_i16();
-    let prelude_seed = state.mac_process_rng.seed();
-    assert_eq!(prelude_seed, expected_first_shake_seed.seed());
+    let prelude_seed = expected_first_shake_seed.seed();
+    assert_eq!(state.mac_process_rng.seed(), worker_entry_seed);
+    assert_ne!(worker_entry_seed, prelude_seed);
     assert_eq!(prelude_seed, 0x03c3_accb);
     assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
 

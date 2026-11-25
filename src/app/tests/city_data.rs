@@ -4742,37 +4742,77 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             _ => {}
         }
     }
-    let mut next_actor_check = 0;
     let mut pointer_down = false;
     let mut poll_count = 0_u32;
     let cgms_map_and_traffic_end = 20 + 9 * 128 * 128 + 2 * 128 * 128 + 128 * 128;
     let cgms_xthg_start = cgms_map_and_traffic_end + 1200 * 4;
+    let native_xmic = std::fs::read(
+        code3_root.join("r20-live-inputs-code3-export162-return-age22500-tick5746-xmic.bin"),
+    )
+    .expect("R20 native CODE 3 return XMIC");
+    assert_eq!(native_xmic.len(), 150 * 8);
+    let native_cgms = std::fs::read(
+        code3_root.join("r20-live-inputs-code3-export162-return-age22500-tick5746.cgms"),
+    )
+    .expect("R20 native CODE 3 return CGMS");
     let mut previous_rng = (
         state.mac_process_rng.seed(),
         state.mac_game_rng.state(),
         state.mac_app_lfsr.state(),
     );
 
-    for tick in calendar_ticks {
-        while actor_check_ticks
-            .get(next_actor_check)
-            .is_some_and(|actor_tick| *actor_tick <= tick)
-        {
-            let actor_tick = actor_check_ticks[next_actor_check];
-            next_actor_check += 1;
+    // A Toolbox MouseUp's EventRecord.when records when the physical release
+    // happened, even when GetNextEvent does not return that record until a
+    // later CODE 2 poll. TrackControl-style modal handling can resume work on
+    // that release before the queued record is returned, so merge its
+    // occurrence tick into the captured actor/calendar timeline.
+    let mut replay_ticks = calendar_ticks.clone();
+    replay_ticks.extend(actor_check_ticks.iter().copied());
+    replay_ticks.extend(input_events.iter().map(|event| event.0));
+    replay_ticks.sort_unstable();
+    replay_ticks.dedup();
+    let calendar_ticks: std::collections::HashSet<_> = calendar_ticks.into_iter().collect();
+    let actor_check_ticks: std::collections::HashSet<_> = actor_check_ticks.into_iter().collect();
+    let event_ticks: std::collections::HashSet<_> =
+        input_events.iter().map(|event| event.0).collect();
+
+    for tick in replay_ticks {
+        if actor_check_ticks.contains(&tick) {
             let refresh_tick = post_actor_tickcounts
                 .iter()
                 .copied()
-                .find(|sample| *sample >= actor_tick)
-                .unwrap_or(actor_tick);
+                .find(|sample| *sample >= tick)
+                .unwrap_or(tick);
             let rng_before_actor = state.mac_process_rng.seed();
             state.begin_mac_frame_actor_phase_with_tick_refresh(
-                ticks_duration(actor_tick.wrapping_sub(last_frame_tick)),
-                || ticks_duration(refresh_tick.wrapping_sub(actor_tick)),
+                ticks_duration(tick.wrapping_sub(last_frame_tick)),
+                || ticks_duration(refresh_tick.wrapping_sub(tick)),
             );
-            if state.mac_process_rng.seed() != rng_before_actor && actor_tick <= 3600 {
+            if tick == 5748 {
+                assert_eq!(
+                    state.mac_process_rng.seed(),
+                    0x5780_b143,
+                    "QuickDraw after native CODE 6 actor work"
+                );
+                assert_eq!(
+                    state.mac_game_rng.state(),
+                    0xba1f_4627,
+                    "game LCG after native CODE 6 actor work"
+                );
+                assert_eq!(
+                    state.mac_app_lfsr.state(),
+                    0x4cdf,
+                    "app LFSR after native CODE 6 actor work"
+                );
+                assert_eq!(
+                    state.city.mac_state_misc_u32_at(0x10),
+                    Some(native_return_age),
+                    "city age after post-review actor work"
+                );
+            }
+            if state.mac_process_rng.seed() != rng_before_actor && tick <= 3600 {
                 eprintln!(
-                    "R20 local actor phase tick={actor_tick} qd={:08x}->{:08x} counts kind1={} kind2={} kind3={} kind5={} kind16={} tornado={} rail={}",
+                    "R20 local actor phase tick={tick} qd={:08x}->{:08x} counts kind1={} kind2={} kind3={} kind5={} kind16={} tornado={} rail={}",
                     rng_before_actor,
                     state.mac_process_rng.seed(),
                     state.city.mac_kind1_actor_counter,
@@ -4784,7 +4824,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                     state.city.mac_rail_actor_counter,
                 );
             }
-            last_frame_tick = actor_tick;
+            last_frame_tick = tick;
         }
         while input_events
             .get(next_input)
@@ -4793,7 +4833,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             let (_, what, h, v) = input_events[next_input];
             if what == 1 && (h, v) == (461, 122) {
                 eprintln!(
-                    "R20 captured Done MouseDown tick={tick} date={:?} modal={:?} pending={} qd={:08x} game={:08x} app={:04x}",
+                    "R20 captured Done MouseDown occurrence_tick={tick} date={:?} modal={:?} pending={} qd={:08x} game={:08x} app={:04x}",
                     state.game_clock,
                     state.city_info_dialog,
                     state.mac_loop_scheduler.january_budget_review_pending,
@@ -4817,7 +4857,10 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             }
             next_input += 1;
         }
-        if tick == 5751 {
+        if !calendar_ticks.contains(&tick) && !event_ticks.contains(&tick) {
+            continue;
+        }
+        if tick == 5742 {
             let native_entry = std::fs::read(
                 code3_root.join("r20-live-inputs-code3-export162-entry-age22500-tick5746.cgms"),
             )
@@ -4844,6 +4887,61 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             pointer_down,
             || std::time::Duration::ZERO,
         );
+        if tick == 5742 {
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                0x5a42_b2f2,
+                "QuickDraw at native CODE 14 return after physical Done release"
+            );
+            assert_eq!(
+                state.mac_game_rng.state(),
+                0xbd87_efc5,
+                "game LCG at native CODE 14 return after physical Done release"
+            );
+            assert_eq!(
+                state.mac_app_lfsr.state(),
+                0x8b3b,
+                "app LFSR at native CODE 14 return after physical Done release"
+            );
+            for (slot, native_row) in native_xmic.chunks_exact(8).enumerate() {
+                let row = state.city.microsim_at(slot).unwrap();
+                let citygame_row = [
+                    row.tile_id,
+                    row.stat0,
+                    (row.stat1 >> 8) as u8,
+                    row.stat1 as u8,
+                    (row.stat2 >> 8) as u8,
+                    row.stat2 as u8,
+                    (row.stat3 >> 8) as u8,
+                    row.stat3 as u8,
+                ];
+                assert_eq!(
+                    &citygame_row, native_row,
+                    "Flint annual CODE 3 XMIC slot {slot} at release boundary"
+                );
+            }
+            let local_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+            assert_eq!(
+                &local_cgms[..cgms_map_and_traffic_end],
+                &native_cgms[..cgms_map_and_traffic_end],
+                "Flint map layers and traffic density after native CODE 14 return"
+            );
+            assert_eq!(
+                &local_cgms[cgms_xthg_start..],
+                &native_cgms[cgms_xthg_start..],
+                "Flint traffic overlays after native CODE 14 return"
+            );
+            assert_eq!(
+                state.city.mac_state_misc_u32_at(0x10),
+                Some(native_return_age),
+                "city age at annual settlement"
+            );
+            assert_eq!(
+                state.city.city_funds(),
+                native_return_funds,
+                "funds at annual settlement"
+            );
+        }
         if !budget_pending_before && state.mac_loop_scheduler.january_budget_review_pending {
             eprintln!(
                 "R20 local January review opened tick={tick} date={:?} modal={:?} qd={:08x} game={:08x} app={:04x}",
@@ -4863,8 +4961,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 let values = state.city.budget_misc_u32_values(offset, 3);
                 let local: [i32; 3] = std::array::from_fn(|field| values[field] as i32);
                 assert_eq!(
-                    &local,
-                    native,
+                    &local, native,
                     "Mac budget current/funding/YTD at review-open row {row}"
                 );
             }
@@ -4888,7 +4985,9 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         }
         previous_rng = current_rng;
         last_frame_tick = tick;
-        poll_count += 1;
+        if calendar_ticks.contains(&tick) {
+            poll_count += 1;
+        }
     }
 
     eprintln!(
@@ -4900,62 +4999,23 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         state.city_info_dialog,
         state.mac_loop_scheduler.january_budget_review_pending,
     );
-    assert_eq!(state.mac_process_rng.seed(), 0x5a42_b2f2, "QuickDraw at CODE 14 return");
-    assert_eq!(state.mac_game_rng.state(), 0xbd87_efc5, "game LCG at CODE 14 return");
-    assert_eq!(state.mac_app_lfsr.state(), 0x8b3b, "app LFSR at CODE 14 return");
-    let native_xmic = std::fs::read(code3_root.join(
-        "r20-live-inputs-code3-export162-return-age22500-tick5746-xmic.bin",
-    ))
-    .expect("R20 native CODE 3 return XMIC");
-    assert_eq!(native_xmic.len(), 150 * 8);
-    for (slot, native_row) in native_xmic.chunks_exact(8).enumerate() {
-        let row = state.city.microsim_at(slot).unwrap();
-        let citygame_row = [
-            row.tile_id,
-            row.stat0,
-            (row.stat1 >> 8) as u8,
-            row.stat1 as u8,
-            (row.stat2 >> 8) as u8,
-            row.stat2 as u8,
-            (row.stat3 >> 8) as u8,
-            row.stat3 as u8,
-        ];
-        assert_eq!(
-            &citygame_row,
-            native_row,
-            "Flint end-to-end annual CODE 3 XMIC slot {slot}"
-        );
-    }
-    let native_cgms = std::fs::read(
-        code3_root.join("r20-live-inputs-code3-export162-return-age22500-tick5746.cgms"),
-    )
-    .expect("R20 native CODE 3 return CGMS");
-    let local_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
-    // The CGMS prefix contains the nine byte-sized map planes, packed ALTM,
-    // and traffic density. MISC has remaining differences; keep the map
-    // boundary explicit while also checking the separate traffic table.
     assert_eq!(
-        &local_cgms[..cgms_map_and_traffic_end],
-        &native_cgms[..cgms_map_and_traffic_end],
-        "Flint map layers and traffic density at native CODE 14 return"
+        state.mac_process_rng.seed(),
+        0x5780_b143,
+        "QuickDraw after captured post-review actor boundary"
     );
     assert_eq!(
-        &local_cgms[cgms_xthg_start..],
-        &native_cgms[cgms_xthg_start..],
-        "Flint traffic overlays at native CODE 14 return"
+        state.mac_game_rng.state(),
+        0xba1f_4627,
+        "game LCG after captured post-review actor boundary"
+    );
+    assert_eq!(
+        state.mac_app_lfsr.state(),
+        0x4cdf,
+        "app LFSR after captured post-review actor boundary"
     );
     assert_eq!(state.game_clock.year(), 1975);
     assert_eq!(state.game_clock.month(), 1);
-    assert_eq!(
-        state.city.mac_state_misc_u32_at(0x10),
-        Some(native_return_age),
-        "city age after annual settlement"
-    );
-    assert_eq!(
-        state.city.city_funds(),
-        native_return_funds,
-        "funds after annual settlement"
-    );
     assert_eq!(
         state.city_info_dialog, None,
         "captured Done click resumes simulation"

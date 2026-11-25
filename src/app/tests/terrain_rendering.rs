@@ -2888,6 +2888,59 @@ fn pe_lower_crt_tool_matches_native_connected_network_crossings() {
 }
 
 #[test]
+fn pe_lower_crt_tool_matches_native_mixed_network_crossovers() {
+    let expected = [
+        0x13e4_507d_9840_eb16,
+        0x4e9a_2fbb_855e_6921,
+        0xa077_6e63_3ea4_e263,
+        0x9c1b_da7f_8c87_2325,
+    ];
+    for (label, center, first_axis, first_tile, second_axis, second_tile) in [
+        ("road-power-1", 0x43, "NS", 0x1d, "EW", 0x0f),
+        ("road-power-2", 0x44, "NS", 0x0e, "EW", 0x1e),
+        ("road-rail-1", 0x45, "NS", 0x1d, "EW", 0x2d),
+        ("road-rail-2", 0x46, "NS", 0x2c, "EW", 0x1e),
+        ("power-rail-1", 0x47, "EW", 0x0f, "NS", 0x2c),
+        ("power-rail-2", 0x48, "NS", 0x0e, "EW", 0x2d),
+    ] {
+        let mut city = flat_win95_terrain_fixture(CityFileKind::WinSc2);
+        for y in 18..23 {
+            for x in 18..23 {
+                city.set_terrain(x, y, 0);
+            }
+        }
+        city.set_building(20, 20, center);
+        for (sides, tile) in [(first_axis, first_tile), (second_axis, second_tile)] {
+            for side in sides.chars() {
+                let (x, y) = match side {
+                    'N' => (20, 19),
+                    'E' => (21, 20),
+                    'S' => (20, 21),
+                    'W' => (19, 20),
+                    _ => unreachable!(),
+                };
+                city.set_building(x, y, tile);
+            }
+        }
+        city.set_city_funds(100);
+        let mut crt = Win95CrtRand::new(1);
+
+        assert_eq!(
+            pe_lower_terrain_crt_step_443900(&mut city, &mut crt, 22, 18),
+            Some(true),
+            "{label} mixed-network Lower result"
+        );
+        assert_eq!(city.city_funds(), 100, "{label} no-charge dig");
+        assert_eq!(crt.seed(), 316_395_082, "{label} CRT endpoint");
+        assert_eq!(
+            win95_terrain_plane_fingerprints(&city),
+            expected,
+            "{label} native ALTM/XTER/XBLD/XBIT"
+        );
+    }
+}
+
+#[test]
 fn pe_lower_crt_tool_matches_native_connected_network_curves() {
     let expected_by_orientation = [
         [

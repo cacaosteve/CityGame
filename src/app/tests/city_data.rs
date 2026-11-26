@@ -4740,6 +4740,8 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let mut last_frame_tick = 3571_u32;
     let mut calendar_ticks = Vec::new();
     let mut actor_check_ticks = Vec::new();
+    let mut native_calendar_refresh_ticks = std::collections::HashMap::new();
+    let mut last_native_calendar_check_tick = None;
     let mut captured_sample_order =
         std::collections::HashMap::<u32, (Option<usize>, Option<usize>)>::new();
     let mut post_actor_tickcounts = Vec::new();
@@ -4780,11 +4782,17 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             }
             "CODE2.tick_sample_a" if calendar_ticks.last() != Some(&tick) => {
                 calendar_ticks.push(tick);
+                last_native_calendar_check_tick = Some(tick);
                 captured_sample_order
                     .entry(tick)
                     .or_default()
                     .0
                     .get_or_insert(capture_row_order);
+            }
+            "CODE2.tick_sample_b" => {
+                if let Some(check_tick) = last_native_calendar_check_tick.take() {
+                    native_calendar_refresh_ticks.insert(check_tick, tick);
+                }
             }
             "CODE2.post_export109_tickcount_trap"
                 if post_actor_tickcounts.last() != Some(&tick) =>
@@ -4834,6 +4842,17 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         .and_then(|value| value.parse::<u32>().ok());
     let use_captured_sample_order = std::env::var_os("CITYGAME_MAC_R20_CAPTURED_SAMPLE_ORDER")
         .is_some_and(|value| value == "1");
+    let refresh_calendar_from_native_sample_b = std::env::var_os(
+        "CITYGAME_MAC_R20_CALENDAR_REFRESH_FROM_NATIVE_SAMPLE_B",
+    )
+    .is_some_and(|value| value == "1");
+    if refresh_calendar_from_native_sample_b {
+        assert_eq!(
+            native_calendar_refresh_ticks.get(&4_284),
+            Some(&4_285),
+            "captured calendar check at tick 4284 must pair with native sample B at 4285"
+        );
+    }
     let boundary_snapshot_age = std::env::var("CITYGAME_MAC_R20_SNAPSHOT_AGE")
         .ok()
         .and_then(|value| value.parse::<u32>().ok());
@@ -5222,7 +5241,23 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             ticks_duration(tick.wrapping_sub(last_frame_tick)),
             actor_wait_ticks,
             pointer_down,
-            || std::time::Duration::ZERO,
+            || {
+                if refresh_calendar_from_native_sample_b {
+                    native_calendar_refresh_ticks
+                        .get(&tick)
+                        .copied()
+                        .map(|refresh_tick| {
+                            ticks_duration(
+                                refresh_tick
+                                    .wrapping_sub(tick)
+                                    .saturating_sub(actor_wait_ticks),
+                            )
+                        })
+                        .unwrap_or(std::time::Duration::ZERO)
+                } else {
+                    std::time::Duration::ZERO
+                }
+            },
         );
         let age_after = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
         if boundary_snapshot_age.is_some_and(|age| age_before < age && age_after >= age) {

@@ -17152,4 +17152,83 @@ fn pe_retail_win_scenario_first_disaster() {
             "{name} next Things sweep"
         );
     }
+
+    // These three scenarios do not queue a disaster on the first day. Keep
+    // them as negative controls so the 15 immediate-disaster cases do not
+    // imply that every retail scenario must trigger one at open. XTHG is not
+    // hashed here: Flint's train record has a separately tracked first-sweep
+    // mismatch, and this test does not encode CityGame's current actor output.
+    let no_disaster_cases = [
+        (
+            "FLINT",
+            22_398,
+            811_474_043,
+            32_768,
+            1,
+            0x80c4_89ec_326f_77d0,
+            0x4382_e233_be8a_cff3,
+            Some((0, 0)),
+        ),
+        (
+            "DULLSVIL",
+            3_134,
+            1_487_958_248,
+            256,
+            1,
+            0x1b4b_f65e_1757_bb39,
+            0xdbd2_3d58_def6_9bed,
+            Some((0, 0)),
+        ),
+        (
+            "LASVEGAS",
+            28_507,
+            2_259_648_353,
+            54_859,
+            1,
+            0xdaee_1614_7b3a_7a03,
+            0xc425_4a1c_6fc6_1aad,
+            Some((68, 99)),
+        ),
+    ];
+    for (name, age, crt, lfsr, game_rng, xtxt, xbit, pending_point) in no_disaster_cases {
+        let city = City::new_blank("/tmp/pe-no-first-disaster.sc2", "Empty").unwrap();
+        let mut state = test_state(city);
+        state.pe_process_crt = Win95CrtRand::new(1);
+        state.menu_checks.citygame_newspaper = false;
+        state
+            .load_win_scenario(&root.join(format!("{name}.SCN")), (800, 600), 1.0)
+            .unwrap();
+        state.close_city_info_dialog();
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        state.city.set_view_rotation(state.city.saved_rotation());
+        let _rng = LiveGrowthRng::enable();
+        state.advance_frame_simulation(Duration::from_millis(200));
+
+        let city = &state.city;
+        let map = |at: &dyn Fn(usize, usize) -> u8| {
+            (0..CITY_WIDTH)
+                .flat_map(|x| (0..CITY_HEIGHT).map(move |y| at(x, y)))
+                .fold(basis, hash)
+        };
+        assert_eq!(city.city_age_days(), Some(age), "{name} age");
+        assert_eq!(state.pe_process_crt_seed(), crt, "{name} CRT");
+        assert_eq!(state.pe_process_lfsr_state(), lfsr, "{name} LFSR");
+        assert_eq!(
+            state.pe_process_game_rand.state(),
+            game_rng,
+            "{name} game RNG"
+        );
+        assert_eq!(state.city.pe_w_trigger_disaster, 0, "{name} selector");
+        assert_eq!(
+            state.pe_idle_scheduler.pending_disaster_point, pending_point,
+            "{name} pending point"
+        );
+        assert!(!city.has_active_disaster(), "{name} active disaster");
+        assert_eq!(
+            map(&|x, y| city.text_overlay_at(x, y).unwrap_or(0)),
+            xtxt,
+            "{name} XTXT"
+        );
+        assert_eq!(pe_open_xbit_fingerprint(city), xbit, "{name} XBIT");
+    }
 }

@@ -15373,7 +15373,139 @@ fn pe_retail_win_scenario_open_checkpoints() {
             0xb5f9_95ff_6cad_3c9f,
         ),
     ];
-    for (name, selector, point, crt, services, expected_xbit) in cases {
+    // Native post-open hashes in XBLD, XTER, XZON, ALTM, and XUND order.
+    let expected_planes = [
+        [
+            0x3ef0_3d18_432d_8457,
+            0x868b_8233_3333_f670,
+            0x5a6d_8f01_cf9f_25de,
+            0x0cd9_d6b1_ef29_3605,
+            0x0883_50e0_2add_3ef7,
+        ],
+        [
+            0xaa5b_0fce_e058_5bec,
+            0x4cf1_d035_e87f_a395,
+            0x85fe_c3fa_e2b9_b364,
+            0xb9f4_a947_9cf9_3b30,
+            0x860f_ffce_5305_31e4,
+        ],
+        [
+            0x42bf_57ac_63e6_8bd7,
+            0x504b_c250_dc47_220a,
+            0x1102_95d9_a988_a2cd,
+            0xc93b_7c8b_f8d0_00de,
+            0x7f96_36ea_d311_5651,
+        ],
+        [
+            0x019d_599f_0808_e90d,
+            0x2764_54d3_cc63_e0f1,
+            0x9dc7_2a70_b090_ced5,
+            0x0818_045d_8a46_6125,
+            0xb3b4_0ca5_940d_5fbb,
+        ],
+        [
+            0xb945_d1d0_7a6e_1cd1,
+            0x373d_c23e_eea3_4e72,
+            0x1ed4_ee54_be5b_b8f1,
+            0x32ce_2af3_ab4e_d8b9,
+            0x0fed_abfb_5ee0_85da,
+        ],
+        [
+            0x0d0d_7ec7_75af_3023,
+            0xb63f_796e_55f7_3d7f,
+            0x9eda_9e51_4ba9_e63b,
+            0xed30_b84e_233b_d81a,
+            0x9c1b_da7f_8c87_2325,
+        ],
+        [
+            0xca31_d1aa_b285_559e,
+            0x2db3_d13a_22e4_743c,
+            0x681f_eabd_83f1_cb13,
+            0x1513_40ef_2c67_4963,
+            0xce5c_b8b4_8851_d2dc,
+        ],
+        [
+            0x0b58_c62c_3c57_37c5,
+            0xf853_d492_4f48_384b,
+            0xe280_c5bd_d1c8_1e35,
+            0x83f9_35a8_e41b_b2fa,
+            0x2fcd_3b62_2a8b_4047,
+        ],
+        [
+            0x367b_f0c9_2590_f56d,
+            0xb69f_a88b_7ba8_8fee,
+            0xbb95_107e_d1e5_bba0,
+            0x7ea0_2bdb_00bf_d05b,
+            0xc433_3fcb_d331_13b1,
+        ],
+        [
+            0x7f49_e492_753a_3df0,
+            0xc943_ece0_c8a4_975e,
+            0xc1e2_5dbc_92cd_11f7,
+            0xeba0_487c_c318_34b8,
+            0x4fcf_63be_1145_865b,
+        ],
+        [
+            0x04e3_c8e0_1ac8_1f78,
+            0x214e_fc74_8143_cb51,
+            0xf6fe_f08b_8bb5_fd59,
+            0xb974_01f7_e0a9_206a,
+            0x75a2_cf53_d8b6_559c,
+        ],
+        [
+            0x616e_6f6e_e6c9_14b1,
+            0xd5d4_aefa_d133_3f9d,
+            0x63b2_cb54_c6c0_470a,
+            0x16e7_ec5b_81ee_a925,
+            0xfb25_9e78_fb9c_165c,
+        ],
+        [
+            0x8382_3375_1a79_817b,
+            0x3b3a_99be_cc61_11e7,
+            0xcd97_c886_6944_35e6,
+            0xdf36_6561_cbb4_ac46,
+            0x4202_a829_4cc6_134f,
+        ],
+        [
+            0x79ee_56ed_b111_cf41,
+            0x5e6e_a352_1428_8d67,
+            0xda37_aeec_a096_acad,
+            0x1a7e_2071_ba78_b03a,
+            0x995a_231c_bfa9_b611,
+        ],
+        [
+            0x2768_2d13_0c5c_58f4,
+            0x5615_8169_c4b6_d133,
+            0x4ab9_eef0_537d_1d6d,
+            0x0877_dbc1_bc32_ad56,
+            0x181c_a32d_4c83_4012,
+        ],
+        [
+            0xf5cc_4a16_92da_9b6a,
+            0x108c_7537_9551_f145,
+            0xd6fd_2dc5_537b_3c65,
+            0x3de7_d62a_2b37_d620,
+            0x3eb3_867d_a13d_93ea,
+        ],
+        [
+            0x6564_20f6_f9ca_89c4,
+            0xd53b_5b1c_157a_5d30,
+            0xb8aa_8f93_7e18_8667,
+            0x27db_7629_274b_608c,
+            0x8fae_b420_473c_d641,
+        ],
+        [
+            0x1804_cdc1_7637_49bb,
+            0xa5d1_906b_4abe_939a,
+            0xbcb0_8398_d5aa_af02,
+            0x3ad3_3e36_5240_a1b8,
+            0xf5e1_4505_5e89_0c30,
+        ],
+    ];
+    assert_eq!(cases.len(), expected_planes.len());
+    for (case_index, (name, selector, point, crt, services, expected_xbit)) in
+        cases.into_iter().enumerate()
+    {
         let city = City::new_blank("/tmp/pe-scenario-open.sc2", "test").expect("blank city");
         let mut state = test_state(city);
         state.pe_process_crt = Win95CrtRand::new(1);
@@ -15385,6 +15517,11 @@ fn pe_retail_win_scenario_open_checkpoints() {
             pe_open_xbit_fingerprint(&state.city),
             expected_xbit,
             "{name} XBIT"
+        );
+        assert_eq!(
+            pe_open_scenario_map_fingerprints(&state.city),
+            expected_planes[case_index],
+            "{name} XBLD/XTER/XZON/ALTM/XUND"
         );
         assert_eq!(
             (
@@ -15413,6 +15550,39 @@ fn pe_open_xbit_fingerprint(city: &City) -> u64 {
         }
     }
     fingerprint
+}
+
+fn pe_open_scenario_map_fingerprints(city: &City) -> [u64; 5] {
+    let byte_plane = |mut value_at: Box<dyn FnMut(usize, usize) -> u8>| {
+        let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                fingerprint =
+                    (fingerprint ^ u64::from(value_at(x, y))).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        fingerprint
+    };
+    let xbl = byte_plane(Box::new(|x, y| city.building_at(x, y)));
+    let xter = byte_plane(Box::new(|x, y| city.terrain_at(x, y)));
+    let xzon = byte_plane(Box::new(|x, y| {
+        city.zone_at(x, y).unwrap_or_default().raw_bits()
+    }));
+    let xund = byte_plane(Box::new(|x, y| city.underground_at(x, y)));
+
+    let mut altm = 0xcbf2_9ce4_8422_2325_u64;
+    for x in 0..CITY_WIDTH {
+        for y in 0..CITY_HEIGHT {
+            let sample = city.altm_at(x, y);
+            let word = u16::from(sample.land)
+                | (u16::from(sample.water) << 5)
+                | (u16::from(sample.tunnel_levels) << 10);
+            for byte in word.to_le_bytes() {
+                altm = (altm ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+    }
+    [xbl, xter, xzon, altm, xund]
 }
 
 #[test]

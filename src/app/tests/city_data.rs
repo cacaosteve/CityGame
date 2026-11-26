@@ -4809,6 +4809,67 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         .and_then(|value| value.parse::<u32>().ok());
     let use_captured_sample_order = std::env::var_os("CITYGAME_MAC_R20_CAPTURED_SAMPLE_ORDER")
         .is_some_and(|value| value == "1");
+    let boundary_snapshot_age = std::env::var("CITYGAME_MAC_R20_SNAPSHOT_AGE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let boundary_snapshot_dir = std::env::var_os("CITYGAME_MAC_R20_SNAPSHOT_DIR")
+        .map(PathBuf::from);
+    if let Some(dir) = &boundary_snapshot_dir {
+        std::fs::create_dir_all(dir).expect("create R20 boundary snapshot directory");
+    }
+    let capture_boundary_snapshot = |state: &super::super::ViewerState,
+                                     tick: u32,
+                                     boundary: &str| {
+        let Some((age, dir)) = boundary_snapshot_age.zip(boundary_snapshot_dir.as_ref()) else {
+            return;
+        };
+        let city_age = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+        let stem = format!("age{age}-tick{tick}-{boundary}-cityage{city_age}");
+        let cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+        let cgms_path = dir.join(format!("{stem}.cgms"));
+        std::fs::write(&cgms_path, cgms).expect("write R20 boundary CGMS");
+        for (name, plane) in [
+            ("xplc", state.city.police_coverage_slice()),
+            ("xfir", state.city.fire_coverage_slice()),
+            ("xpop", state.city.population_density_slice()),
+            ("xrog", state.city.rate_of_growth_slice()),
+        ] {
+            if let Some(plane) = plane {
+                std::fs::write(dir.join(format!("{stem}-{name}.bin")), plane)
+                    .unwrap_or_else(|_| panic!("write R20 boundary {name}"));
+            }
+        }
+        let mut xmic = Vec::with_capacity(150 * 8);
+        for index in 0..150 {
+            let row = state.city.microsim_at(index).unwrap_or_default();
+            xmic.extend_from_slice(&[
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ]);
+        }
+        std::fs::write(dir.join(format!("{stem}-xmic.bin")), xmic)
+            .expect("write R20 boundary XMIC");
+        std::fs::write(
+            dir.join(format!("{stem}.txt")),
+            format!(
+                "tick={tick}\nage={city_age}\ndate={:?}\nfunds={}\nquickdraw={:08x}\ngame_lcg={:08x}\napp_lfsr={:04x}\nactor_timers={:?}\n",
+                state.game_clock,
+                state.city.city_funds(),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+                state.mac_loop_scheduler.actor_timer_diagnostics(),
+            ),
+        )
+        .expect("write R20 boundary metadata");
+        eprintln!("R20 boundary snapshot {stem}");
+    };
 
     for tick in replay_ticks {
         let calendar_rng_before_diagnostic = (
@@ -4827,6 +4888,10 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             && (diagnostic_calendar_first_tick == Some(tick)
                 || (use_captured_sample_order && captured_calendar_precedes_actor));
         let diagnostic_calendar_advance = if run_calendar_first {
+            let age_before = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+            if boundary_snapshot_age.is_some_and(|age| age_before < age && age_before + 1 >= age) {
+                capture_boundary_snapshot(&state, tick, "calendar-first-before");
+            }
             let advance = state
                 .finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
                     ticks_duration(tick.wrapping_sub(last_frame_tick)),
@@ -4834,6 +4899,10 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                     pointer_down,
                     || std::time::Duration::ZERO,
                 );
+            let age_after = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+            if boundary_snapshot_age.is_some_and(|age| age_before < age && age_after >= age) {
+                capture_boundary_snapshot(&state, tick, "calendar-first-after");
+            }
             writeln!(
                 phase_rng_trace,
                 "{tick},calendar-first,{}, {:08x},{:08x},{:04x},{:08x},{:08x},{:04x},{}",
@@ -5088,12 +5157,20 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         );
         let calendar_elapsed_ticks = tick.wrapping_sub(last_frame_tick);
         let budget_pending_before = state.mac_loop_scheduler.january_budget_review_pending;
+        let age_before = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+        if boundary_snapshot_age.is_some_and(|age| age_before < age && age_before + 1 >= age) {
+            capture_boundary_snapshot(&state, tick, "calendar-before");
+        }
         let advance = state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
             ticks_duration(tick.wrapping_sub(last_frame_tick)),
             actor_wait_ticks,
             pointer_down,
             || std::time::Duration::ZERO,
         );
+        let age_after = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+        if boundary_snapshot_age.is_some_and(|age| age_before < age && age_after >= age) {
+            capture_boundary_snapshot(&state, tick, "calendar-after");
+        }
         if (6000..=6150).contains(&tick) {
             eprintln!(
                 "R20 phase audit calendar tick={tick} elapsed={calendar_elapsed_ticks} actor_wait={actor_wait_ticks} age={} days={} qd={:08x}->{:08x} game={:08x}->{:08x} app={:04x}->{:04x}",

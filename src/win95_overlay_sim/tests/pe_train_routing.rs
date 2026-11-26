@@ -439,7 +439,10 @@ fn ambient_train_route_validity_uses_current_pe_kind() {
     ));
 
     city.set_building(10, 10, 112);
-    assert!(ambient_actor_can_occupy(XTHG_TRAIN_ENGINE, &city, 10, 10));
+    assert!(
+        !ambient_actor_can_occupy(XTHG_TRAIN_ENGINE, &city, 10, 10),
+        "native surface-train routing excludes the subway portal face"
+    );
     assert!(ambient_actor_can_occupy(
         XTHG_SUBWAY_TRAIN_ENGINE,
         &city,

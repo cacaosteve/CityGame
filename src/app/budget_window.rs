@@ -3070,10 +3070,7 @@ mod tests {
             city.set_microsim_stat3(i, u16::from_be_bytes([row[6], row[7]]));
         }
 
-        let ram = std::fs::read(
-            root.join("r14-january-2150-budget-review-20261124.ram"),
-        )
-        .unwrap();
+        let ram = std::fs::read(root.join("r14-january-2150-budget-review-20261124.ram")).unwrap();
         assert_eq!(ram.len(), 16 * 1024 * 1024);
         let native_u32 =
             |address: usize| u32::from_be_bytes(ram[address..address + 4].try_into().unwrap());
@@ -3130,8 +3127,7 @@ mod tests {
         let annual_entry =
             std::fs::read(root.join("code3-export162-entry-age75000-tick2295719.ram")).unwrap();
         assert_eq!(annual_entry.len(), 16 * 1024 * 1024);
-        let entry_a5 =
-            u32::from_be_bytes(annual_entry[0x904..0x908].try_into().unwrap()) as usize;
+        let entry_a5 = u32::from_be_bytes(annual_entry[0x904..0x908].try_into().unwrap()) as usize;
         let funds_offset = entry_a5 + 0xefac - 0x10000;
         let native_funds = u32::from_be_bytes(
             annual_entry[funds_offset..funds_offset + 4]
@@ -3372,7 +3368,10 @@ mod tests {
         });
         assert_eq!(
             city.saved_date(),
-            Some(crate::city::CityDate { year: 1976, month: 1 })
+            Some(crate::city::CityDate {
+                year: 1976,
+                month: 1
+            })
         );
 
         let mut state = crate::app::tests::test_state(city);
@@ -6635,21 +6634,85 @@ mod tests {
                 0xea8a,
                 0x4ed9_4644,
             ),
+            (
+                1910,
+                3000,
+                163_567,
+                163_568,
+                0x1fe9_0161,
+                0x1fe9_0161,
+                0x92bd,
+                0x3e8f,
+                0x4ed9_4644,
+            ),
+            (
+                1911,
+                3300,
+                172_363,
+                172_364,
+                0x2911_0ef2,
+                0x2911_0ef2,
+                0x3352,
+                0x66a4,
+                0x4ed9_4644,
+            ),
+            (
+                1912,
+                3600,
+                181_144,
+                181_145,
+                0x7034_49c2,
+                0x7034_49c2,
+                0xb727,
+                0x75bb,
+                0x4ed9_4644,
+            ),
+            (
+                1913,
+                3900,
+                189_897,
+                189_898,
+                0x276e_ab48,
+                0x276e_ab48,
+                0xa3e6,
+                0x5c39,
+                0x4ed9_4644,
+            ),
+            (
+                1914,
+                4200,
+                198_641,
+                198_642,
+                0x5b84_b772,
+                0x5b84_b772,
+                0x415f,
+                0x82be,
+                0x4ed9_4644,
+            ),
+            (
+                1915,
+                4500,
+                207_384,
+                207_385,
+                0x7867_c01b,
+                0x7867_c01b,
+                0xb90f,
+                0x69eb,
+                0x4ed9_4644,
+            ),
         ];
 
         for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, game_lcg) in
             cases
         {
-            let stem = |role: &str, tick: u32| {
-                format!("code3-export162-{role}-age{age}-tick{tick}")
-            };
-            let entry_cgms = std::fs::read(root.join(format!("{}.cgms", stem("entry", entry_tick))))
-                .unwrap();
+            let stem =
+                |role: &str, tick: u32| format!("code3-export162-{role}-age{age}-tick{tick}");
+            let entry_cgms =
+                std::fs::read(root.join(format!("{}.cgms", stem("entry", entry_tick)))).unwrap();
             let mut city = crate::city::city_from_cgms_v4_for_test(&entry_cgms).unwrap();
-            let entry_xmic = std::fs::read(
-                root.join(format!("{}-xmic.bin", stem("entry", entry_tick))),
-            )
-            .unwrap();
+            let entry_xmic =
+                std::fs::read(root.join(format!("{}-xmic.bin", stem("entry", entry_tick))))
+                    .unwrap();
             assert_eq!(entry_xmic.len(), 150 * 8);
             for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
                 city.set_microsim_tile_id(slot, row[0]);
@@ -6659,27 +6722,29 @@ mod tests {
                 city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
             }
 
-            let entry_ram = std::fs::read(root.join(format!(
-                "code3-export162-entry-age{age}-tick{entry_tick}.ram"
-            )))
+            let native_budget_rows = std::fs::read_to_string(
+                root.join(format!("{}-budget-rows.csv", stem("entry", entry_tick))),
+            )
             .unwrap();
-            assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
-            let native_u32 = |address: usize| {
-                u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
-            };
-            let a5 = native_u32(0x904) as usize;
-            let budget_table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
-            for row in 0..16 {
-                let start = budget_table + row * 0x70;
+            let mut lines = native_budget_rows.lines();
+            assert_eq!(lines.next(), Some("row,field_60,field_64,field_68"));
+            let mut seen_budget_rows = [false; 16];
+            for line in lines {
+                let fields: Vec<_> = line.split(',').collect();
+                assert_eq!(fields.len(), 4);
+                let row: usize = fields[0].parse().unwrap();
+                assert!(row < seen_budget_rows.len() && !seen_budget_rows[row]);
+                seen_budget_rows[row] = true;
                 let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
-                for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
-                    values[field] = native_u32(start + offset);
+                for (field, raw) in fields[1..].iter().enumerate() {
+                    values[field] = raw.parse::<i32>().unwrap() as u32;
                 }
                 city.set_budget_misc_u32_values(
                     0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4,
                     &values,
                 );
             }
+            assert!(seen_budget_rows.into_iter().all(|seen| seen));
             assert_eq!(
                 city.saved_date(),
                 Some(crate::city::CityDate { year, month: 1 })
@@ -6701,13 +6766,16 @@ mod tests {
                 std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
             state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
 
-            assert_eq!(state.mac_process_rng.seed(), qd_out, "year {year} QuickDraw");
+            assert_eq!(
+                state.mac_process_rng.seed(),
+                qd_out,
+                "year {year} QuickDraw"
+            );
             assert_eq!(state.mac_game_rng.state(), game_lcg, "year {year} game LCG");
             assert_eq!(state.mac_app_lfsr.state(), lfsr_out, "year {year} app LFSR");
-            let native_xmic = std::fs::read(
-                root.join(format!("{}-xmic.bin", stem("return", return_tick))),
-            )
-            .unwrap();
+            let native_xmic =
+                std::fs::read(root.join(format!("{}-xmic.bin", stem("return", return_tick))))
+                    .unwrap();
             assert_eq!(native_xmic.len(), 150 * 8);
             for slot in 0..150 {
                 let row = state.city.microsim_at(slot).unwrap();
@@ -7146,7 +7214,10 @@ mod tests {
         city.name = "AutoDebt".to_owned();
         assert_eq!(
             city.saved_date(),
-            Some(crate::city::CityDate { year: 2060, month: 1 })
+            Some(crate::city::CityDate {
+                year: 2060,
+                month: 1
+            })
         );
 
         let ram = std::fs::read(root.join(format!("{stem}.ram"))).unwrap();
@@ -7169,10 +7240,7 @@ mod tests {
             for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
                 values[field] = native_u32(start + offset);
             }
-            city.set_budget_misc_u32_values(
-                0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4,
-                &values,
-            );
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
         }
 
         let entries = entries_for_city_for_month(&city, EngineFidelity::Mac68k, 1, true);
@@ -7196,7 +7264,10 @@ mod tests {
         assert_eq!(reloaded.kind, CityFileKind::MacCity);
         assert_eq!(
             reloaded.saved_date(),
-            Some(crate::city::CityDate { year: 2060, month: 1 })
+            Some(crate::city::CityDate {
+                year: 2060,
+                month: 1
+            })
         );
         assert_eq!(reloaded.city_funds(), funds);
         let reloaded_entries =
@@ -7345,7 +7416,9 @@ mod tests {
         state
             .city
             .set_mac_state_misc_u32_at(AUTO_BUDGET_MISC_OFFSET, u32::from(native_auto_budget));
-        assert!(!crate::app::budget::mac_auto_budget_enabled_for_city(&state.city));
+        assert!(!crate::app::budget::mac_auto_budget_enabled_for_city(
+            &state.city
+        ));
         assert_eq!(
             crate::app::dialog_input::city_info_dialog_hit_test_for_engine(
                 Vec2::new(329.0, 228.0),

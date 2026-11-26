@@ -4701,6 +4701,15 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         "tick,phase,age,qd_before,game_before,app_before,qd_after,game_after,app_after,days"
     )
     .unwrap();
+    let mut actor_timer_trace = std::env::var_os("CITYGAME_MAC_R20_ACTOR_TIMER_TRACE")
+        .map(|path| std::fs::File::create(path).expect("create R20 actor timer trace"));
+    let actor_refresh_at_check_tick =
+        std::env::var_os("CITYGAME_MAC_R20_ACTOR_REFRESH_AT_CHECK_TICK")
+            .is_some_and(|value| value == "1");
+    if let Some(trace) = actor_timer_trace.as_mut() {
+        writeln!(trace, "tick,refresh_tick,last_frame_before,age_before,deadline_before,dispatch_before,smoother_before,wait_ticks,age_after,deadline_after,dispatch_after,smoother_after,qd_before,game_before,app_before,qd_after,game_after,app_after")
+            .unwrap();
+    }
     let ticks_duration = |ticks: u32| {
         let nanos = (u64::from(ticks) * 1_000_000_000 + 59) / 60;
         std::time::Duration::from_nanos(nanos)
@@ -4929,11 +4938,16 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         let mut actor_wait_ticks = 0;
         if actor_check_ticks.contains(&tick) {
             let actor_timer_before = state.mac_loop_scheduler.actor_timer_diagnostics();
-            let refresh_tick = post_actor_tickcounts
-                .iter()
-                .copied()
-                .find(|sample| *sample >= tick)
-                .unwrap_or(tick);
+            let age_before_actor = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+            let refresh_tick = if actor_refresh_at_check_tick {
+                tick
+            } else {
+                post_actor_tickcounts
+                    .iter()
+                    .copied()
+                    .find(|sample| *sample >= tick)
+                    .unwrap_or(tick)
+            };
             actor_wait_ticks = state.begin_mac_frame_actor_phase_with_tick_refresh(
                 ticks_duration(tick.wrapping_sub(last_frame_tick)),
                 || ticks_duration(refresh_tick.wrapping_sub(tick)),
@@ -4954,6 +4968,28 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 state.mac_game_rng.state(),
                 state.mac_app_lfsr.state(),
             );
+            if let Some(trace) = actor_timer_trace.as_mut() {
+                let actor_timer_after = state.mac_loop_scheduler.actor_timer_diagnostics();
+                writeln!(
+                    trace,
+                    "{tick},{refresh_tick},{last_frame_tick},{age_before_actor},{},{},{},{},{},{},{},{},{:08x},{:08x},{:04x},{:08x},{:08x},{:04x}",
+                    actor_timer_before.0,
+                    actor_timer_before.1,
+                    actor_timer_before.2,
+                    actor_wait_ticks,
+                    state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                    actor_timer_after.0,
+                    actor_timer_after.1,
+                    actor_timer_after.2,
+                    rng_before_actor.0,
+                    rng_before_actor.1,
+                    rng_before_actor.2,
+                    rng_after_actor.0,
+                    rng_after_actor.1,
+                    rng_after_actor.2,
+                )
+                .unwrap();
+            }
             if rng_after_actor != rng_before_actor {
                 writeln!(
                     phase_rng_trace,

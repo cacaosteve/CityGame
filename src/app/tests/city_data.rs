@@ -4706,6 +4706,9 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let actor_refresh_at_check_tick =
         std::env::var_os("CITYGAME_MAC_R20_ACTOR_REFRESH_AT_CHECK_TICK")
             .is_some_and(|value| value == "1");
+    let actor_refresh_from_native_deadline_sample =
+        std::env::var_os("CITYGAME_MAC_R20_ACTOR_REFRESH_FROM_NATIVE_DEADLINE_SAMPLE")
+            .is_some_and(|value| value == "1");
     if let Some(trace) = actor_timer_trace.as_mut() {
         writeln!(trace, "tick,refresh_tick,last_frame_before,age_before,deadline_before,dispatch_before,smoother_before,wait_ticks,age_after,deadline_after,dispatch_after,smoother_after,qd_before,game_before,app_before,qd_after,game_after,app_after")
             .unwrap();
@@ -4741,6 +4744,8 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         std::collections::HashMap::<u32, (Option<usize>, Option<usize>)>::new();
     let mut post_actor_tickcounts = Vec::new();
     let mut native_calendar_dispatch_ticks = Vec::new();
+    let mut native_actor_deadline_write_ticks = std::collections::HashMap::new();
+    let mut last_native_actor_check_tick = None;
     let mut citygame_calendar_dispatch_ticks = Vec::new();
     let clock_file = std::fs::File::open(trace_root.join("gdb-clock.csv"))
         .expect("R20 CODE 2 TickCount capture");
@@ -4754,20 +4759,31 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             continue;
         }
         match fields[1] {
+            "CODE2.actor_deadline_tick_return" => {
+                last_native_actor_check_tick = Some(tick);
+                if actor_check_ticks.last() != Some(&tick) {
+                    actor_check_ticks.push(tick);
+                    captured_sample_order
+                        .entry(tick)
+                        .or_default()
+                        .1
+                        .get_or_insert(capture_row_order);
+                }
+            }
+            "CODE2.actor_timer_30tick_add" | "CODE2.actor_timer_45tick_add" => {
+                // The branch marker is the first instruction after the second
+                // _TickCount trap (static CODE 2 offset 0x382). Use the
+                // captured live TickCount at this PC; D7 is unrelated scratch.
+                if let Some(check_tick) = last_native_actor_check_tick.take() {
+                    native_actor_deadline_write_ticks.insert(check_tick, tick);
+                }
+            }
             "CODE2.tick_sample_a" if calendar_ticks.last() != Some(&tick) => {
                 calendar_ticks.push(tick);
                 captured_sample_order
                     .entry(tick)
                     .or_default()
                     .0
-                    .get_or_insert(capture_row_order);
-            }
-            "CODE2.actor_deadline_tick_return" if actor_check_ticks.last() != Some(&tick) => {
-                actor_check_ticks.push(tick);
-                captured_sample_order
-                    .entry(tick)
-                    .or_default()
-                    .1
                     .get_or_insert(capture_row_order);
             }
             "CODE2.post_export109_tickcount_trap"
@@ -4939,7 +4955,12 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         if actor_check_ticks.contains(&tick) {
             let actor_timer_before = state.mac_loop_scheduler.actor_timer_diagnostics();
             let age_before_actor = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
-            let refresh_tick = if actor_refresh_at_check_tick {
+            let refresh_tick = if actor_refresh_from_native_deadline_sample {
+                native_actor_deadline_write_ticks
+                    .get(&tick)
+                    .copied()
+                    .unwrap_or(tick)
+            } else if actor_refresh_at_check_tick {
                 tick
             } else {
                 post_actor_tickcounts

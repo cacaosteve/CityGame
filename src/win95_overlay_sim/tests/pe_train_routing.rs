@@ -481,7 +481,7 @@ fn ambient_train_spawn_direction_uses_pe_cardinal_fallback() {
 }
 
 #[test]
-fn ambient_train_occupancy_includes_pe_endpoint_rail_ids() {
+fn ambient_train_occupancy_matches_pe_route_id_bounds() {
     let mut city = City::new_blank(
         std::path::Path::new("/tmp/train-endpoint-rail.sc2"),
         "TrainEndpointRail",
@@ -489,8 +489,20 @@ fn ambient_train_occupancy_includes_pe_endpoint_rail_ids() {
     .expect("city");
     city.set_building(10, 10, 63);
     assert!(train_can_occupy(&city, 10, 10));
-    city.set_building(10, 10, 73);
+    city.set_building(10, 10, 72);
     assert!(train_can_occupy(&city, 10, 10));
+    city.set_building(10, 10, 73);
+    assert!(
+        !train_can_occupy(&city, 10, 10),
+        "native train routing excludes building ID 73"
+    );
+    city.set_building(10, 10, 111);
+    assert!(train_can_occupy(&city, 10, 10));
+    city.set_building(10, 10, 112);
+    assert!(
+        !train_can_occupy(&city, 10, 10),
+        "native train routing excludes building ID 112"
+    );
 }
 
 #[test]

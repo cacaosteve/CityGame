@@ -32,7 +32,9 @@ pub(super) fn train_track_at(city: &City, x: usize, y: usize) -> bool {
     let building = city.building_at(x, y);
     // `FUN_00455C60` train arm: surface rail, tunnel mouths, and crossings.
     // The rail depot is a spawn source, not a valid train-route destination.
-    matches!(building, 44..=63 | 69..=73 | 77 | 78 | 90 | 91 | 108..=112)
+    // Native `FUN_00455C60`'s train arm uses half-open comparisons for
+    // 69..73 and 108..112, so IDs 73 and 112 are not surface-train routes.
+    matches!(building, 44..=63 | 69..=72 | 77 | 78 | 90 | 91 | 108..=111)
 }
 
 pub(super) fn subway_can_occupy(city: &City, x: usize, y: usize) -> bool {

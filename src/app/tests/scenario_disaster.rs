@@ -17155,9 +17155,8 @@ fn pe_retail_win_scenario_first_disaster() {
 
     // These three scenarios do not queue a disaster on the first day. Keep
     // them as negative controls so the 15 immediate-disaster cases do not
-    // imply that every retail scenario must trigger one at open. XTHG is not
-    // hashed here: Flint's train record has a separately tracked first-sweep
-    // mismatch, and this test does not encode CityGame's current actor output.
+    // imply that every retail scenario must trigger one at open. Flint's train
+    // slot is compared separately against the native first-sweep record.
     let no_disaster_cases = [
         (
             "FLINT",
@@ -17230,5 +17229,12 @@ fn pe_retail_win_scenario_first_disaster() {
             "{name} XTXT"
         );
         assert_eq!(pe_open_xbit_fingerprint(city), xbit, "{name} XBIT");
+        if name == "FLINT" {
+            assert_eq!(
+                city.traffic_overlays().unwrap()[13].to_bytes(),
+                [0x0a, 0, 0x0e, 0x40, 0x4e, 0, 0x40, 0x4d, 0, 0, 0, 0x28],
+                "Flint train slot 13 after the native first Things sweep"
+            );
+        }
     }
 }

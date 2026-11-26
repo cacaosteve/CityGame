@@ -15510,8 +15510,17 @@ fn pe_retail_win_scenario_open_checkpoints() {
         let mut state = test_state(city);
         state.pe_process_crt = Win95CrtRand::new(1);
         state.menu_checks.citygame_newspaper = false;
+        let case_dir = std::env::temp_dir().join(format!(
+            "citygame-pe-scenario-roundtrip-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&case_dir).expect("create isolated scenario roundtrip directory");
+        let source = root.join(format!("{name}.SCN"));
+        let working_source = case_dir.join(format!("{name}.SCN"));
+        let original_source = std::fs::read(&source).expect("read retail scenario source");
+        std::fs::write(&working_source, &original_source).expect("copy retail scenario source");
         state
-            .load_win_scenario(&root.join(format!("{name}.SCN")), (800, 600), 1.0)
+            .load_win_scenario(&working_source, (800, 600), 1.0)
             .expect("load retail scenario");
         assert_eq!(
             pe_open_xbit_fingerprint(&state.city),
@@ -15538,6 +15547,96 @@ fn pe_retail_win_scenario_open_checkpoints() {
             "{name}"
         );
         assert_eq!(state.pe_process_crt_seed(), crt, "{name}");
+
+        let opened_funds = state.city.city_funds();
+        let opened_age = state.city.city_age_days();
+        let mut opened_tiles = Vec::with_capacity(CITY_WIDTH * CITY_HEIGHT);
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                opened_tiles.push(state.city.tile_bits_at(x, y).unwrap_or_default().raw_bits());
+            }
+        }
+        let opened_map_planes = pe_open_scenario_map_fingerprints(&state.city);
+        let opened_xmic: Vec<_> = (0..150).map(|slot| state.city.microsim_at(slot)).collect();
+        assert_eq!(
+            std::fs::read(&working_source).unwrap(),
+            original_source,
+            "{name} source"
+        );
+        state
+            .save_current_city((800, 600), 1.0)
+            .expect("save opened retail scenario as a city");
+        let saved_city = state.city.path.clone();
+        assert_ne!(
+            saved_city, working_source,
+            "{name} must save beside the scenario"
+        );
+        state
+            .load_city(&saved_city, (800, 600), 1.0)
+            .expect("reload saved retail scenario as an ordinary city");
+        let mut changed_tiles = Vec::new();
+        for x in 0..CITY_WIDTH {
+            for y in 0..CITY_HEIGHT {
+                let index = x * CITY_HEIGHT + y;
+                let after = state.city.tile_bits_at(x, y).unwrap_or_default().raw_bits();
+                if opened_tiles[index] != after {
+                    changed_tiles.push((x, y, opened_tiles[index], after));
+                }
+                assert_eq!(
+                    opened_tiles[index] & !0x40,
+                    after & !0x40,
+                    "{name} non-power XBIT flags after save/reload at ({x},{y})"
+                );
+            }
+        }
+        if !changed_tiles.is_empty() {
+            eprintln!("{name} tile-bit changes across save/reload: {changed_tiles:?}");
+            eprintln!(
+                "{name} map planes before={opened_map_planes:016x?} after={:016x?}",
+                pe_open_scenario_map_fingerprints(&state.city)
+            );
+        }
+        assert_eq!(
+            state.city.kind,
+            CityFileKind::WinSc2,
+            "{name} file kind after reload"
+        );
+        assert!(
+            !state.city.pe_scenario_active(),
+            "{name} scenario state after reload"
+        );
+        assert_eq!(
+            state.city.city_funds(),
+            opened_funds,
+            "{name} funds after reload"
+        );
+        assert_eq!(
+            state.city.city_age_days(),
+            opened_age,
+            "{name} age after reload"
+        );
+        assert_eq!(
+            pe_open_scenario_map_fingerprints(&state.city),
+            opened_map_planes,
+            "{name} XBLD/XTER/XZON/ALTM/XUND after save/reload"
+        );
+        assert_eq!(
+            opened_map_planes, expected_planes[case_index],
+            "{name} native map planes before save"
+        );
+        for (slot, opened) in opened_xmic.into_iter().enumerate() {
+            assert_eq!(
+                state.city.microsim_at(slot),
+                opened,
+                "{name} XMIC after save/reload, slot={slot}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&working_source).unwrap(),
+            original_source,
+            "{name} source after save"
+        );
+        std::fs::remove_dir_all(case_dir).expect("remove scenario roundtrip fixtures");
     }
 }
 

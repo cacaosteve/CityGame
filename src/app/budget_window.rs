@@ -6788,6 +6788,17 @@ mod tests {
                 0xd2f7,
                 0x4ed9_4644,
             ),
+            (
+                1924,
+                7200,
+                289_662,
+                289_664,
+                0x58c3_2ada,
+                0x58c3_2ada,
+                0x1e26,
+                0x3c4c,
+                0x4ed9_4644,
+            ),
         ];
 
         for (year, age, entry_tick, return_tick, qd_in, qd_out, lfsr_in, lfsr_out, game_lcg) in

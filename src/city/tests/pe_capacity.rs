@@ -529,6 +529,113 @@ fn yearly_microsim_random_rolls_follow_xmic_slot_order() {
 }
 
 #[test]
+fn win95_annual_statue_zoo_statue_slots_match_native_mixed_rng_walk() {
+    let mut city = City::new_blank("/tmp/sc2000-annual-statue-zoo-order.sc2", "AnnualRng")
+        .expect("blank city");
+    let statue_first = usize::from(
+        city.provision_microsim_for_building(219).unwrap() - super::MIN_SIM_TEXT_ENTRIES,
+    );
+    let zoo = usize::from(
+        city.provision_microsim_for_building(218).unwrap() - super::MIN_SIM_TEXT_ENTRIES,
+    );
+    let statue_last = usize::from(
+        city.provision_microsim_for_building(219).unwrap() - super::MIN_SIM_TEXT_ENTRIES,
+    );
+    assert!(statue_first < zoo && zoo < statue_last);
+
+    let records = city.microsims.as_mut().expect("microsim table");
+    records[statue_first] = super::MicrosimRecord {
+        tile_id: 219,
+        stat0: 0xa5,
+        stat1: 0x1111,
+        stat2: 0x2222,
+        stat3: 0xaaaa,
+    };
+    records[zoo] = super::MicrosimRecord {
+        tile_id: 218,
+        stat0: 0x5a,
+        stat1: 0x2222,
+        stat2: 0xbbbb,
+        stat3: 0x3333,
+    };
+    records[statue_last] = super::MicrosimRecord {
+        tile_id: 219,
+        stat0: 0x3c,
+        stat1: 0x3333,
+        stat2: 0x4444,
+        stat3: 0xcccc,
+    };
+
+    // This CRT seed makes the native annual loop's two Statue rows receive
+    // rand() values 41 and 42, even with the Zoo's four separate game-LCG
+    // calls between them. The PE stores 41 and 42 % 42, respectively.
+    let mut crt = super::Win95CrtRand::new(0x0dca_7603);
+    let mut expected_crt = crt;
+    assert_eq!(expected_crt.random_u15(), 41);
+    assert_eq!(expected_crt.random_u15(), 42);
+
+    let mut game_rng = super::Win95GameRand::new(1);
+    let mut expected_game_rng = game_rng;
+    let expected_zoo = [
+        expected_game_rng.random_mod(100),
+        expected_game_rng.random_mod(100),
+        expected_game_rng.random_mod(100),
+        expected_game_rng.random_mod(100),
+    ];
+    assert_eq!(expected_zoo, [38, 58, 13, 15]);
+    let mut lfsr = super::Win95Lfsr::new(1);
+
+    city.refresh_structure_microsim_yearly_with_rngs(
+        100_000,
+        100,
+        100,
+        100,
+        100,
+        100,
+        &mut crt,
+        &mut game_rng,
+        &mut lfsr,
+    );
+
+    assert_eq!(
+        city.microsim_at(statue_first),
+        Some(super::MicrosimRecord {
+            tile_id: 219,
+            stat0: 0xa5,
+            stat1: 0x1111,
+            stat2: 41,
+            stat3: 0xaaaa,
+        })
+    );
+    assert_eq!(
+        city.microsim_at(zoo),
+        Some(super::MicrosimRecord {
+            tile_id: 218,
+            stat0: 38,
+            stat1: 58,
+            stat2: 13,
+            stat3: 15,
+        })
+    );
+    assert_eq!(
+        city.microsim_at(statue_last),
+        Some(super::MicrosimRecord {
+            tile_id: 219,
+            stat0: 0x3c,
+            stat1: 0x3333,
+            stat2: 0,
+            stat3: 0xcccc,
+        })
+    );
+    assert_eq!(crt, expected_crt, "Statue rows consume two CRT draws");
+    assert_eq!(
+        game_rng, expected_game_rng,
+        "Zoo draws use the separate LCG"
+    );
+    assert_eq!(lfsr.state(), 1, "these rows do not consume the LFSR");
+}
+
+#[test]
 fn yearly_hospital_extra_patient_roll_shifts_later_xmic_rows() {
     let mut city = City::new_blank("/tmp/sc2000-hospital-order.sc2", "HospitalOrder").unwrap();
     city.provision_microsim_for_building(209).unwrap();

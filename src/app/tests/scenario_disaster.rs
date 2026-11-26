@@ -15589,11 +15589,16 @@ fn pe_retail_win_scenario_open_checkpoints() {
                 );
             }
         }
-        if !changed_tiles.is_empty() {
-            eprintln!("{name} tile-bit changes across save/reload: {changed_tiles:?}");
-            eprintln!(
-                "{name} map planes before={opened_map_planes:016x?} after={:016x?}",
-                pe_open_scenario_map_fingerprints(&state.city)
+        if name == "SANFRANC" {
+            assert_eq!(
+                changed_tiles,
+                [(74, 8, 0xa1, 0xe1)],
+                "San Francisco city reopen rebuilds the powered XBIT only at (74,8)"
+            );
+        } else {
+            assert!(
+                changed_tiles.is_empty(),
+                "{name} XBIT after save/reload"
             );
         }
         assert_eq!(

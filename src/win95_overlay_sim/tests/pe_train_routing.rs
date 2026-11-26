@@ -487,22 +487,18 @@ fn ambient_train_occupancy_matches_pe_route_id_bounds() {
         "TrainEndpointRail",
     )
     .expect("city");
-    city.set_building(10, 10, 63);
-    assert!(train_can_occupy(&city, 10, 10));
-    city.set_building(10, 10, 72);
-    assert!(train_can_occupy(&city, 10, 10));
-    city.set_building(10, 10, 73);
-    assert!(
-        !train_can_occupy(&city, 10, 10),
-        "native train routing excludes building ID 73"
-    );
-    city.set_building(10, 10, 111);
-    assert!(train_can_occupy(&city, 10, 10));
-    city.set_building(10, 10, 112);
-    assert!(
-        !train_can_occupy(&city, 10, 10),
-        "native train routing excludes building ID 112"
-    );
+    for building in 0..=u8::MAX {
+        city.set_building(10, 10, building);
+        let expected = matches!(
+            building,
+            44..=63 | 69..=72 | 77 | 78 | 90 | 91 | 108..=111
+        );
+        assert_eq!(
+            train_can_occupy(&city, 10, 10),
+            expected,
+            "native FUN_00455C60 route set for XBLD {building:#04x}"
+        );
+    }
 }
 
 #[test]
@@ -520,6 +516,8 @@ fn ambient_train_occupancy_rejects_xtxt_gate_for_both_arms() {
         "heavy XTRF must not refuse"
     );
 
+    city.set_text_overlay(10, 10, XTHG_EXPLOSION_XTXT_GATE - 1);
+    assert!(train_can_occupy(&city, 10, 10));
     city.set_text_overlay(10, 10, XTHG_EXPLOSION_XTXT_GATE);
     assert!(!train_can_occupy(&city, 10, 10));
 
@@ -530,6 +528,8 @@ fn ambient_train_occupancy_rejects_xtxt_gate_for_both_arms() {
         subway_can_occupy(&city, 10, 10),
         "heavy XTRF must not refuse subway"
     );
+    city.set_text_overlay(10, 10, XTHG_EXPLOSION_XTXT_GATE - 1);
+    assert!(subway_can_occupy(&city, 10, 10));
     city.set_text_overlay(10, 10, XTHG_EXPLOSION_XTXT_GATE);
     assert!(!subway_can_occupy(&city, 10, 10));
 }

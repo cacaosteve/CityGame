@@ -5043,7 +5043,10 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let mut native_calendar_dispatch_ticks = Vec::new();
     let mut native_actor_deadline_write_ticks = std::collections::HashMap::new();
     let mut last_native_actor_check_tick = None;
-    let mut citygame_calendar_dispatch_ticks = Vec::new();
+    // `tick` is the CODE 2 sample-A input. Native CODE 14 is observed later,
+    // after sample B at the worker-entry breakpoint, so retain this as
+    // an input/check label rather than calling it a worker-entry timestamp.
+    let mut citygame_calendar_input_ticks = Vec::new();
     let clock_file = std::fs::File::open(trace_root.join("gdb-clock.csv"))
         .expect("R20 CODE 2 TickCount capture");
     for (capture_row_order, line) in BufReader::new(clock_file).lines().skip(1).enumerate() {
@@ -5451,7 +5454,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             next_input += 1;
         }
         if let Some(advance) = diagnostic_calendar_advance {
-            citygame_calendar_dispatch_ticks
+            citygame_calendar_input_ticks
                 .extend(std::iter::repeat(tick).take(advance.days as usize));
             previous_rng = (
                 state.mac_process_rng.seed(),
@@ -5869,8 +5872,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 state.mac_loop_scheduler.january_budget_review_pending,
             );
         }
-        citygame_calendar_dispatch_ticks
-            .extend(std::iter::repeat(tick).take(advance.days as usize));
+        citygame_calendar_input_ticks.extend(std::iter::repeat(tick).take(advance.days as usize));
         if tick == 5742 {
             assert_eq!(
                 state.mac_process_rng.seed(),
@@ -5985,27 +5987,31 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         state.city_info_dialog,
         state.mac_loop_scheduler.january_budget_review_pending,
     );
-    let first_calendar_dispatch_mismatch = citygame_calendar_dispatch_ticks
+    let first_calendar_input_mismatch = citygame_calendar_input_ticks
         .iter()
         .skip(1)
         .zip(&native_calendar_dispatch_ticks)
         .position(|(citygame, native)| citygame != native);
+    let first_calendar_boundary_alignment = first_calendar_input_mismatch.map(|index| {
+        let citygame_input_tick = citygame_calendar_input_ticks[index + 1];
+        (
+            index,
+            citygame_input_tick,
+            native_calendar_refresh_ticks
+                .get(&citygame_input_tick)
+                .copied(),
+            native_calendar_dispatch_ticks[index],
+        )
+    });
     eprintln!(
-        "R20 calendar dispatches CityGame={} Quadra={} first_tick_mismatch={:?}",
-        citygame_calendar_dispatch_ticks.len(),
+        "R20 calendar boundaries CityGame_inputs={} Quadra_worker_entries={} first_unaligned_boundary=(index,sample_a,sample_b,native_worker) {:?}",
+        citygame_calendar_input_ticks.len(),
         native_calendar_dispatch_ticks.len(),
-        first_calendar_dispatch_mismatch.map(|index| {
-            let citygame_index = index + 1;
-            (
-                index,
-                citygame_calendar_dispatch_ticks[citygame_index],
-                native_calendar_dispatch_ticks[index],
-            )
-        }),
+        first_calendar_boundary_alignment,
     );
     eprintln!(
-        "R20 calendar dispatch first ticks CityGame={:?} Quadra={:?}",
-        &citygame_calendar_dispatch_ticks[..citygame_calendar_dispatch_ticks.len().min(20)],
+        "R20 calendar boundary labels CityGame sample-A inputs={:?} Quadra CODE14 worker entries={:?}",
+        &citygame_calendar_input_ticks[..citygame_calendar_input_ticks.len().min(20)],
         &native_calendar_dispatch_ticks[..native_calendar_dispatch_ticks.len().min(20)],
     );
     if replay_end_tick == 5751 {

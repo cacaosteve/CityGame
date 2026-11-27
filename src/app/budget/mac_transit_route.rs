@@ -7,8 +7,19 @@
 use super::*;
 
 #[cfg(test)]
+#[derive(Clone, Debug)]
+enum MacTransitTestRootCostOverride {
+    Constant(u8),
+    Sequence {
+        costs: std::collections::VecDeque<u8>,
+        fallback: u8,
+        consumed: usize,
+    },
+}
+
+#[cfg(test)]
 thread_local! {
-    static MAC_TRANSIT_TEST_ROOT_COST: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+    static MAC_TRANSIT_TEST_ROOT_COST: std::cell::RefCell<Option<MacTransitTestRootCostOverride>> = const { std::cell::RefCell::new(None) };
     static MAC_TRANSIT_TEST_ROUTE_TRACE: std::cell::RefCell<Option<Vec<MacTransitRouteTrace>>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -47,20 +58,71 @@ pub(in crate::app) fn with_mac_transit_test_root_cost<T>(
     root_cost: u8,
     f: impl FnOnce() -> T,
 ) -> T {
-    MAC_TRANSIT_TEST_ROOT_COST.with(|override_cost| {
-        let prior = override_cost.replace(Some(root_cost));
-        let result = f();
-        override_cost.set(prior);
-        result
-    })
+    with_mac_transit_test_root_cost_override(MacTransitTestRootCostOverride::Constant(root_cost), f)
+        .0
+}
+
+#[cfg(test)]
+pub(in crate::app) fn with_mac_transit_test_root_cost_sequence<T>(
+    costs: impl IntoIterator<Item = u8>,
+    fallback: u8,
+    f: impl FnOnce() -> T,
+) -> (T, usize) {
+    with_mac_transit_test_root_cost_override(
+        MacTransitTestRootCostOverride::Sequence {
+            costs: costs.into_iter().collect(),
+            fallback,
+            consumed: 0,
+        },
+        f,
+    )
+}
+
+#[cfg(test)]
+fn with_mac_transit_test_root_cost_override<T>(
+    root_cost: MacTransitTestRootCostOverride,
+    f: impl FnOnce() -> T,
+) -> (T, usize) {
+    struct Restore(Option<MacTransitTestRootCostOverride>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MAC_TRANSIT_TEST_ROOT_COST.with(|override_cost| {
+                override_cost.replace(self.0.take());
+            });
+        }
+    }
+
+    let prior =
+        MAC_TRANSIT_TEST_ROOT_COST.with(|override_cost| override_cost.replace(Some(root_cost)));
+    let restore = Restore(prior);
+    let result = f();
+    let consumed =
+        MAC_TRANSIT_TEST_ROOT_COST.with(|override_cost| match override_cost.borrow().as_ref() {
+            Some(MacTransitTestRootCostOverride::Sequence { consumed, .. }) => *consumed,
+            _ => 0,
+        });
+    drop(restore);
+    (result, consumed)
 }
 
 #[cfg(test)]
 fn mac_transit_default_root_cost() -> u8 {
-    if let Some(root_cost) = MAC_TRANSIT_TEST_ROOT_COST.with(std::cell::Cell::get) {
-        return root_cost;
-    }
-    0
+    MAC_TRANSIT_TEST_ROOT_COST.with(|override_cost| {
+        let mut override_cost = override_cost.borrow_mut();
+        match override_cost.as_mut() {
+            Some(MacTransitTestRootCostOverride::Constant(root_cost)) => *root_cost,
+            Some(MacTransitTestRootCostOverride::Sequence {
+                costs,
+                fallback,
+                consumed,
+            }) => {
+                *consumed += 1;
+                costs.pop_front().unwrap_or(*fallback)
+            }
+            None => 0,
+        }
+    })
 }
 
 #[cfg(test)]

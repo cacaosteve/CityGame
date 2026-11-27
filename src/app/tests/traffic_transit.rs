@@ -706,6 +706,35 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
     };
     let zero_root = replay(0);
     let live_root = replay(0xff);
+    let mut sequence_state = test_state(base_city.clone());
+    sequence_state.engine_fidelity = EngineFidelity::Mac68k;
+    sequence_state.mode = AppMode::CityView;
+    sequence_state.traffic.set_speed(GameSpeed::Cheetah);
+    sequence_state.mac_process_rng = MacToolboxRng::new(0x2a10_c53e);
+    sequence_state.mac_game_rng = MacGameLcgRng::new(0x057e_de9e);
+    sequence_state.mac_app_lfsr = MacAppLfsrRng::new(0xcf19);
+    let ((_, sequence_costs_consumed), sequence_calls) =
+        super::super::budget::with_mac_transit_test_route_trace(|| {
+            super::super::budget::with_mac_transit_test_root_cost_sequence(
+                std::iter::repeat(0xff).take(live_root.4.len()),
+                0,
+                || sequence_state.sim_calendar_mac_rci_scan_phase(0),
+            )
+        });
+    assert_eq!(sequence_costs_consumed, sequence_calls.len());
+    assert_eq!(sequence_calls.len(), live_root.4.len());
+    assert!(sequence_calls.iter().all(|call| call.root_cost == 0xff));
+    assert_eq!(
+        (
+            sequence_state.mac_process_rng.seed(),
+            sequence_state.mac_game_rng.state(),
+            sequence_state.mac_app_lfsr.state(),
+            crate::city::cgms_v4_from_city_for_test(&sequence_state.city)
+                .expect("encode sequenced CityGame route-worker return"),
+        ),
+        (live_root.0, live_root.1, live_root.2, live_root.3.clone()),
+        "per-call root-cost sequence must reproduce the constant-root diagnostic"
+    );
     if let Some(output) = std::env::var_os("CITYGAME_R23_FLINT_ROOT_FF_OUTPUT_CGMS") {
         std::fs::write(output, &live_root.3).expect("write root-ff CityGame return CGMS");
     }

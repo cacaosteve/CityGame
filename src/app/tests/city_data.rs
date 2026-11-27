@@ -4100,6 +4100,30 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
         })
         .collect();
     println!("Bayview day41788 XMIC differing slots={xmic_differing_slots:?}");
+    for slot in &xmic_differing_slots {
+        let row = state.city.microsim_at(*slot).unwrap();
+        let offset = slot * 8;
+        let native_row = (
+            native_after_xmic[offset],
+            native_after_xmic[offset + 1],
+            u16::from_le_bytes([
+                native_after_xmic[offset + 2],
+                native_after_xmic[offset + 3],
+            ]),
+            u16::from_le_bytes([
+                native_after_xmic[offset + 4],
+                native_after_xmic[offset + 5],
+            ]),
+            u16::from_le_bytes([
+                native_after_xmic[offset + 6],
+                native_after_xmic[offset + 7],
+            ]),
+        );
+        println!(
+            "Bayview day41788 XMIC slot={slot} CityGame=({}, {}, {}, {}, {}) native={native_row:?}",
+            row.tile_id, row.stat0, row.stat1, row.stat2, row.stat3,
+        );
+    }
     print_win95_capture_plane_differences(&state, &capture, "day41788");
     let actual = state.city.microsim_at(statue_slot).unwrap();
     let offset = statue_slot * 8;

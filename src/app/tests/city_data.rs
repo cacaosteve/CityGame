@@ -4043,6 +4043,39 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     }
 
     let native_after_xmic = std::fs::read(capture.join("day41788/xmic-records.bin")).unwrap();
+    let zoo_slot = (0..150)
+        .find(|&slot| native_after_xmic[slot * 8] == 218)
+        .expect("native Bayview Zoo XMIC row");
+    let zoo = state
+        .city
+        .microsim_at(zoo_slot)
+        .expect("CityGame Bayview Zoo XMIC row");
+    let zoo_offset = zoo_slot * 8;
+    assert_eq!(
+        (zoo.tile_id, zoo.stat0, zoo.stat1, zoo.stat2, zoo.stat3),
+        (
+            native_after_xmic[zoo_offset],
+            native_after_xmic[zoo_offset + 1],
+            u16::from_le_bytes([
+                native_after_xmic[zoo_offset + 2],
+                native_after_xmic[zoo_offset + 3],
+            ]),
+            u16::from_le_bytes([
+                native_after_xmic[zoo_offset + 4],
+                native_after_xmic[zoo_offset + 5],
+            ]),
+            u16::from_le_bytes([
+                native_after_xmic[zoo_offset + 6],
+                native_after_xmic[zoo_offset + 7],
+            ]),
+        ),
+        "Bayview annual Zoo XMIC row matches the native post-year capture"
+    );
+    assert_eq!(
+        state.pe_process_game_rand.state(),
+        after_year["game_lcg_raw"].as_u64().unwrap() as u32,
+        "Bayview annual Zoo draws match the native game-LCG endpoint"
+    );
     let xmic_differing_slots: Vec<_> = (0..150)
         .filter(|&slot| {
             let row = state.city.microsim_at(slot).unwrap();

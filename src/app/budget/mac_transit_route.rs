@@ -9,6 +9,21 @@ use super::*;
 #[cfg(test)]
 thread_local! {
     static MAC_TRANSIT_TEST_ROOT_COST: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+    static MAC_TRANSIT_TEST_ROUTE_TRACE: std::cell::RefCell<Option<Vec<MacTransitRouteTrace>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(in crate::app) struct MacTransitRouteTrace {
+    pub x: usize,
+    pub y: usize,
+    pub zone_category: usize,
+    pub coefficient: u16,
+    pub cost_limit: u16,
+    pub root_cost: u8,
+    pub route: Vec<(usize, usize, u8)>,
+    pub cost: u16,
+    pub random_draws: usize,
 }
 
 #[cfg(test)]
@@ -30,6 +45,18 @@ fn mac_transit_default_root_cost() -> u8 {
         return root_cost;
     }
     0
+}
+
+#[cfg(test)]
+pub(in crate::app) fn with_mac_transit_test_route_trace<T>(
+    f: impl FnOnce() -> T,
+) -> (T, Vec<MacTransitRouteTrace>) {
+    MAC_TRANSIT_TEST_ROUTE_TRACE.with(|trace| {
+        let prior = trace.replace(Some(Vec::new()));
+        let result = f();
+        let captured = trace.replace(prior).unwrap_or_default();
+        (result, captured)
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,7 +370,7 @@ pub(in crate::app) fn mac_transit_route_search<F, R>(
     coefficient: u16,
     cost_limit: u16,
     cell_at: F,
-    random_i16: R,
+    #[cfg_attr(not(test), allow(unused_mut))] mut random_i16: R,
 ) -> Option<MacTransitRouteResult>
 where
     F: FnMut(usize, usize) -> MacTransitRouteCell,
@@ -353,7 +380,24 @@ where
     let root_cost = mac_transit_default_root_cost();
     #[cfg(not(test))]
     let root_cost = 0;
-    mac_transit_route_search_with_root_cost(
+    #[cfg(test)]
+    let draw_count = std::cell::Cell::new(0);
+    #[cfg(test)]
+    let result = mac_transit_route_search_with_root_cost(
+        x,
+        y,
+        zone_category,
+        coefficient,
+        cost_limit,
+        root_cost,
+        cell_at,
+        || {
+            draw_count.set(draw_count.get() + 1);
+            random_i16()
+        },
+    );
+    #[cfg(not(test))]
+    let result = mac_transit_route_search_with_root_cost(
         x,
         y,
         zone_category,
@@ -362,7 +406,26 @@ where
         root_cost,
         cell_at,
         random_i16,
-    )
+    );
+    #[cfg(test)]
+    MAC_TRANSIT_TEST_ROUTE_TRACE.with(|trace| {
+        if let Some(trace) = trace.borrow_mut().as_mut() {
+            trace.push(MacTransitRouteTrace {
+                x,
+                y,
+                zone_category,
+                coefficient,
+                cost_limit,
+                root_cost,
+                route: result
+                    .as_ref()
+                    .map_or_else(Vec::new, |result| result.route.clone()),
+                cost: result.as_ref().map_or(0, |result| result.cost),
+                random_draws: draw_count.get(),
+            });
+        }
+    });
+    result
 }
 
 /// The root node's stored cost is an uninitialized byte in the original

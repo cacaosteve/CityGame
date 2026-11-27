@@ -666,6 +666,22 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
         .expect("path to the extracted native CODE 14 return CGMS snapshot");
     let native_return = std::fs::read(native_return_path).expect("read native CODE 14 return CGMS");
     let base_city = crate::city::city_from_cgms_v4_for_test(&bytes).expect("decode CGMS");
+    let reencoded_entry = crate::city::cgms_v4_from_city_for_test(&base_city)
+        .expect("re-encode native CODE 14 entry city");
+    const HEADER: usize = 20;
+    const TILES: usize = 128 * 128;
+    const MAP_END: usize = HEADER + 9 * TILES + 2 * TILES + TILES;
+    const MISC_END: usize = MAP_END + 1_200 * 4;
+    assert_eq!(
+        &reencoded_entry[HEADER..MAP_END],
+        &bytes[HEADER..MAP_END],
+        "native entry CGMS map must survive CityGame decode/encode"
+    );
+    assert_eq!(
+        &reencoded_entry[MISC_END..],
+        &bytes[MISC_END..],
+        "native entry XTHG must survive CityGame decode/encode"
+    );
     let replay = |root_cost| {
         let mut state = test_state(base_city.clone());
         state.engine_fidelity = EngineFidelity::Mac68k;
@@ -674,8 +690,10 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
         state.mac_process_rng = MacToolboxRng::new(0x2a10_c53e);
         state.mac_game_rng = MacGameLcgRng::new(0x057e_de9e);
         state.mac_app_lfsr = MacAppLfsrRng::new(0xcf19);
-        super::super::budget::with_mac_transit_test_root_cost(root_cost, || {
-            state.sim_calendar_mac_rci_scan_phase(0)
+        let (_, route_calls) = super::super::budget::with_mac_transit_test_route_trace(|| {
+            super::super::budget::with_mac_transit_test_root_cost(root_cost, || {
+                state.sim_calendar_mac_rci_scan_phase(0)
+            })
         });
         (
             state.mac_process_rng.seed(),
@@ -683,36 +701,77 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
             state.mac_app_lfsr.state(),
             crate::city::cgms_v4_from_city_for_test(&state.city)
                 .expect("encode CityGame route-worker return"),
+            route_calls,
         )
     };
     let zero_root = replay(0);
     let live_root = replay(0xff);
+    if let Some(output) = std::env::var_os("CITYGAME_R23_FLINT_ROOT_FF_OUTPUT_CGMS") {
+        std::fs::write(output, &live_root.3).expect("write root-ff CityGame return CGMS");
+    }
+    if let Some(output) = std::env::var_os("CITYGAME_R23_FLINT_ROUTE_TRACE_OUTPUT") {
+        let mut csv = String::from(
+            "index,x,y,zone_category,coefficient,cost_limit,root_cost,result,cost,random_draws,path\n",
+        );
+        for (index, call) in live_root.4.iter().enumerate() {
+            let path = call
+                .route
+                .iter()
+                .map(|(x, y, state)| format!("{x}:{y}:{state}"))
+                .collect::<Vec<_>>()
+                .join(";");
+            csv.push_str(&format!(
+                "{index},{},{},{},{},{},{},{},{},{},{}\n",
+                call.x,
+                call.y,
+                call.zone_category,
+                call.coefficient,
+                call.cost_limit,
+                call.root_cost,
+                u8::from(!call.route.is_empty()),
+                call.cost,
+                call.random_draws,
+                path,
+            ));
+        }
+        std::fs::write(output, csv).expect("write CityGame per-route trace");
+    }
     eprintln!(
-        "R23 root-0 replay: QD={:08x}, game={:08x}, app={:04x}; root-ff replay: QD={:08x}, game={:08x}, app={:04x}",
-        zero_root.0, zero_root.1, zero_root.2, live_root.0, live_root.1, live_root.2
+        "R23 root-0 replay: QD={:08x}, game={:08x}, app={:04x}; root-ff replay: QD={:08x}, game={:08x}, app={:04x}; captured route calls={}",
+        zero_root.0,
+        zero_root.1,
+        zero_root.2,
+        live_root.0,
+        live_root.1,
+        live_root.2,
+        live_root.4.len()
     );
-    assert_ne!(zero_root.0, 0x3350_f390, "root-zero diagnostic must diverge");
+    assert_ne!(
+        zero_root.0, 0x3350_f390,
+        "root-zero diagnostic must diverge"
+    );
     assert_eq!(live_root.0, 0x3350_f390, "native CODE 14 QuickDraw return");
     assert_eq!(zero_root.1, 0x057e_de9e, "native game-LCG return");
     assert_eq!(live_root.1, 0x057e_de9e, "native game-LCG return");
     assert_eq!(zero_root.2, 0xd729, "native app-LFSR return");
     assert_eq!(live_root.2, 0xd729, "native app-LFSR return");
 
-    const HEADER: usize = 20;
-    const TILES: usize = 128 * 128;
-    const MAP_END: usize = HEADER + 9 * TILES + 2 * TILES + TILES;
-    const MISC_END: usize = MAP_END + 1_200 * 4;
+    assert_eq!(live_root.4.len(), 299, "native CODE 14 route-call count");
     let map_differences = live_root.3[HEADER..MAP_END]
         .iter()
         .zip(&native_return[HEADER..MAP_END])
         .enumerate()
-        .filter_map(|(offset, (local, native))| (local != native).then_some((offset, *local, *native)))
+        .filter_map(|(offset, (local, native))| {
+            (local != native).then_some((offset, *local, *native))
+        })
         .collect::<Vec<_>>();
     let xthg_differences = live_root.3[MISC_END..]
         .iter()
         .zip(&native_return[MISC_END..])
         .enumerate()
-        .filter_map(|(offset, (local, native))| (local != native).then_some((offset, *local, *native)))
+        .filter_map(|(offset, (local, native))| {
+            (local != native).then_some((offset, *local, *native))
+        })
         .collect::<Vec<_>>();
     let plane_differences = (0..12)
         .map(|plane| {

@@ -3877,12 +3877,13 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     state.pe_process_lfsr = Win95Lfsr::new(opened["lfsr_raw"].as_u64().unwrap() as u16);
     state.traffic.set_speed(GameSpeed::Cheetah);
 
-    let mut timer_pulses = 0_u32;
+    let mut frame_count = 0_u32;
+    const FRAME_ELAPSED: Duration = Duration::from_millis(20);
     while state.city.city_age_days().unwrap() < 41_788 {
-        state.advance_frame_simulation(Duration::from_millis(200));
-        timer_pulses += 1;
+        state.advance_frame_simulation(FRAME_ELAPSED);
+        frame_count += 1;
         assert!(
-            timer_pulses < 10_000,
+            frame_count < 10_000,
             "did not reach Bayview target age: age={} mode={:?} dialog={:?} speed={:?}",
             state.city.city_age_days().unwrap(),
             state.mode,
@@ -3899,6 +3900,14 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
             // data. Keep all simulation and RNG dispatch inside the scheduler.
             state.close_city_info_dialog();
         }
+        // Match the other per-frame Win95 runtime work after the scheduler:
+        // the port traffic adapter and the ambient overlay adapter use the
+        // same elapsed frame time, while the PE XTHG slots remain owned by
+        // advance_frame_simulation's native-order actor pass.
+        state
+            .traffic
+            .tick_traffic(&mut state.city, FRAME_ELAPSED.as_secs_f32());
+        state.tick_win95_overlay_sim_frame(FRAME_ELAPSED.as_secs_f32());
     }
 
     let native_after_xmic = std::fs::read(capture.join("day41788/xmic-records.bin")).unwrap();
@@ -3928,9 +3937,9 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
         println!("XTHG slot {slot}: CityGame={citygame_row} native={native_row}");
     }
     println!(
-        "Bayview Cheetah return age={} pulses={} Statue={:?} CRT={:#010x} game={:#010x} LFSR={:#06x} XTHG-differing-slots={:?}",
+        "Bayview Cheetah return age={} frames={} Statue={:?} CRT={:#010x} game={:#010x} LFSR={:#06x} XTHG-differing-slots={:?}",
         state.city.city_age_days().unwrap(),
-        timer_pulses,
+        frame_count,
         actual,
         state.pe_process_crt.seed(),
         state.pe_process_game_rand.state(),

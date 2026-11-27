@@ -1295,7 +1295,7 @@ impl ViewerState {
                 depth + 0.2,
             );
             let body_scale = 1.25;
-            let max_chars = ((panel.w - 48.0) / (6.0 * body_scale)).max(1.0) as usize;
+            let max_chars = ((panel.w - 72.0) / (6.0 * body_scale)).max(1.0) as usize;
             let mut y = panel.y + 70.0;
             for line in wrap_dialog_text(description, max_chars) {
                 ui::push_pixel_text(

@@ -764,10 +764,17 @@ mod tests {
                 native_body_lengths[row],
                 "row {row} should retain the full recovered TEXT resource after control-byte cleanup"
             );
-            let max_chars = ((544.0 - 48.0) / (6.0 * 1.25)) as usize;
+            let max_chars = ((544.0 - 72.0) / (6.0 * 1.25)) as usize;
+            let lines = super::wrap_dialog_text(description, max_chars);
             assert!(
-                super::wrap_dialog_text(description, max_chars).len() <= 12,
+                lines.len() <= 12,
                 "row {row} help should fit the contextual panel at 640x480"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| crate::ui::pixel_text_width(line, 1.25) <= 544.0 - 72.0),
+                "row {row} help lines should stay inside the panel's horizontal margins"
             );
             assert_eq!(
                 city_info_dialog_hit_test_for_engine(

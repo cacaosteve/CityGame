@@ -17276,6 +17276,50 @@ fn pe_road_bridge_preflight_masks_directions_and_fixed_interior_families() {
 }
 
 #[test]
+fn pe_road_bridge_span_plan_matches_native_xter_admission_band() {
+    let mut city =
+        City::new_blank("/tmp/road-bridge-xter-band.sc2", "BridgeXterBand").expect("blank city");
+    city.set_city_funds(20_000);
+    for x in 64..=71 {
+        city.set_terrain(x, 64, if x == 64 { 0x21 } else { 0x20 });
+        city.set_altitude(x, 64, 5, 5);
+        city.set_tile_bits(x, 64, TileBits::new(0).with_water_tile(true));
+    }
+    city.set_terrain(72, 64, 0x40);
+    city.set_altitude(72, 64, 5, 5);
+
+    for index in 1..=7 {
+        for xter in 0x10..=0x3f {
+            city.set_terrain(64 + index, 64, xter);
+            assert_eq!(
+                pe_road_bridge_span_plan(&city, (64, 64), 1)
+                    .expect("native in-band span")
+                    .span_count,
+                8,
+                "index {index}, XTER {xter:#04x}"
+            );
+        }
+    }
+    for xter in [0x0f, 0x40] {
+        city.set_terrain(67, 64, xter);
+        let plan =
+            pe_road_bridge_span_plan(&city, (64, 64), 1).expect("native terminal ends the span");
+        assert_eq!(plan.span_count, 3, "terminal XTER {xter:#04x}");
+        assert_eq!(plan.terminal, (67, 64), "terminal XTER {xter:#04x}");
+    }
+
+    city.set_terrain(67, 64, 0x10);
+    let mut state = test_state(city);
+    state.tool = EditTool::Road;
+    assert_eq!(state.finish_road_bridge((64, 64), 1, 8, 2), 8);
+    assert_eq!(state.city.building_at(67, 64), 0x57);
+    assert_eq!(state.city.terrain_at(67, 64), 0x10);
+    assert!(state.city.tile_bits_at(67, 64).unwrap().water_tile());
+    assert!(state.city.tile_bits_at(67, 64).unwrap().rotate());
+    assert_eq!(state.city.city_funds(), 20_000 - 8 * 25);
+}
+
+#[test]
 fn pe_rail_bridge_selector_transaction_builds_centered_span_and_preserves_xtrf() {
     let mut city =
         City::new_blank("/tmp/sc2000-rail-bridge-pe.sc2", "RailBridgePe").expect("blank city");

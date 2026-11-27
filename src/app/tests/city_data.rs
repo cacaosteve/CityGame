@@ -3769,12 +3769,12 @@ fn assert_win95_capture_planes_match(
     }
 }
 
-/// Reaches the annual Statue write through CityGame's calendar/yearly path.
-/// This intentionally starts at a captured post-open boundary; it isolates
-/// the production annual dispatch and is not an unseeded launch-to-year replay.
+/// Reaches the annual Statue interval through CityGame's regular Cheetah frame
+/// scheduler, including timed actor ticks. It starts at a captured post-open
+/// boundary and is not an unseeded launch-to-year replay.
 #[test]
 #[ignore = "requires private Win95 Bayview annual capture and catalog city"]
-fn win95_bayview_checkpoint_exposes_annual_statue_rng_divergence() {
+fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BAYVIEW_ANNUAL_CAPTURE").unwrap());
     let city_path = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BAYVIEW_CITY").unwrap());
     let boundary = |name: &str| -> serde_json::Value {
@@ -3797,6 +3797,11 @@ fn win95_bayview_checkpoint_exposes_annual_statue_rng_divergence() {
     let mut state = test_state(City::new_blank("unused.sc2", "Bootstrap").unwrap());
     state.engine_fidelity = EngineFidelity::Win95;
     state.load_city(&city_path, (1280, 800), 1.0).unwrap();
+    if state.city_info_dialog
+        == Some(CityInfoDialog::Newspaper(NewspaperEdition::Subscription))
+    {
+        state.close_city_info_dialog();
+    }
     assert_eq!(state.city.city_age_days(), Some(41_661));
     assert_eq!(
         u64::from(state.city.pe_dw_city_population()),
@@ -3870,34 +3875,78 @@ fn win95_bayview_checkpoint_exposes_annual_statue_rng_divergence() {
     state.pe_process_game_rand =
         Win95GameRand::new(opened["game_lcg_raw"].as_u64().unwrap() as u32);
     state.pe_process_lfsr = Win95Lfsr::new(opened["lfsr_raw"].as_u64().unwrap() as u16);
+    state.traffic.set_speed(GameSpeed::Cheetah);
 
+    let mut timer_pulses = 0_u32;
     while state.city.city_age_days().unwrap() < 41_788 {
-        let next = state.game_clock.wrapping_add_days(1);
-        state.game_clock = next;
-        state.handle_simulation_day_advanced(next.year(), next.month(), next.day());
+        state.advance_frame_simulation(Duration::from_millis(200));
+        timer_pulses += 1;
+        assert!(
+            timer_pulses < 10_000,
+            "did not reach Bayview target age: age={} mode={:?} dialog={:?} speed={:?}",
+            state.city.city_age_days().unwrap(),
+            state.mode,
+            state.city_info_dialog,
+            state.traffic.speed()
+        );
+        if matches!(
+            state.city_info_dialog,
+            Some(CityInfoDialog::Budget)
+                | Some(CityInfoDialog::Newspaper(NewspaperEdition::Subscription))
+        ) {
+            // Dismiss the unedited budget review and subscription notices as
+            // the player did in the native run; neither action changes city
+            // data. Keep all simulation and RNG dispatch inside the scheduler.
+            state.close_city_info_dialog();
+        }
     }
 
     let native_after_xmic = std::fs::read(capture.join("day41788/xmic-records.bin")).unwrap();
     let actual = state.city.microsim_at(statue_slot).unwrap();
     let offset = statue_slot * 8;
+    let native_after_xthg = std::fs::read(capture.join("day41788/xthg-records.bin")).unwrap();
+    let citygame_after_xthg = crate::win95_overlay::encode_xthg_records(
+        state.city.traffic_overlays().expect("Bayview XTHG after Cheetah run"),
+    )
+    .unwrap();
+    let actor_slots_differ: Vec<usize> = (0..40)
+        .filter(|slot| {
+            let begin = slot * 12;
+            citygame_after_xthg[begin..begin + 12] != native_after_xthg[begin..begin + 12]
+        })
+        .collect();
+    for slot in &actor_slots_differ {
+        let begin = slot * 12;
+        let citygame_row = citygame_after_xthg[begin..begin + 12]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let native_row = native_after_xthg[begin..begin + 12]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        println!("XTHG slot {slot}: CityGame={citygame_row} native={native_row}");
+    }
     println!(
-        "Bayview annual return age={} Statue={:?} CRT={:#010x} game={:#010x} LFSR={:#06x}",
+        "Bayview Cheetah return age={} pulses={} Statue={:?} CRT={:#010x} game={:#010x} LFSR={:#06x} XTHG-differing-slots={:?}",
         state.city.city_age_days().unwrap(),
+        timer_pulses,
         actual,
         state.pe_process_crt.seed(),
         state.pe_process_game_rand.state(),
-        state.pe_process_lfsr.state()
+        state.pe_process_lfsr.state(),
+        actor_slots_differ
     );
     let native_stat2 =
         u16::from_le_bytes([native_after_xmic[offset + 4], native_after_xmic[offset + 5]]);
-    assert_eq!(actual.stat2, 23, "current CityGame checkpoint result");
+    assert_eq!(actual.stat2, 5, "current CityGame Cheetah checkpoint result");
     assert_eq!(native_stat2, 32, "native post-boundary Statue result");
     assert_ne!(
         actual.stat2, native_stat2,
         "known unresolved annual RNG divergence"
     );
     println!(
-        "Bayview annual mismatch CityGame stat2={} native stat2={} native CRT={:#010x} game={:#010x} LFSR={:#06x}",
+        "Bayview Cheetah mismatch CityGame stat2={} native stat2={} native CRT={:#010x} game={:#010x} LFSR={:#06x}",
         actual.stat2,
         native_stat2,
         after_year["crt_tls_candidates"][0]["holdrand"].as_u64().unwrap(),

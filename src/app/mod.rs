@@ -1130,6 +1130,8 @@ struct ViewerState {
     city_info_dialog: Option<CityInfoDialog>,
     /// A modal view temporarily covered by Help and restored when Help closes.
     help_return_dialog: Option<CityInfoDialog>,
+    /// Native Mac budget Help selector currently shown in the Help panel.
+    mac_budget_help_selector: Option<u16>,
     pending_newspaper_music: Option<u16>,
     status_panel_origin: Option<Vec2>,
     status_panel_grab: Option<Vec2>,

@@ -21,6 +21,15 @@ pub(super) use super::dialog_content::*;
 pub(super) use super::dialog_input::*;
 
 impl ViewerState {
+    pub(super) fn open_mac_budget_context_help(&mut self, selector: u16) -> bool {
+        if super::budget_window::mac_budget_help_topic(selector).is_none() {
+            return false;
+        }
+        self.mac_budget_help_selector = Some(selector);
+        self.open_city_info_dialog(CityInfoDialog::Help);
+        true
+    }
+
     pub(super) fn close_other_modal_dialogs(&mut self) {
         self.win95_new_city_setup = None;
         self.power_plant_dialog = None;
@@ -34,6 +43,7 @@ impl ViewerState {
         self.close_other_modal_dialogs();
         self.city_info_dialog = None;
         self.help_return_dialog = None;
+        self.mac_budget_help_selector = None;
         self.mac_newspaper.detail_open = false;
         self.mac_newspaper.paint = None;
         self.pe_newspaper_paint = None;
@@ -224,6 +234,7 @@ impl ViewerState {
             && self.city_info_dialog == Some(CityInfoDialog::Help)
             && let Some(return_dialog) = self.help_return_dialog.take()
         {
+            self.mac_budget_help_selector = None;
             self.city_info_dialog = Some(return_dialog);
             self.sync_pe_city_info_modal_state();
             return;
@@ -235,6 +246,7 @@ impl ViewerState {
             self.help_return_dialog = Some(CityInfoDialog::Budget);
         } else if dialog != CityInfoDialog::Help {
             self.help_return_dialog = None;
+            self.mac_budget_help_selector = None;
         }
         // The custom newspaper UI uses Win95 MISC fields. On Mac those same
         // offsets are CODE 4 state-vector slots, so keep this PE-only dialog
@@ -368,6 +380,7 @@ impl ViewerState {
         if closed == Some(CityInfoDialog::Help)
             && let Some(return_dialog) = self.help_return_dialog.take()
         {
+            self.mac_budget_help_selector = None;
             self.city_info_dialog = Some(return_dialog);
             self.sync_pe_city_info_modal_state();
             return;

@@ -326,6 +326,7 @@ impl CityInfoDialog {
 pub(super) enum CityInfoDialogAction {
     Close,
     OpenHelp,
+    OpenMacBudgetHelp(u16),
     CenterMapOn { x: usize, y: usize },
     ToggleAutoBudget,
     ToggleGraphSeries(usize),

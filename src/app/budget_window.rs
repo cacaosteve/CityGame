@@ -210,6 +210,30 @@ pub(super) fn mac_help_rect(page: FloatRect) -> FloatRect {
     mac_area(page, 284.0, 22.0, 36.0, 16.0)
 }
 
+pub(super) fn mac_row_help_rect(page: FloatRect, row: usize) -> Option<FloatRect> {
+    let y = [53.0, 72.0, 90.0, 117.0, 135.0, 153.0, 172.0, 191.0]
+        .get(row)
+        .copied()?;
+    Some(mac_area(page, 300.0, y - 5.0, 18.0, 10.0))
+}
+
+pub(super) fn mac_budget_help_topic(selector: u16) -> Option<(&'static str, &'static str)> {
+    Some(match selector {
+        0x51d => ("Property Taxes", "Property tax budget row."),
+        0x51e => (
+            "Programs and Ordinances",
+            "Programs and ordinances budget row.",
+        ),
+        0x51f => ("Bond Payments", "Bond payment budget row."),
+        0x520 => ("Police Department", "Police Department budget row."),
+        0x521 => ("Fire Department", "Fire Department budget row."),
+        0x522 => ("Health and Welfare", "Health and Welfare budget row."),
+        0x523 => ("Education", "Education budget row."),
+        0x524 => ("Transit Authority", "Transit Authority budget row."),
+        _ => return None,
+    })
+}
+
 pub(super) fn mac_tax_adjust_rect(page: FloatRect, increase: bool) -> FloatRect {
     mac_area(page, 166.0, if increase { 43.0 } else { 51.0 }, 15.0, 8.0)
 }
@@ -855,9 +879,8 @@ fn draw_mac(
                 LINE,
             );
         }
-        // Native rows expose a small calendar control and a help target. Their
-        // input actions remain unimplemented until the original hit tests are
-        // traced, but preserve the captured table's visual affordances.
+        // The calendar icon reflects the displayed month/year. The adjacent
+        // question mark opens the native row-specific help topic.
         c.rect(
             278.0 * factor,
             (y - 5.0) * factor,

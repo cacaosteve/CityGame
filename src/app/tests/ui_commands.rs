@@ -2589,9 +2589,12 @@ fn mac_budget_help_returns_to_review_without_finishing_it() {
     state.mac_loop_scheduler.january_budget_review_started_at = Some(1234);
 
     state.open_city_info_dialog(CityInfoDialog::Budget);
-    state.open_city_info_dialog(CityInfoDialog::Help);
+    assert!(!state.open_mac_budget_context_help(0x525));
+    assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+    assert!(state.open_mac_budget_context_help(0x521));
 
     assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Help));
+    assert_eq!(state.mac_budget_help_selector, Some(0x521));
     assert!(state.mac_loop_scheduler.january_budget_review_pending);
     assert_eq!(
         state.mac_loop_scheduler.january_budget_review_started_at,
@@ -2601,6 +2604,7 @@ fn mac_budget_help_returns_to_review_without_finishing_it() {
     state.close_city_info_dialog();
 
     assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+    assert_eq!(state.mac_budget_help_selector, None);
     assert!(state.mac_loop_scheduler.january_budget_review_pending);
     assert_eq!(
         state.mac_loop_scheduler.january_budget_review_started_at,

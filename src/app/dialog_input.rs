@@ -235,8 +235,14 @@ pub(super) fn apply_city_info_dialog_action(
     match action {
         CityInfoDialogAction::Close => close_city_info_dialog_from_input(state, window),
         CityInfoDialogAction::OpenHelp => {
+            state.mac_budget_help_selector = None;
             state.open_city_info_dialog(CityInfoDialog::Help);
             state.play_click_sound(sound);
+        }
+        CityInfoDialogAction::OpenMacBudgetHelp(selector) => {
+            if state.open_mac_budget_context_help(selector) {
+                state.play_click_sound(sound);
+            }
         }
         CityInfoDialogAction::CenterMapOn { x, y } => {
             state.center_tile_at_viewport(x, y, window_size, pixel_scale);
@@ -517,6 +523,13 @@ pub(super) fn city_info_dialog_hit_test_for_engine(
             if point_in_float_rect(screen, budget_window::mac_help_rect(dialog)) {
                 return Some(CityInfoDialogAction::OpenHelp);
             }
+            for row in 0..8 {
+                if budget_window::mac_row_help_rect(dialog, row)
+                    .is_some_and(|rect| point_in_float_rect(screen, rect))
+                {
+                    return Some(CityInfoDialogAction::OpenMacBudgetHelp(0x51d + row as u16));
+                }
+            }
             for increase in [false, true] {
                 if point_in_float_rect(screen, budget_window::mac_tax_adjust_rect(dialog, increase))
                 {
@@ -730,6 +743,47 @@ mod tests {
         assert_eq!(
             mac_budget_review_action_for_release(help, help, (640, 480)),
             Some(CityInfoDialogAction::OpenHelp),
+        );
+    }
+
+    #[test]
+    fn mac_budget_row_help_targets_map_to_native_text_selectors() {
+        let dialog = city_info_dialog_rect_for_engine(
+            CityInfoDialog::Budget,
+            (640, 480),
+            EngineFidelity::Mac68k,
+        );
+        for row in 0..8 {
+            let rect = budget_window::mac_row_help_rect(dialog, row).unwrap();
+            let point = Vec2::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+            let selector = 0x51d + row as u16;
+            assert!(budget_window::mac_budget_help_topic(selector).is_some());
+            assert_eq!(
+                city_info_dialog_hit_test_for_engine(
+                    point,
+                    (640, 480),
+                    CityInfoDialog::Budget,
+                    EngineFidelity::Mac68k,
+                ),
+                Some(CityInfoDialogAction::OpenMacBudgetHelp(selector)),
+                "Mac budget row {row} should dispatch native TEXT selector {selector:#x}"
+            );
+        }
+
+        let rect = budget_window::mac_row_help_rect(dialog, 0).unwrap();
+        let point = Vec2::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        assert_eq!(
+            mac_budget_review_action_for_release(point, point, (640, 480)),
+            Some(CityInfoDialogAction::OpenMacBudgetHelp(0x51d))
+        );
+        assert_ne!(
+            city_info_dialog_hit_test_for_engine(
+                point,
+                (640, 480),
+                CityInfoDialog::Budget,
+                EngineFidelity::Win95,
+            ),
+            Some(CityInfoDialogAction::OpenMacBudgetHelp(0x51d))
         );
     }
 }

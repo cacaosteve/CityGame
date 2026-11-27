@@ -1273,6 +1273,37 @@ impl ViewerState {
         };
         push_ui_rect(solids, panel, [0.72, 0.72, 0.72, 1.0], depth);
         push_ui_bevel(solids, panel, 3.0, false, depth + 0.1);
+        if let Some((title, description)) = self
+            .mac_budget_help_selector
+            .and_then(budget_window::mac_budget_help_topic)
+        {
+            push_info_text(
+                solids,
+                "Budget topic",
+                title,
+                panel.x + 36.0,
+                panel.y + 42.0,
+                depth + 0.2,
+            );
+            ui::push_pixel_text(
+                solids,
+                description,
+                panel.x + 36.0,
+                panel.y + 106.0,
+                2.0,
+                [0.0, 0.0, 0.0, 1.0],
+                depth + 0.2,
+            );
+            push_info_text(
+                solids,
+                "City",
+                &self.city.name,
+                panel.x + 36.0,
+                panel.y + 166.0,
+                depth + 0.2,
+            );
+            return;
+        }
         let mode = match self.mode {
             AppMode::CityView => "City View",
             AppMode::EditNewMap => "Edit Map",

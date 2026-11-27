@@ -15825,6 +15825,7 @@ fn animation_frame_keeps_cycling_after_u8_cast_threshold() {
         military_base_dialog: None,
         city_info_dialog: None,
         help_return_dialog: None,
+        mac_budget_help_selector: None,
         pending_newspaper_music: None,
         status_panel_origin: None,
         status_panel_grab: None,

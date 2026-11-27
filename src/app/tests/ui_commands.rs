@@ -9422,6 +9422,13 @@ fn pe_modal_budget_restores_speed_in_both_layouts_without_persisting_pause() {
 #[test]
 fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
     let mut city = blank_city_layout_fixture("pe-modal-january.sc2", "modal January");
+    let zoo_text = city.provision_microsim_for_building(218).unwrap();
+    stamp_complete_building_for_test(&mut city, 40, 40, 218, 4);
+    for y in 40..44 {
+        for x in 40..44 {
+            city.set_text_overlay(x, y, zoo_text);
+        }
+    }
     city.set_saved_date_and_day(
         CityDate {
             year: 1900,
@@ -9440,6 +9447,11 @@ fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
     state.no_disasters_enabled = true;
     state.game_clock = GameClock::new_with_day(1900, 12, 24);
     state.traffic.set_speed(GameSpeed::Cheetah);
+    let game_rand_before = state.pe_process_game_rand;
+    let mut expected_game_rand = game_rand_before;
+    for _ in 0..4 {
+        expected_game_rand.random_mod(100);
+    }
     assert_eq!(
         state
             .advance_frame_simulation(Duration::from_millis(200))
@@ -9451,6 +9463,10 @@ fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
         state.city.city_funds(),
         1000,
         "settlement waits for DialogBox return"
+    );
+    assert_eq!(
+        state.pe_process_game_rand, game_rand_before,
+        "annual Zoo draws wait for the budget dialog return"
     );
     assert_eq!(
         state.city.saved_date(),
@@ -9465,6 +9481,10 @@ fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
     assert_eq!(state.traffic.speed(), GameSpeed::Cheetah);
     assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
     assert_eq!(state.city.city_funds(), 1010);
+    assert_eq!(
+        state.pe_process_game_rand, expected_game_rand,
+        "the resumed annual continuation performs the Zoo's four game-LCG draws"
+    );
     assert_eq!(state.game_clock, GameClock::new(1901, 1));
     assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
     assert_eq!(

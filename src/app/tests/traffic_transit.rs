@@ -650,10 +650,10 @@ fn mac_r20_flint_age22603_route_root_cost_sensitivity_sweep() {
     );
 }
 
-/// Diagnostic replay from R23's synchronized native CODE 14 entry CGMS. The
-/// native route probe observed root byte 0xff at all 299 route entries. This
-/// checks whether that captured stack value is sufficient for the local phase
-/// endpoint when the native entry map and RNG tuple are supplied.
+/// Replay R23's synchronized native CODE 14 boundary with extracted live
+/// demand and scan-bank MISC state. The native route probe observed root byte
+/// 0xff at all 299 route entries; this verifies route chronology and the full
+/// returned CGMS against the native snapshot.
 #[test]
 #[ignore = "requires the private R23 Flint CODE 14 entry CGMS snapshot"]
 fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
@@ -805,6 +805,10 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
         xthg_differences.len(),
         &map_differences[..map_differences.len().min(20)],
         &xthg_differences[..xthg_differences.len().min(20)],
+    );
+    assert_eq!(
+        live_root.3, native_return,
+        "all planes, live MISC state, and XTHG must match the native CODE 14 return"
     );
 }
 

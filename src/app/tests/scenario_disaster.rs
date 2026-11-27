@@ -437,6 +437,12 @@ fn mac_phase22_scenario_countdown_resumes_after_military_offer_and_save() {
         state.announced_scenario_outcome,
         Some(ScenarioOutcome::Failed)
     ));
+    assert_eq!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::MacScenarioFailure),
+        "a native Mac scenario timeout opens its blocking result alert"
+    );
+    assert!(CityInfoDialog::MacScenarioFailure.holds_mac_simulation());
     assert!(!tick_day22(&mut state).scenario_outcome_announced);
     assert_eq!(
         state.take_pending_disaster_extra_sounds(),

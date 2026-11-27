@@ -939,6 +939,125 @@ fn mac_r24_flint_age22602_native_entry_default_root_replay() {
         "all R24 return state must match"
     );
 }
+/// Replay the same Flint CODE 14 boundary from the R26 normal launch/open run.
+/// The captured R26 route stack byte was zero for every call.
+#[test]
+#[ignore = "requires the private R26 Flint CODE 14 snapshots and route trace"]
+fn mac_r26_flint_age22602_native_entry_default_root_replay() {
+    use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
+
+    let input = std::env::var("CITYGAME_R26_FLINT_ROUTE_ENTRY_CGMS")
+        .expect("path to the extracted R26 dispatch-entry CGMS snapshot");
+    let bytes = std::fs::read(input).expect("read R26 native dispatch-entry CGMS");
+    let native_return_path = std::env::var("CITYGAME_R26_FLINT_NATIVE_RETURN_CGMS")
+        .expect("path to the extracted R26 native CODE 14 return CGMS");
+    let native_return = std::fs::read(native_return_path).expect("read R26 native return CGMS");
+    let native_routes_path = std::env::var("CITYGAME_R26_FLINT_ROUTE_CALLS")
+        .expect("path to the R26 native route-call CSV");
+    let native_routes = std::fs::read_to_string(native_routes_path)
+        .expect("read R26 native route-call CSV");
+    let root_costs = native_routes
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split(',');
+            (fields.next()? == "route-entry")
+                .then(|| u8::from_str_radix(fields.nth(26)?, 16).ok())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(root_costs.len(), 295, "captured R26 route-call count");
+    assert!(root_costs.iter().all(|&value| value == 0));
+
+    let base_city = crate::city::city_from_cgms_v4_for_test(&bytes).expect("decode R26 CGMS");
+    let mut state = test_state(base_city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.traffic.set_speed(GameSpeed::Cheetah);
+    let first_growth_date = state
+        .city
+        .saved_date()
+        .expect("R26 CODE 14 entry has a saved calendar month");
+    state.city.set_saved_date_and_day(first_growth_date, 3);
+    assert_eq!(state.city.mac_state_misc_u32_at(0x0010), Some(22_603));
+    state.mac_process_rng = MacToolboxRng::new(0x75f5_9b44);
+    state.mac_game_rng = MacGameLcgRng::new(0x07f5_9037);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x58e0);
+    let (_, calls) = super::super::budget::with_mac_transit_test_route_trace(|| {
+        state.sim_calendar_mac_rci_scan_phase(0)
+    });
+    assert_eq!(calls.len(), root_costs.len());
+    assert!(calls.iter().all(|call| call.root_cost == 0));
+
+    let local_return = crate::city::cgms_v4_from_city_for_test(&state.city)
+        .expect("encode CityGame R26 worker return");
+    let qd_return = state.mac_process_rng.seed();
+    let game_return = state.mac_game_rng.state();
+    let app_return = state.mac_app_lfsr.state();
+    eprintln!(
+        "R26 CODE 14 return: QD={qd_return:08x}, game={game_return:08x}, app={app_return:04x}; route calls={}; native CGMS bytes differ={}",
+        calls.len(),
+        local_return
+            .iter()
+            .zip(&native_return)
+            .filter(|(a, b)| a != b)
+            .count(),
+    );
+    if let Some(output) = std::env::var_os("CITYGAME_R26_FLINT_ROUTE_RETURN_CGMS") {
+        std::fs::write(output, &local_return).expect("write R26 CityGame CODE 14 return CGMS");
+    }
+    let byte_differences = local_return
+        .iter()
+        .zip(&native_return)
+        .enumerate()
+        .filter_map(|(offset, (local, native))| {
+            (local != native).then_some((offset, *local, *native))
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "R26 first CGMS byte differences: {:?}",
+        &byte_differences[..byte_differences.len().min(16)]
+    );
+    if let Some(output) = std::env::var_os("CITYGAME_R26_FLINT_ROUTE_TRACE_OUTPUT") {
+        let mut csv = String::from(
+            "index,x,y,zone_category,coefficient,cost_limit,root_cost,quickdraw_seed_start,quickdraw_seed_end,result,cost,random_draws,path\n",
+        );
+        for (index, call) in calls.iter().enumerate() {
+            let path = call
+                .route
+                .iter()
+                .map(|(x, y, kind)| format!("{x}:{y}:{kind}"))
+                .collect::<Vec<_>>()
+                .join(";");
+            csv.push_str(&format!(
+                "{index},{},{},{},{},{},{},{:08x},{:08x},{},{},{},{}\n",
+                call.x,
+                call.y,
+                call.zone_category,
+                call.coefficient,
+                call.cost_limit,
+                call.root_cost,
+                call.quickdraw_seed_start,
+                call.quickdraw_seed_end,
+                u8::from(!call.route.is_empty()),
+                call.cost,
+                call.random_draws,
+                path,
+            ));
+        }
+        std::fs::write(output, csv).expect("write R26 CityGame route trace");
+    }
+    assert_eq!(
+        qd_return, 0x7d2e_e582,
+        "native R26 CODE 14 QuickDraw return"
+    );
+    assert_eq!(game_return, 0x07f5_9037, "native R26 game-LCG return");
+    assert_eq!(app_return, 0x35b6, "native R26 app-LFSR return");
+    assert_eq!(
+        local_return, native_return,
+        "all R26 return state must match"
+    );
+}
 
 #[test]
 fn mac_transit_route_success_updates_density_and_mode_accumulators() {

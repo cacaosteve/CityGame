@@ -6701,6 +6701,100 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R26 Flint January 1975 CODE 3 capture fixtures"]
+    fn mac_r26_flint_january_1975_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R26_FLINT_CODE3_DIR")
+                .expect("CITYGAME_MAC_R26_FLINT_CODE3_DIR must point to extracted R26 fixtures"),
+        );
+        let stem = |role: &str, tick: u32| {
+            format!("r20-live-inputs-code3-export162-{role}-age22500-tick{tick}")
+        };
+        let entry_tick = 51_237;
+        let return_tick = 51_238;
+        let entry_cgms = std::fs::read(root.join(format!("{}.cgms", stem("entry", entry_tick))))
+            .expect("R26 native January 1975 CODE 3 entry CGMS");
+        let mut city = crate::city::city_from_cgms_v4_for_test(&entry_cgms).unwrap();
+        let entry_xmic =
+            std::fs::read(root.join(format!("{}-xmic.bin", stem("entry", entry_tick))))
+                .expect("R26 native CODE 3 entry XMIC");
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+
+        let budget_rows = std::fs::read_to_string(
+            root.join(format!("{}-budget-rows.csv", stem("entry", entry_tick))),
+        )
+        .expect("R26 native January 1975 budget rows");
+        let mut lines = budget_rows.lines();
+        assert_eq!(lines.next(), Some("row,field_60,field_64,field_68"));
+        let mut seen_budget_rows = [false; 16];
+        for line in lines {
+            let fields: Vec<_> = line.split(',').collect();
+            assert_eq!(fields.len(), 4);
+            let row: usize = fields[0].parse().unwrap();
+            assert!(row < seen_budget_rows.len() && !seen_budget_rows[row]);
+            seen_budget_rows[row] = true;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, raw) in fields[1..].iter().enumerate() {
+                values[field] = raw.parse::<i32>().unwrap() as u32;
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        assert!(seen_budget_rows.into_iter().all(|seen| seen));
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 1975,
+                month: 1
+            })
+        );
+        assert_eq!(city.mac_state_misc_u32_at(0x0010), Some(22_500));
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x6ef7_2df6);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xb7c8_1769);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x72dc);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x2407_b227, "QuickDraw");
+        assert_eq!(state.mac_game_rng.state(), 0xb7c8_1769, "game LCG");
+        assert_eq!(state.mac_app_lfsr.state(), 0xe5b8, "app LFSR");
+        let native_xmic =
+            std::fs::read(root.join(format!("{}-xmic.bin", stem("return", return_tick))))
+                .expect("R26 native CODE 3 return XMIC");
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "Flint annual CODE 3 export-162 XMIC slot {slot}"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires private R21 generated-New-City CODE 3 capture fixtures"]
     fn mac_r21_generated_new_city_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(

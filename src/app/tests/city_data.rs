@@ -1,4 +1,5 @@
 use super::*;
+use sha2::Digest;
 
 #[test]
 #[ignore = "requires private Win95 sampled scheduler capture"]
@@ -3677,6 +3678,242 @@ fn win95_year_end_latch_survives_refresh_and_follows_monthly_workers() {
     assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(1));
     state.sim_calendar_day0_budget_and_date_at(1902, 1, 0);
     assert_eq!(state.city.misc_u32_at(MISC_YEAR_END_OFFSET), Some(0));
+}
+
+fn assert_win95_capture_planes_match(
+    state: &ViewerState,
+    capture: &std::path::Path,
+    boundary: &str,
+) {
+    for (name, side) in [
+        ("altm", 128),
+        ("xter", 128),
+        ("xbld", 128),
+        ("xzon", 128),
+        ("xund", 128),
+        ("xtxt", 128),
+        ("xbit", 128),
+        ("xtrf", 64),
+        ("xplt", 64),
+        ("xval", 64),
+        ("xcrm", 64),
+        ("xplc", 32),
+        ("xfir", 32),
+        ("xpop", 32),
+        ("xrog", 32),
+    ] {
+        let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+            .expect("missing native plane capture");
+        for x in 0..side {
+            for y in 0..side {
+                let scale = 128 / side;
+                let (tile_x, tile_y) = (x * scale, y * scale);
+                let actual: u16 = match name {
+                    "altm" => {
+                        let v = state.city.altm_at(tile_x, tile_y);
+                        u16::from(v.land)
+                            | (u16::from(v.water) << 5)
+                            | (u16::from(v.tunnel_levels) << 10)
+                    }
+                    "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                    "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                    "xzon" => state
+                        .city
+                        .zone_at(tile_x, tile_y)
+                        .unwrap()
+                        .raw_bits()
+                        .into(),
+                    "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                    "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                    "xbit" => state
+                        .city
+                        .tile_bits_at(tile_x, tile_y)
+                        .unwrap()
+                        .raw_bits()
+                        .into(),
+                    "xtrf" => state
+                        .city
+                        .traffic_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xplt" => state
+                        .city
+                        .pollution_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                    "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                    "xplc" => state
+                        .city
+                        .police_coverage_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                    "xpop" => state
+                        .city
+                        .population_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                    _ => unreachable!(),
+                };
+                let index = x * side + y;
+                let expected = if name == "altm" {
+                    u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                } else {
+                    u16::from(live[index])
+                };
+                assert_eq!(actual, expected, "{boundary} {name} at ({x}, {y})");
+            }
+        }
+    }
+}
+
+/// Reaches the annual Statue write through CityGame's calendar/yearly path.
+/// This intentionally starts at a captured post-open boundary; it isolates
+/// the production annual dispatch and is not an unseeded launch-to-year replay.
+#[test]
+#[ignore = "requires private Win95 Bayview annual capture and catalog city"]
+fn win95_bayview_checkpoint_exposes_annual_statue_rng_divergence() {
+    let capture = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BAYVIEW_ANNUAL_CAPTURE").unwrap());
+    let city_path = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BAYVIEW_CITY").unwrap());
+    let boundary = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(capture.join(name).join("manifest.json")).unwrap())
+            .unwrap()
+    };
+    let opened = boundary("day41661");
+    let after_year = boundary("day41788");
+    assert_eq!(
+        opened["image_sha256"],
+        "f7a51b6244328bddcc85c2db4d205716b504eb9b6cc51b2f1556adaece96e5bb"
+    );
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(std::fs::read(&city_path).unwrap())),
+        "b2730e4fc6c8577d529d33ce75dd6d57c6217fb6b7e6442c870d13d127fd4678"
+    );
+    assert_eq!(opened["city_days"], 41_661);
+    assert_eq!(after_year["city_days"], 41_788);
+
+    let mut state = test_state(City::new_blank("unused.sc2", "Bootstrap").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state.load_city(&city_path, (1280, 800), 1.0).unwrap();
+    assert_eq!(state.city.city_age_days(), Some(41_661));
+    assert_eq!(
+        u64::from(state.city.pe_dw_city_population()),
+        opened["city_population"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(state.city.pe_w_calendar_month_mod()),
+        opened["calendar_month_mod_word"].as_u64().unwrap()
+    );
+    assert_eq!(
+        u64::from(state.city.pe_w_local_fame_base()),
+        opened["local_fame_base_word"].as_u64().unwrap()
+    );
+    assert_win95_capture_planes_match(&state, &capture, "day41661");
+
+    let native_open_xthg = std::fs::read(capture.join("day41661/xthg-records.bin")).unwrap();
+    let citygame_open_xthg = crate::win95_overlay::encode_xthg_records(
+        state.city.traffic_overlays().expect("Bayview XTHG"),
+    )
+    .unwrap();
+    assert_eq!(citygame_open_xthg, native_open_xthg, "opened XTHG state");
+
+    let native_open_xmic = std::fs::read(capture.join("day41661/xmic-records.bin")).unwrap();
+    for slot in 0..150 {
+        let row = state.city.microsim_at(slot).unwrap();
+        let offset = slot * 8;
+        assert_eq!(
+            row.tile_id, native_open_xmic[offset],
+            "open XMIC slot {slot} tile"
+        );
+        assert_eq!(
+            row.stat0,
+            native_open_xmic[offset + 1],
+            "open XMIC slot {slot} stat0"
+        );
+        assert_eq!(
+            row.stat1,
+            u16::from_le_bytes([native_open_xmic[offset + 2], native_open_xmic[offset + 3]]),
+            "open XMIC slot {slot} stat1"
+        );
+        assert_eq!(
+            row.stat2,
+            u16::from_le_bytes([native_open_xmic[offset + 4], native_open_xmic[offset + 5]]),
+            "open XMIC slot {slot} stat2"
+        );
+        assert_eq!(
+            row.stat3,
+            u16::from_le_bytes([native_open_xmic[offset + 6], native_open_xmic[offset + 7]]),
+            "open XMIC slot {slot} stat3"
+        );
+    }
+    let statue_slot = (0..150)
+        .find(|&slot| {
+            let row = state.city.microsim_at(slot).unwrap();
+            row.tile_id == 219 && row.stat1 == 2182
+        })
+        .expect("Bayview Statue XMIC row");
+    assert_eq!(
+        state.city.microsim_at(statue_slot).unwrap().stat2,
+        33,
+        "captured pre-annual Statue value"
+    );
+
+    // The native run supplies only its opened-city boundary streams here. From
+    // this point CityGame owns dispatch and generates every subsequent draw.
+    state.pe_process_crt = Win95CrtRand::new(
+        opened["crt_tls_candidates"][0]["holdrand"]
+            .as_u64()
+            .unwrap() as u32,
+    );
+    state.pe_process_game_rand =
+        Win95GameRand::new(opened["game_lcg_raw"].as_u64().unwrap() as u32);
+    state.pe_process_lfsr = Win95Lfsr::new(opened["lfsr_raw"].as_u64().unwrap() as u16);
+
+    while state.city.city_age_days().unwrap() < 41_788 {
+        let next = state.game_clock.wrapping_add_days(1);
+        state.game_clock = next;
+        state.handle_simulation_day_advanced(next.year(), next.month(), next.day());
+    }
+
+    let native_after_xmic = std::fs::read(capture.join("day41788/xmic-records.bin")).unwrap();
+    let actual = state.city.microsim_at(statue_slot).unwrap();
+    let offset = statue_slot * 8;
+    println!(
+        "Bayview annual return age={} Statue={:?} CRT={:#010x} game={:#010x} LFSR={:#06x}",
+        state.city.city_age_days().unwrap(),
+        actual,
+        state.pe_process_crt.seed(),
+        state.pe_process_game_rand.state(),
+        state.pe_process_lfsr.state()
+    );
+    let native_stat2 =
+        u16::from_le_bytes([native_after_xmic[offset + 4], native_after_xmic[offset + 5]]);
+    assert_eq!(actual.stat2, 23, "current CityGame checkpoint result");
+    assert_eq!(native_stat2, 32, "native post-boundary Statue result");
+    assert_ne!(
+        actual.stat2, native_stat2,
+        "known unresolved annual RNG divergence"
+    );
+    println!(
+        "Bayview annual mismatch CityGame stat2={} native stat2={} native CRT={:#010x} game={:#010x} LFSR={:#06x}",
+        actual.stat2,
+        native_stat2,
+        after_year["crt_tls_candidates"][0]["holdrand"].as_u64().unwrap(),
+        after_year["game_lcg_raw"].as_u64().unwrap(),
+        after_year["lfsr_raw"].as_u64().unwrap()
+    );
+    assert_eq!(actual.tile_id, native_after_xmic[offset]);
+    assert_eq!(actual.stat0, native_after_xmic[offset + 1]);
+    assert_eq!(
+        actual.stat1,
+        u16::from_le_bytes([native_after_xmic[offset + 2], native_after_xmic[offset + 3]])
+    );
+    assert_eq!(
+        actual.stat3,
+        u16::from_le_bytes([native_after_xmic[offset + 6], native_after_xmic[offset + 7]])
+    );
 }
 
 /// Fresh-launch Win95 clock inputs through a date-adjusted city's January phase.

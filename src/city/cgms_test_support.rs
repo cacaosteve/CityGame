@@ -93,6 +93,12 @@ pub(crate) fn city_from_cgms_v4_for_test(bytes: &[u8]) -> Result<City> {
     city.pe_dw_national_value = city
         .mac_state_misc_u32_at(MISC_NATIONAL_VALUE_OFFSET)
         .unwrap_or(0);
+    city.pe_i32_city_funds = city
+        .mac_state_misc_u32_at(MISC_CITY_FUNDS_OFFSET)
+        .unwrap_or(0) as i32;
+    city.pe_dw_city_land_value = city
+        .mac_state_misc_u32_at(MISC_LAND_VALUE_OFFSET)
+        .unwrap_or(0);
     city.pe_w_national_tax = city
         .mac_state_misc_u32_at(MISC_NATIONAL_TAX_OFFSET)
         .map(|value| misc_word_from_saved_dword(value, city.kind))

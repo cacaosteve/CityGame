@@ -6914,6 +6914,33 @@ mod tests {
             citygame_return_cgms, native_return_cgms,
             "native return CGMS"
         );
+
+        let save_path = std::env::temp_dir().join(format!(
+            "citygame-r26-flint-annual-code3-1977-{}.city",
+            std::process::id()
+        ));
+        state.city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(&save_path).unwrap();
+        assert_eq!(reloaded.kind, CityFileKind::MacCity);
+        assert_eq!(reloaded.mac_monthly_arrest_total(), 0x022f);
+        let reloaded_cgms = crate::city::cgms_v4_from_city_for_test(&reloaded).unwrap();
+        let reload_differences = reloaded_cgms
+            .iter()
+            .zip(&native_return_cgms)
+            .enumerate()
+            .filter_map(|(offset, (local, native))| (local != native).then_some(offset))
+            .collect::<Vec<_>>();
+        assert!(
+            reload_differences.is_empty(),
+            "native return state after Mac save/reload differs at {} CGMS bytes; first={:?}",
+            reload_differences.len(),
+            reload_differences
+                .iter()
+                .take(40)
+                .map(|&offset| (offset, reloaded_cgms[offset], native_return_cgms[offset]))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

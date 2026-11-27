@@ -625,6 +625,12 @@ impl City {
         self.mac_monthly_arrest_total
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_mac_monthly_arrest_total_for_test(&mut self, total: u16) {
+        self.mac_monthly_arrest_total = total;
+        self.persist_mac_police_arrest_subtotal();
+    }
+
     /// Mac CODE 3 `export_162` library (`0xf5`) XMIC case. This deterministic
     /// selector runs in the annual January sweep. Its census input is the
     /// saved XBLD `0xf5` word; `fffff01a` remains the separately persisted

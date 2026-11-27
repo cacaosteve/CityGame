@@ -3414,6 +3414,92 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R23 Flint January 1978 CODE 3 export-162 boundary captures"]
+    fn mac_r23_flint_january_1978_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R23_FLINT_CODE3_CAPTURE_DIR").unwrap(),
+        );
+        let stem =
+            |role: &str| format!("r23-live-inputs-code3-export162-{role}-age23400-tick65426");
+        let snapshot = std::fs::read(root.join(format!("{}.cgms", stem("entry")))).unwrap();
+        let mut city = crate::city::city_from_cgms_v4_for_test(&snapshot).unwrap();
+        let entry_xmic = std::fs::read(root.join(format!("{}-xmic.bin", stem("entry")))).unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+
+        let entry_ram =
+            std::fs::read(root.join("code3-export162-entry-age23400-tick65426.ram")).unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        let power_summary = native_u32(a5 + 0xf00a - 0x10000);
+        city.set_mac_power_service_summary(power_summary);
+        let table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        city.set_saved_date(crate::city::CityDate {
+            year: 1978,
+            month: 1,
+        });
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 1978,
+                month: 1
+            })
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x3692_5e7f);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0xe017_a1ef);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x627d);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x78bb_e277);
+        assert_eq!(state.mac_game_rng.state(), 0xe017_a1ef);
+        assert_eq!(state.mac_app_lfsr.state(), 0xc4fa);
+        let native_xmic = std::fs::read(root.join(format!("{}-xmic.bin", stem("return")))).unwrap();
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "Flint January 1978 CODE 3 export-162 XMIC slot {slot}"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires private R20 Flint January 1977 CODE 3 export-162 boundary captures"]
     fn mac_r20_flint_january_1977_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(

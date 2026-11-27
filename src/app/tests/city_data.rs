@@ -3898,6 +3898,19 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     let mut state = test_state(City::new_blank("unused.sc2", "Bootstrap").unwrap());
     state.engine_fidelity = EngineFidelity::Win95;
     state.load_city(&city_path, (1280, 800), 1.0).unwrap();
+    if let Some(data_dir) = std::env::var_os("CITYGAME_WIN95_DATA_DIR") {
+        let data_dir = PathBuf::from(data_dir);
+        state.pe_newspaper_data = Some(std::sync::Arc::new(
+            crate::win95_newspaper::PeNewspaperData::load(
+                &data_dir.join("data_usa.dat"),
+                &data_dir.join("data_usa.idx"),
+            )
+            .expect("load Win95 DATA_USA archive for newspaper paint"),
+        ));
+    }
+    if let Ok(tick) = std::env::var("CITYGAME_WIN95_DOCUMENT_TICK_WORD") {
+        state.pe_document_tick_word = Some(tick.parse().expect("parse document TickCount word"));
+    }
     if state.city_info_dialog
         == Some(CityInfoDialog::Newspaper(NewspaperEdition::Subscription))
     {
@@ -3981,8 +3994,27 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     let mut frame_count = 0_u32;
     const FRAME_ELAPSED: Duration = Duration::from_millis(20);
     while state.city.city_age_days().unwrap() < 41_788 {
+        let frame_age_before = state.city.city_age_days().unwrap();
+        let crt_before_frame = state.pe_process_crt.seed();
+        let lfsr_before_frame = state.pe_process_lfsr.state();
+        let game_before_frame = state.pe_process_game_rand.state();
+        let dialog_before_frame = state.city_info_dialog;
         let advance = state.advance_frame_simulation(FRAME_ELAPSED);
         let lfsr_after_scheduler = state.pe_process_lfsr.state();
+        let crt_after_scheduler = state.pe_process_crt.seed();
+        let game_after_scheduler = state.pe_process_game_rand.state();
+        if matches!(
+            state.city_info_dialog,
+            Some(CityInfoDialog::Newspaper(_))
+        ) {
+            // Match the actual presentation entrypoint: native PE newspaper
+            // workers run on first paint, not merely when the modal opens.
+            state.prepare_pe_newspaper_first_paint();
+        }
+        let crt_after_newspaper_paint = state.pe_process_crt.seed();
+        let newspaper_paint_ready =
+            state.pe_newspaper_data.is_some() && state.pe_document_tick_word.is_some();
+        let dialog_after_scheduler = state.city_info_dialog;
         frame_count += 1;
         assert!(
             frame_count < 10_000,
@@ -3992,16 +4024,19 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
             state.city_info_dialog,
             state.traffic.speed()
         );
-        if matches!(
+        let closed_dialog = matches!(
             state.city_info_dialog,
             Some(CityInfoDialog::Budget)
                 | Some(CityInfoDialog::Newspaper(NewspaperEdition::Subscription))
-        ) {
+        );
+        if closed_dialog {
             // Dismiss the unedited budget review and subscription notices as
             // the player did in the native run; neither action changes city
             // data. Keep all simulation and RNG dispatch inside the scheduler.
             state.close_city_info_dialog();
         }
+        let crt_after_dialog = state.pe_process_crt.seed();
+        let game_after_dialog = state.pe_process_game_rand.state();
         // Match the other per-frame Win95 runtime work after the scheduler:
         // the port traffic adapter and the ambient overlay adapter use the
         // same elapsed frame time, while the PE XTHG slots remain owned by
@@ -4010,7 +4045,37 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
             .traffic
             .tick_traffic(&mut state.city, FRAME_ELAPSED.as_secs_f32());
         let lfsr_after_traffic_adapter = state.pe_process_lfsr.state();
+        let crt_after_traffic_adapter = state.pe_process_crt.seed();
         state.tick_win95_overlay_sim_frame(FRAME_ELAPSED.as_secs_f32());
+        let crt_after_overlay = state.pe_process_crt.seed();
+        let game_after_overlay = state.pe_process_game_rand.state();
+        if (41_661..=41_664).contains(&frame_age_before) {
+            println!(
+                "Bayview frame {} age={}->{} days={} dialog={:?}->{:?} closed={} paper-paint-ready={} paper-attempted={} CRT={:#010x}->{:#010x}->{:#010x}->{:#010x}->{:#010x}->{:#010x} LFSR={:#06x}->{:#06x}->{:#06x} game={:#010x}->{:#010x}->{:#010x}->{:#010x}",
+                frame_count,
+                frame_age_before,
+                state.city.city_age_days().unwrap(),
+                advance.days,
+                dialog_before_frame,
+                dialog_after_scheduler,
+                closed_dialog,
+                newspaper_paint_ready,
+                state.pe_newspaper_paint_attempted,
+                crt_before_frame,
+                crt_after_scheduler,
+                crt_after_newspaper_paint,
+                crt_after_dialog,
+                crt_after_traffic_adapter,
+                crt_after_overlay,
+                lfsr_before_frame,
+                lfsr_after_scheduler,
+                state.pe_process_lfsr.state(),
+                game_before_frame,
+                game_after_scheduler,
+                game_after_dialog,
+                game_after_overlay,
+            );
+        }
         if advance.days != 0 && state.city.city_age_days() == Some(41_662) {
             println!(
                 "Bayview first-day LFSR scheduler={} traffic={} overlay={}",

@@ -7085,6 +7085,48 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R26 Flint January 1976 CODE 14 capture fixtures"]
+    fn mac_r26_flint_january_1976_code14_day_dispatch_matches_native_return() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R26_FLINT_CODE3_DIR")
+                .expect("CITYGAME_MAC_R26_FLINT_CODE3_DIR must point to extracted R26 fixtures"),
+        );
+        let entry = std::fs::read(root.join("code14-r26-jan1976-dispatch-entry-live-state.cgms"))
+            .expect("R26 native January 1976 CODE 14 entry CGMS");
+        let native_return =
+            std::fs::read(root.join("code14-r26-jan1976-dispatch-return-live-state.cgms"))
+                .expect("R26 native January 1976 CODE 14 return CGMS");
+        let city = crate::city::city_from_cgms_v4_for_test(&entry).unwrap();
+        assert_eq!(
+            city.saved_date(),
+            Some(crate::city::CityDate {
+                year: 1976,
+                month: 1
+            })
+        );
+        assert_eq!(city.mac_state_misc_u32_at(0x0010), Some(22_800));
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mode = AppMode::CityView;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x3bad_4bbd);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0x7a0d_5a49);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x73bf);
+
+        state.handle_simulation_day_advanced(1976, 1, 1);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x3bad_4bbd, "QuickDraw");
+        assert_eq!(state.mac_game_rng.state(), 0x7a0d_5a49, "game LCG");
+        assert_eq!(state.mac_app_lfsr.state(), 0x73bf, "app LFSR");
+        let citygame_return = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+        assert_eq!(
+            citygame_return, native_return,
+            "R26 January 1976 CODE 14 day-dispatch return CGMS"
+        );
+    }
+
+    #[test]
     #[ignore = "requires private R21 generated-New-City CODE 3 capture fixtures"]
     fn mac_r21_generated_new_city_code3_annual_xmic_matches_native_workers() {
         let root = std::path::PathBuf::from(

@@ -72,14 +72,24 @@ impl InputState {
     /// CODE 4 handler stays in `_StillDown` until the matching release.
     pub(super) fn mac_budget_review_pointer_down(
         &mut self,
-        state: &ViewerState,
+        state: &mut ViewerState,
         screen: Vec2,
+        window_size: (u32, u32),
     ) -> bool {
         self.mac_budget_review_pointer_down = None;
         if state.engine_fidelity == EngineFidelity::Mac68k
             && state.mac_loop_scheduler.january_budget_review_pending
             && state.city_info_dialog == Some(CityInfoDialog::Budget)
+            && point_in_float_rect(
+                screen,
+                city_info_dialog_rect_for_engine(
+                    CityInfoDialog::Budget,
+                    window_size,
+                    state.engine_fidelity,
+                ),
+            )
         {
+            state.note_mac_january_budget_review_window_click();
             self.mac_budget_review_pointer_down = Some(screen);
             true
         } else {
@@ -225,7 +235,7 @@ mod preview_tests {
         let mut input = InputState::new();
         let done = Vec2::new(464.0, 126.0);
 
-        assert!(input.mac_budget_review_pointer_down(&state, done));
+        assert!(input.mac_budget_review_pointer_down(&mut state, done, (640, 480)));
         assert!(input.mac_budget_review_pointer_is_down());
         assert_eq!(
             input.mac_budget_review_pointer_up(&state, done, (640, 480)),
@@ -233,7 +243,7 @@ mod preview_tests {
         );
         assert!(!input.mac_budget_review_pointer_is_down());
 
-        assert!(input.mac_budget_review_pointer_down(&state, done));
+        assert!(input.mac_budget_review_pointer_down(&mut state, done, (640, 480)));
         assert_eq!(
             input.mac_budget_review_pointer_up(&state, Vec2::new(329.0, 228.0), (640, 480)),
             None
@@ -243,7 +253,7 @@ mod preview_tests {
         // The captured R10 Police edit used this Mac review control and
         // activated only when MouseUp returned over the same control.
         let police_decrease = Vec2::new(329.0, 228.0);
-        assert!(input.mac_budget_review_pointer_down(&state, police_decrease));
+        assert!(input.mac_budget_review_pointer_down(&mut state, police_decrease, (640, 480)));
         assert_eq!(
             input.mac_budget_review_pointer_up(&state, police_decrease, (640, 480)),
             Some(CityInfoDialogAction::AdjustBudgetFunding {
@@ -252,6 +262,65 @@ mod preview_tests {
             })
         );
         assert!(!input.mac_budget_review_pointer_is_down());
+    }
+
+    #[test]
+    fn mac_budget_review_click_inside_resets_hourglass_deadline() {
+        let city = City::new_blank("/tmp/mac-budget-pointer-timeout.sc2", "Budget").unwrap();
+        let mut state = test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        let start = 10_000;
+        state.mac_loop_scheduler.start_captured_clock(start);
+        state.mac_loop_scheduler.january_budget_review_pending = true;
+        state.mac_loop_scheduler.january_budget_review_started_at = Some(start);
+        state.open_city_info_dialog(CityInfoDialog::Budget);
+        let mut input = InputState::new();
+        let window_size = (640, 480);
+        let page = city_info_dialog_rect_for_engine(
+            CityInfoDialog::Budget,
+            window_size,
+            EngineFidelity::Mac68k,
+        );
+        let inside = Vec2::new(page.x + page.w * 0.9, page.y + page.h * 0.45);
+
+        assert_eq!(
+            state.advance_frame_simulation(Duration::from_secs(79)),
+            GameClockAdvance::default()
+        );
+        assert_eq!(
+            state.mac_loop_scheduler.january_budget_review_started_at,
+            Some(start)
+        );
+        assert!(state.mac_loop_scheduler.january_budget_review_pending);
+
+        assert!(!input.mac_budget_review_pointer_down(
+            &mut state,
+            Vec2::new(10.0, 10.0),
+            window_size,
+        ));
+        assert_eq!(
+            state.mac_loop_scheduler.january_budget_review_started_at,
+            Some(start)
+        );
+
+        assert!(input.mac_budget_review_pointer_down(&mut state, inside, window_size));
+        let restarted_at = start + 79 * 60;
+        assert_eq!(
+            state.mac_loop_scheduler.january_budget_review_started_at,
+            Some(restarted_at)
+        );
+        assert_eq!(
+            input.mac_budget_review_pointer_up(&state, inside, window_size),
+            None
+        );
+        assert!(!input.mac_budget_review_pointer_is_down());
+
+        state.advance_frame_simulation(Duration::from_secs(79));
+        assert!(state.mac_loop_scheduler.january_budget_review_pending);
+        assert_eq!(state.city_info_dialog, Some(CityInfoDialog::Budget));
+        state.advance_frame_simulation(Duration::from_secs(1));
+        assert!(!state.mac_loop_scheduler.january_budget_review_pending);
+        assert_ne!(state.city_info_dialog, Some(CityInfoDialog::Budget));
     }
 
     #[test]
@@ -1300,7 +1369,7 @@ fn handle_mouse_event(
             mac_menu::focus_main_window(window);
             let screen = Vec2::new(x, y) * input_pixel_scale(window, renderer.size());
             input.mouse_pos = screen;
-            if input.mac_budget_review_pointer_down(state, screen) {
+            if input.mac_budget_review_pointer_down(state, screen, renderer.size()) {
                 input.painting = false;
                 input.dragging = false;
                 return Ok(());

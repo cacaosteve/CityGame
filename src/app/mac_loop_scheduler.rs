@@ -336,6 +336,18 @@ impl ViewerState {
         self.mac_loop_scheduler.take_mac_earthquake_sound_request()
     }
 
+    /// CODE 4 restarts the January review's hourglass when the user clicks
+    /// inside the budget window, even when the click is not on a control.
+    pub(super) fn note_mac_january_budget_review_window_click(&mut self) {
+        if self.engine_fidelity == EngineFidelity::Mac68k
+            && self.mac_loop_scheduler.january_budget_review_pending
+            && self.city_info_dialog == Some(CityInfoDialog::Budget)
+        {
+            let now = self.mac_loop_scheduler.current_tick();
+            self.mac_loop_scheduler.january_budget_review_started_at = Some(now);
+        }
+    }
+
     pub(super) fn open_mac_fiscal_crisis_notice(&mut self) {
         self.mac_loop_scheduler.fiscal_notice = Some(MacFiscalNotice {
             start_tick: self.mac_loop_scheduler.current_tick(),

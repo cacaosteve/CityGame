@@ -757,7 +757,11 @@ mod tests {
             let rect = budget_window::mac_row_help_rect(dialog, row).unwrap();
             let point = Vec2::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
             let selector = 0x51d + row as u16;
-            assert!(budget_window::mac_budget_help_topic(selector).is_some());
+            let (_, description) = budget_window::mac_budget_help_topic(selector).unwrap();
+            assert!(
+                description.len() > 80,
+                "row {row} should have recovered help content"
+            );
             assert_eq!(
                 city_info_dialog_hit_test_for_engine(
                     point,

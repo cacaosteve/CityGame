@@ -219,17 +219,38 @@ pub(super) fn mac_row_help_rect(page: FloatRect, row: usize) -> Option<FloatRect
 
 pub(super) fn mac_budget_help_topic(selector: u16) -> Option<(&'static str, &'static str)> {
     Some(match selector {
-        0x51d => ("Property Taxes", "Property tax budget row."),
+        0x51d => (
+            "Property Taxes",
+            "The rate averages your Residential, Commercial, and Industrial taxes. Lower taxes attract growth; higher taxes raise more revenue but can drive people and businesses away. Use the book to set rates by zone.",
+        ),
         0x51e => (
             "Programs and Ordinances",
-            "Programs and ordinances budget row.",
+            "This summarizes the costs and revenues of city programs and ordinances. Open the book to review or change ordinances. Counselors may also start beneficial programs using public funds.",
         ),
-        0x51f => ("Bond Payments", "Bond payment budget row."),
-        0x520 => ("Police Department", "Police Department budget row."),
-        0x521 => ("Fire Department", "Fire Department budget row."),
-        0x522 => ("Health and Welfare", "Health and Welfare budget row."),
-        0x523 => ("Education", "Education budget row."),
-        0x524 => ("Transit Authority", "Transit Authority budget row."),
+        0x51f => (
+            "Bond Payments",
+            "Bonds are public loans that must be repaid with interest. Their rate depends on the prime rate and city value; an older bond can have a lower rate than today's prime rate.",
+        ),
+        0x520 => (
+            "Police Department",
+            "Police reduce crime and stop riots. Lower funding reduces service efficiency and annual cost. One police station costs $100 for a full year.",
+        ),
+        0x521 => (
+            "Fire Department",
+            "Fire departments prevent fires and clean up toxic spills. Lower funding reduces efficiency and annual cost. One fire station costs $100 for a full year.",
+        ),
+        0x522 => (
+            "Health and Welfare",
+            "Hospitals receive state and federal matching funds. Sustained full funding can improve average Life Expectancy. One hospital costs $50 for a full year.",
+        ),
+        0x523 => (
+            "Education",
+            "Schools improve Educational Quotient, and colleges double EQ for ages 15–25. Sustained full funding can improve city EQ. Schools cost $25 yearly; colleges cost $100.",
+        ),
+        0x524 => (
+            "Transit Authority",
+            "Transit maintenance covers roads, highways, bridges, rail, subways, and tunnels. Funding below 100% lets these services decay; extended cuts can cripple the city.",
+        ),
         _ => return None,
     })
 }

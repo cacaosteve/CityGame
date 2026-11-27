@@ -576,6 +576,177 @@ fn mac_transit_route_matches_lakeland_native_all_root_bytes() {
     }
 }
 
+/// Diagnostic sweep for the retained CityGame Flint state immediately before
+/// CODE 14 age 22603. It holds the local map, RNG tuple, and scan phase fixed
+/// while supplying one candidate value for the reused route-stack root byte
+/// to every route call. This is a sensitivity bound, not a model of native
+/// per-call stack history.
+#[test]
+#[ignore = "requires the private CityGame Flint age-22602 CGMS snapshot"]
+fn mac_r20_flint_age22603_route_root_cost_sensitivity_sweep() {
+    use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
+
+    let input = std::env::var("CITYGAME_R20_FLINT_AGE22602_CGMS")
+        .expect("path to CityGame's pre-CODE 14 age-22602 CGMS snapshot");
+    let output = std::env::var("CITYGAME_R20_FLINT_ROUTE_SWEEP_OUTPUT")
+        .expect("path for the root-cost sensitivity CSV");
+    let bytes = std::fs::read(input).expect("read age-22602 CGMS snapshot");
+    let base_city = crate::city::city_from_cgms_v4_for_test(&bytes).expect("decode CGMS");
+    let (qd_entry, game_entry, app_entry) = (0x5d31_77a1, 0x2b8c_7286, 0x26ce);
+    let native_qd_return = 0x503e_bea3;
+    let mut rows = String::from("root_cost,quickdraw_draws,qd_return,game_return,app_return\n");
+
+    let draw_distance = |mut seed: u32, target: u32| {
+        for draws in 0..=20_000 {
+            if seed == target {
+                return draws;
+            }
+            seed = ((u64::from(seed) * 16_807) % 2_147_483_647) as u32;
+        }
+        panic!("QuickDraw endpoint is not within 20,000 draws of its entry seed");
+    };
+    let native_draws = draw_distance(qd_entry, native_qd_return);
+
+    for root_cost in 0_u8..=u8::MAX {
+        let mut state = test_state(base_city.clone());
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mode = AppMode::CityView;
+        state.traffic.set_speed(GameSpeed::Llama);
+        state.mac_process_rng = MacToolboxRng::new(qd_entry);
+        state.mac_game_rng = MacGameLcgRng::new(game_entry);
+        state.mac_app_lfsr = MacAppLfsrRng::new(app_entry);
+        super::super::budget::with_mac_transit_test_root_cost(root_cost, || {
+            state.sim_calendar_mac_rci_scan_phase(0)
+        });
+
+        let qd_return = state.mac_process_rng.seed();
+        let draws = draw_distance(qd_entry, qd_return);
+        if root_cost == 0 {
+            assert_eq!(
+                draws, 7_374,
+                "root-zero replay must match the captured CityGame worker"
+            );
+            assert_eq!(qd_return, 0x7245_56b8);
+        }
+        assert_eq!(
+            state.mac_game_rng.state(),
+            game_entry,
+            "route root-byte sensitivity must not alter the game LCG"
+        );
+        assert_eq!(
+            state.mac_app_lfsr.state(),
+            0xa92c,
+            "route root-byte sensitivity must preserve the captured native app-LFSR return"
+        );
+        rows.push_str(&format!(
+            "{root_cost},{draws},{qd_return:08x},{:08x},{:04x}\n",
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+        ));
+    }
+    std::fs::write(output, rows).expect("write root-cost sensitivity CSV");
+    eprintln!(
+        "R20 root-cost sweep: native CODE 14 QD endpoint is {native_draws} draws from entry; tested all 256 constant root-byte values"
+    );
+}
+
+/// Diagnostic replay from R23's synchronized native CODE 14 entry CGMS. The
+/// native route probe observed root byte 0xff at all 299 route entries. This
+/// checks whether that captured stack value is sufficient for the local phase
+/// endpoint when the native entry map and RNG tuple are supplied.
+#[test]
+#[ignore = "requires the private R23 Flint CODE 14 entry CGMS snapshot"]
+fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
+    use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
+
+    let input = std::env::var("CITYGAME_R23_FLINT_AGE22602_CGMS")
+        .expect("path to the extracted native CODE 14 entry CGMS snapshot");
+    let bytes = std::fs::read(input).expect("read native CODE 14 entry CGMS");
+    let native_return_path = std::env::var("CITYGAME_R23_FLINT_AGE22603_RETURN_CGMS")
+        .expect("path to the extracted native CODE 14 return CGMS snapshot");
+    let native_return = std::fs::read(native_return_path).expect("read native CODE 14 return CGMS");
+    let base_city = crate::city::city_from_cgms_v4_for_test(&bytes).expect("decode CGMS");
+    let replay = |root_cost| {
+        let mut state = test_state(base_city.clone());
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mode = AppMode::CityView;
+        state.traffic.set_speed(GameSpeed::Cheetah);
+        state.mac_process_rng = MacToolboxRng::new(0x2a10_c53e);
+        state.mac_game_rng = MacGameLcgRng::new(0x057e_de9e);
+        state.mac_app_lfsr = MacAppLfsrRng::new(0xcf19);
+        super::super::budget::with_mac_transit_test_root_cost(root_cost, || {
+            state.sim_calendar_mac_rci_scan_phase(0)
+        });
+        (
+            state.mac_process_rng.seed(),
+            state.mac_game_rng.state(),
+            state.mac_app_lfsr.state(),
+            crate::city::cgms_v4_from_city_for_test(&state.city)
+                .expect("encode CityGame route-worker return"),
+        )
+    };
+    let zero_root = replay(0);
+    let live_root = replay(0xff);
+    eprintln!(
+        "R23 root-0 replay: QD={:08x}, game={:08x}, app={:04x}; root-ff replay: QD={:08x}, game={:08x}, app={:04x}",
+        zero_root.0, zero_root.1, zero_root.2, live_root.0, live_root.1, live_root.2
+    );
+    assert_ne!(zero_root.0, 0x3350_f390, "root-zero diagnostic must diverge");
+    assert_eq!(live_root.0, 0x3350_f390, "native CODE 14 QuickDraw return");
+    assert_eq!(zero_root.1, 0x057e_de9e, "native game-LCG return");
+    assert_eq!(live_root.1, 0x057e_de9e, "native game-LCG return");
+    assert_eq!(zero_root.2, 0xd729, "native app-LFSR return");
+    assert_eq!(live_root.2, 0xd729, "native app-LFSR return");
+
+    const HEADER: usize = 20;
+    const TILES: usize = 128 * 128;
+    const MAP_END: usize = HEADER + 9 * TILES + 2 * TILES + TILES;
+    const MISC_END: usize = MAP_END + 1_200 * 4;
+    let map_differences = live_root.3[HEADER..MAP_END]
+        .iter()
+        .zip(&native_return[HEADER..MAP_END])
+        .enumerate()
+        .filter_map(|(offset, (local, native))| (local != native).then_some((offset, *local, *native)))
+        .collect::<Vec<_>>();
+    let xthg_differences = live_root.3[MISC_END..]
+        .iter()
+        .zip(&native_return[MISC_END..])
+        .enumerate()
+        .filter_map(|(offset, (local, native))| (local != native).then_some((offset, *local, *native)))
+        .collect::<Vec<_>>();
+    let plane_differences = (0..12)
+        .map(|plane| {
+            let start = HEADER + plane * TILES;
+            live_root.3[start..start + TILES]
+                .iter()
+                .zip(&native_return[start..start + TILES])
+                .filter(|(local, native)| local != native)
+                .count()
+        })
+        .collect::<Vec<_>>();
+    let misc_difference_offsets = live_root.3[MAP_END..MISC_END]
+        .iter()
+        .zip(&native_return[MAP_END..MISC_END])
+        .enumerate()
+        .filter_map(|(offset, (local, native))| (local != native).then_some(offset))
+        .collect::<Vec<_>>();
+    let misc_differences = live_root.3[MAP_END..MISC_END]
+        .iter()
+        .zip(&native_return[MAP_END..MISC_END])
+        .filter(|(local, native)| local != native)
+        .count();
+    eprintln!(
+        "R23 root-ff return byte differences: map={}, planes={:?}, MISC={} at {:?}, XTHG={}; first map={:?}, first XTHG={:?}",
+        map_differences.len(),
+        plane_differences,
+        misc_differences,
+        &misc_difference_offsets[..misc_difference_offsets.len().min(40)],
+        xthg_differences.len(),
+        &map_differences[..map_differences.len().min(20)],
+        &xthg_differences[..xthg_differences.len().min(20)],
+    );
+}
+
 #[test]
 fn mac_transit_route_success_updates_density_and_mode_accumulators() {
     let mut city =

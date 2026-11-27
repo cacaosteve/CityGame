@@ -6,6 +6,32 @@
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static MAC_TRANSIT_TEST_ROOT_COST: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(in crate::app) fn with_mac_transit_test_root_cost<T>(
+    root_cost: u8,
+    f: impl FnOnce() -> T,
+) -> T {
+    MAC_TRANSIT_TEST_ROOT_COST.with(|override_cost| {
+        let prior = override_cost.replace(Some(root_cost));
+        let result = f();
+        override_cost.set(prior);
+        result
+    })
+}
+
+#[cfg(test)]
+fn mac_transit_default_root_cost() -> u8 {
+    if let Some(root_cost) = MAC_TRANSIT_TEST_ROOT_COST.with(std::cell::Cell::get) {
+        return root_cost;
+    }
+    0
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum MacTransitRouteTransition {
     Reject,
@@ -323,13 +349,17 @@ where
     F: FnMut(usize, usize) -> MacTransitRouteCell,
     R: FnMut() -> i16,
 {
+    #[cfg(test)]
+    let root_cost = mac_transit_default_root_cost();
+    #[cfg(not(test))]
+    let root_cost = 0;
     mac_transit_route_search_with_root_cost(
         x,
         y,
         zone_category,
         coefficient,
         cost_limit,
-        0,
+        root_cost,
         cell_at,
         random_i16,
     )

@@ -221,35 +221,35 @@ pub(super) fn mac_budget_help_topic(selector: u16) -> Option<(&'static str, &'st
     Some(match selector {
         0x51d => (
             "Property Taxes",
-            "The rate averages your Residential, Commercial, and Industrial taxes. Lower taxes attract growth; higher taxes raise more revenue but can drive people and businesses away. Use the book to set rates by zone.",
+            "These are your property taxes.  The tax rate shown to the right is an average of the rates levied against your three zoning types (Residential, Commercial, Industrial).  If you wish to alter taxes on a specific zone, then click on the book to the right. The arrows to the right of the percent box will increase or decrease your tax rate by one percentage point.  The minimum tax is 0% and the maximum is 20%.  A tax rate of 7% is average.  Low taxes attract citizens and businesses.  High taxes will drive them out, but earn you more.",
         ),
         0x51e => (
             "Programs and Ordinances",
-            "This summarizes the costs and revenues of city programs and ordinances. Open the book to review or change ordinances. Counselors may also start beneficial programs using public funds.",
+            "This is a summary of the costs and revenues of city programs and ordinances.  To examine which programs are in effect (or to implement an ordinance) click on the book symbol to the right, which brings up the Ordinances Window. If you see money in this column, but have never implemented an ordinance, you might want to check the Ordinances Window. If you have been doing very well, the city counselors sometimes take it into their heads to begin beneficial programs using public funds.",
         ),
         0x51f => (
             "Bond Payments",
-            "Bonds are public loans that must be repaid with interest. Their rate depends on the prime rate and city value; an older bond can have a lower rate than today's prime rate.",
+            "Bonds are moneys loaned to you by the public which you must repay at a given interest rate.  The rate on these bonds is based on the prime rate plus a percentage based on your city value.  The best rate is prime+1%.  Given that the prime rate changes from year to year, it is possible to have an outstanding bond with a rate that is lower than the current prime.",
         ),
         0x520 => (
             "Police Department",
-            "Police reduce crime and stop riots. Lower funding reduces service efficiency and annual cost. One police station costs $100 for a full year.",
+            "This is your police department funding.  Police departments reduce crime and stop riots.  With less than 100% funding, the police will be less efficient, but the annual cost will decrease accordingly.  A single police station costs $100 for one full year of operation.",
         ),
         0x521 => (
             "Fire Department",
-            "Fire departments prevent fires and clean up toxic spills. Lower funding reduces efficiency and annual cost. One fire station costs $100 for a full year.",
+            "This is your fire department funding.  Fire departments prevent fires and clean up toxic spills.  With less than 100% funding, your firefighters will be less efficient, but the annual cost will decrease accordingly.  A single fire station costs $100 for one full year of operation.",
         ),
         0x522 => (
             "Health and Welfare",
-            "Hospitals receive state and federal matching funds. Sustained full funding can improve average Life Expectancy. One hospital costs $50 for a full year.",
+            "This is your hospital funding. Hospitals receive matching funds from the state and federal government, but your money helps it to operate.  Try to maintain 100% funding over several decades, and your average Life Expectancy (LE) will improve.  Hospitals cost $50 for one full year of operation.",
         ),
         0x523 => (
             "Education",
-            "Schools improve Educational Quotient, and colleges double EQ for ages 15–25. Sustained full funding can improve city EQ. Schools cost $25 yearly; colleges cost $100.",
+            "This is your educational funding.  Without public schools, education is based on a verbal lore handed from parent to child.  Schools add to this Educational Quotient (EQ) and Colleges double EQ for 15-25 year olds.  Maintain 100% funding for several decades in order to improve the city EQ.  Schools cost $25 per year, Colleges cost $100 per year.",
         ),
         0x524 => (
             "Transit Authority",
-            "Transit maintenance covers roads, highways, bridges, rail, subways, and tunnels. Funding below 100% lets these services decay; extended cuts can cripple the city.",
+            "Your city transit costs are broken down into six categories: Road, Highway, Bridge, Rail, Subway, Tunnel.  When your maintenance is less than 100%, these vital city services start to decay.  Roads, rails, and highways turn to rubble.  Sections of subway collapse.  Bridges and tunnels become unstable. You might reduce some of these expenses for a year or two during a financial crisis, but extended cutbacks will strangle your city.",
         ),
         _ => return None,
     })

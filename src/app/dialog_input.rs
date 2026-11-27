@@ -753,14 +753,21 @@ mod tests {
             (640, 480),
             EngineFidelity::Mac68k,
         );
+        let native_body_lengths = [534, 485, 362, 268, 281, 294, 347, 433];
         for row in 0..8 {
             let rect = budget_window::mac_row_help_rect(dialog, row).unwrap();
             let point = Vec2::new(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
             let selector = 0x51d + row as u16;
             let (_, description) = budget_window::mac_budget_help_topic(selector).unwrap();
+            assert_eq!(
+                description.len(),
+                native_body_lengths[row],
+                "row {row} should retain the full recovered TEXT resource after control-byte cleanup"
+            );
+            let max_chars = ((544.0 - 48.0) / (6.0 * 1.25)) as usize;
             assert!(
-                description.len() > 80,
-                "row {row} should have recovered help content"
+                super::wrap_dialog_text(description, max_chars).len() <= 12,
+                "row {row} help should fit the contextual panel at 640x480"
             );
             assert_eq!(
                 city_info_dialog_hit_test_for_engine(

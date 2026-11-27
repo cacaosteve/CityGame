@@ -1265,29 +1265,38 @@ impl ViewerState {
     }
 
     pub(super) fn push_help_panel(&self, rect: FloatRect, solids: &mut Vec<UiSolid>, depth: f32) {
-        let panel = FloatRect {
-            x: rect.x + 72.0,
-            y: rect.y + 96.0,
-            w: rect.w - 144.0,
-            h: rect.h - 180.0,
+        let budget_topic = self
+            .mac_budget_help_selector
+            .and_then(budget_window::mac_budget_help_topic);
+        let panel = if budget_topic.is_some() {
+            FloatRect {
+                x: rect.x + 36.0,
+                y: rect.y + 48.0,
+                w: rect.w - 72.0,
+                h: rect.h - 96.0,
+            }
+        } else {
+            FloatRect {
+                x: rect.x + 72.0,
+                y: rect.y + 96.0,
+                w: rect.w - 144.0,
+                h: rect.h - 180.0,
+            }
         };
         push_ui_rect(solids, panel, [0.72, 0.72, 0.72, 1.0], depth);
         push_ui_bevel(solids, panel, 3.0, false, depth + 0.1);
-        if let Some((title, description)) = self
-            .mac_budget_help_selector
-            .and_then(budget_window::mac_budget_help_topic)
-        {
+        if let Some((title, description)) = budget_topic {
             push_info_text(
                 solids,
                 "Budget topic",
                 title,
                 panel.x + 36.0,
-                panel.y + 42.0,
+                panel.y + 30.0,
                 depth + 0.2,
             );
-            let body_scale = 1.5;
-            let max_chars = ((panel.w - 72.0) / (6.0 * body_scale)).max(1.0) as usize;
-            let mut y = panel.y + 92.0;
+            let body_scale = 1.25;
+            let max_chars = ((panel.w - 48.0) / (6.0 * body_scale)).max(1.0) as usize;
+            let mut y = panel.y + 70.0;
             for line in wrap_dialog_text(description, max_chars) {
                 ui::push_pixel_text(
                     solids,

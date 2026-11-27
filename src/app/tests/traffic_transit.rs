@@ -841,6 +841,80 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
     );
 }
 
+/// Replay the same Flint CODE 14 boundary from the R24 normal title/open run.
+/// Unlike R23, R24's reused route stack byte was zero for every captured call.
+#[test]
+#[ignore = "requires the private R24 Flint CODE 14 snapshots and route trace"]
+fn mac_r24_flint_age22602_native_entry_route_sequence_replay() {
+    use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
+
+    let input = std::env::var("CITYGAME_R24_FLINT_ROUTE_ENTRY_CGMS")
+        .expect("path to the extracted R24 route-entry CGMS snapshot");
+    let bytes = std::fs::read(input).expect("read R24 native route-entry CGMS");
+    let native_return_path = std::env::var("CITYGAME_R24_FLINT_NATIVE_RETURN_CGMS")
+        .expect("path to the extracted R24 native CODE 14 return CGMS");
+    let native_return = std::fs::read(native_return_path).expect("read R24 native return CGMS");
+    let native_routes_path = std::env::var("CITYGAME_R24_FLINT_ROUTE_CALLS")
+        .expect("path to the R24 native route-call CSV");
+    let native_routes = std::fs::read_to_string(native_routes_path)
+        .expect("read R24 native route-call CSV");
+    let root_costs = native_routes
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split(',');
+            (fields.next()? == "route-entry")
+                .then(|| u8::from_str_radix(fields.nth(26)?, 16).ok())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(root_costs.len(), 294, "captured R24 route-call count");
+    assert!(root_costs.iter().all(|&value| value == 0));
+
+    let base_city = crate::city::city_from_cgms_v4_for_test(&bytes).expect("decode R24 CGMS");
+    let mut state = test_state(base_city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.traffic.set_speed(GameSpeed::Cheetah);
+    state.mac_process_rng = MacToolboxRng::new(0x0acd_44b4);
+    state.mac_game_rng = MacGameLcgRng::new(0x3510_d31a);
+    state.mac_app_lfsr = MacAppLfsrRng::new(0x154f);
+    let ((_, consumed), calls) = super::super::budget::with_mac_transit_test_route_trace(|| {
+        super::super::budget::with_mac_transit_test_root_cost_sequence(
+            root_costs.iter().copied(),
+            0,
+            || state.sim_calendar_mac_rci_scan_phase(0),
+        )
+    });
+    assert_eq!(consumed, calls.len());
+    assert_eq!(calls.len(), root_costs.len());
+
+    let local_return = crate::city::cgms_v4_from_city_for_test(&state.city)
+        .expect("encode CityGame R24 worker return");
+    let qd_return = state.mac_process_rng.seed();
+    let game_return = state.mac_game_rng.state();
+    let app_return = state.mac_app_lfsr.state();
+    eprintln!(
+        "R24 CODE 14 return: QD={qd_return:08x}, game={game_return:08x}, app={app_return:04x}; route calls={}; native CGMS bytes differ={}",
+        calls.len(),
+        local_return
+            .iter()
+            .zip(&native_return)
+            .filter(|(a, b)| a != b)
+            .count(),
+    );
+    assert_eq!(
+        qd_return, 0x697e_2fa8,
+        "native R24 CODE 14 QuickDraw return"
+    );
+    assert_eq!(game_return, 0x3510_d31a, "native R24 game-LCG return");
+    assert_eq!(app_return, 0xcf78, "native R24 app-LFSR return");
+    assert_eq!(
+        local_return, native_return,
+        "all R24 return state must match"
+    );
+}
+
 #[test]
 fn mac_transit_route_success_updates_density_and_mode_accumulators() {
     let mut city =

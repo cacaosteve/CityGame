@@ -4972,6 +4972,11 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     state.engine_fidelity = EngineFidelity::Mac68k;
     startup.install(&mut state);
     state.load_city(&city_path, (640, 480), 1.0).unwrap();
+    assert_eq!(
+        state.city.mac_state_misc_u32_at(0x0ff0).map(|value| value as u8),
+        Some(0),
+        "R20 Flint source save has native Auto-Budget disabled"
+    );
     state.mac_music_callback(3565, true);
     state.mac_music_callback(3571, true);
     assert_eq!(state.mac_process_rng.seed(), 0x17fc_b8f5);
@@ -5818,6 +5823,18 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 std::fs::read(code3_root.join("code3-export162-entry-age23100-tick30595.ram"))
                     .expect("R20 January 1977 native CODE 3 entry RAM");
             let entry_a5 = u32::from_be_bytes(entry_ram[0x904..0x908].try_into().unwrap()) as usize;
+            let auto_budget_offset = entry_a5 + 0xd606 - 0x1_0000;
+            assert_eq!(
+                entry_ram[auto_budget_offset],
+                0,
+                "native ffffd606 Auto-Budget byte at the January 1977 boundary"
+            );
+            let budget_suppression_gate_offset = entry_a5 + 0x8c7e - 0x1_0000;
+            assert_eq!(
+                &entry_ram[budget_suppression_gate_offset..budget_suppression_gate_offset + 2],
+                &[0, 0],
+                "native ffff8c7e January-window suppression gate"
+            );
             let entry_funds_offset = entry_a5 + 0xefac - 0x1_0000;
             let entry_funds = i32::from_be_bytes(
                 entry_ram[entry_funds_offset..entry_funds_offset + 4]
@@ -6057,6 +6074,13 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                     && state.city_info_dialog == Some(CityInfoDialog::Budget)),
             "replay ended before target TickCount outside a captured January modal"
         );
+        if replay_end_tick == 30_601 {
+            assert_eq!(
+                state.city_info_dialog,
+                Some(CityInfoDialog::Budget),
+                "without a captured 1977 Done input, CityGame remains in the correctly gated January review"
+            );
+        }
     }
 }
 

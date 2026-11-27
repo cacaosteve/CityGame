@@ -5153,6 +5153,12 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         .and_then(|value| value.parse::<u32>().ok());
     let boundary_snapshot_dir = std::env::var_os("CITYGAME_MAC_R20_SNAPSHOT_DIR")
         .map(PathBuf::from);
+    let route_trace_output =
+        std::env::var_os("CITYGAME_MAC_R20_ROUTE_TRACE_OUTPUT").map(PathBuf::from);
+    let route_root_cost_override = std::env::var("CITYGAME_MAC_R20_ROUTE_ROOT_COST_BYTE")
+        .ok()
+        .and_then(|value| u8::from_str_radix(value.trim_start_matches("0x"), 16).ok());
+    let mut route_trace_written = false;
     if let Some(dir) = &boundary_snapshot_dir {
         std::fs::create_dir_all(dir).expect("create R20 boundary snapshot directory");
     }
@@ -5532,28 +5538,87 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
         if boundary_snapshot_age.is_some_and(|age| age_before < age && age_before + 1 >= age) {
             capture_boundary_snapshot(&state, tick, "calendar-before");
         }
-        let advance = state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
-            ticks_duration(tick.wrapping_sub(last_frame_tick)),
-            actor_wait_ticks,
-            pointer_down,
-            || {
-                if refresh_calendar_from_native_sample_b {
-                    native_calendar_refresh_ticks
-                        .get(&tick)
-                        .copied()
-                        .map(|refresh_tick| {
-                            ticks_duration(
-                                refresh_tick
-                                    .wrapping_sub(tick)
-                                    .saturating_sub(actor_wait_ticks),
-                            )
-                        })
-                        .unwrap_or(std::time::Duration::ZERO)
+        let capture_route_trace =
+            route_trace_output.is_some() && !route_trace_written && age_before == 22_602;
+        let mut finish_calendar_phase = || {
+            state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+                ticks_duration(tick.wrapping_sub(last_frame_tick)),
+                actor_wait_ticks,
+                pointer_down,
+                || {
+                    if refresh_calendar_from_native_sample_b {
+                        native_calendar_refresh_ticks
+                            .get(&tick)
+                            .copied()
+                            .map(|refresh_tick| {
+                                ticks_duration(
+                                    refresh_tick
+                                        .wrapping_sub(tick)
+                                        .saturating_sub(actor_wait_ticks),
+                                )
+                            })
+                            .unwrap_or(std::time::Duration::ZERO)
+                    } else {
+                        std::time::Duration::ZERO
+                    }
+                },
+            )
+        };
+        let (advance, route_calls) = if capture_route_trace {
+            super::super::budget::with_mac_transit_test_route_trace(|| {
+                if let Some(root_cost) = route_root_cost_override {
+                    super::super::budget::with_mac_transit_test_root_cost_sequence(
+                        std::iter::repeat(root_cost).take(512),
+                        root_cost,
+                        finish_calendar_phase,
+                    )
+                    .0
                 } else {
-                    std::time::Duration::ZERO
+                    finish_calendar_phase()
                 }
-            },
-        );
+            })
+        } else {
+            (finish_calendar_phase(), Vec::new())
+        };
+        if capture_route_trace && !route_calls.is_empty() {
+            route_trace_written = true;
+            let output = route_trace_output
+                .as_ref()
+                .expect("route trace output was checked before capture");
+            let mut csv = String::from(
+                "index,x,y,zone_category,coefficient,cost_limit,root_cost,quickdraw_seed_start,quickdraw_seed_end,result,cost,random_draws,path\n",
+            );
+            for (index, call) in route_calls.iter().enumerate() {
+                let path = call
+                    .route
+                    .iter()
+                    .map(|(x, y, state)| format!("{x}:{y}:{state}"))
+                    .collect::<Vec<_>>()
+                    .join(";");
+                csv.push_str(&format!(
+                    "{index},{},{},{},{},{},{},{:08x},{:08x},{},{},{},{}\n",
+                    call.x,
+                    call.y,
+                    call.zone_category,
+                    call.coefficient,
+                    call.cost_limit,
+                    call.root_cost,
+                    call.quickdraw_seed_start,
+                    call.quickdraw_seed_end,
+                    u8::from(!call.route.is_empty()),
+                    call.cost,
+                    call.random_draws,
+                    path,
+                ));
+            }
+            std::fs::write(output, csv).expect("write R20 CODE 14 CityGame route trace");
+            let draw_total: usize = route_calls.iter().map(|call| call.random_draws).sum();
+            eprintln!(
+                "R20 CODE 14 route trace tick={tick} age={age_before} calls={} QuickDraw draws={draw_total} root_override={route_root_cost_override:?} output={}",
+                route_calls.len(),
+                output.display(),
+            );
+        }
         let age_after = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
         if boundary_snapshot_age.is_some_and(|age| age_before < age && age_after >= age) {
             capture_boundary_snapshot(&state, tick, "calendar-after");

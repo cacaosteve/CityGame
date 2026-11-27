@@ -5158,6 +5158,42 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
     let route_root_cost_override = std::env::var("CITYGAME_MAC_R20_ROUTE_ROOT_COST_BYTE")
         .ok()
         .and_then(|value| u8::from_str_radix(value.trim_start_matches("0x"), 16).ok());
+    let route_root_cost_sequence = std::env::var_os("CITYGAME_MAC_R20_ROUTE_ROOT_COST_SEQUENCE")
+        .map(PathBuf::from)
+        .map(|path| {
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read native R20 root-byte sequence {path:?}: {error}"));
+            let mut lines = contents.lines();
+            let header = lines.next().expect("native route trace has a header");
+            let root_byte_column = header
+                .split(',')
+                .position(|field| field == "root_cost_byte")
+                .expect("native route trace has root_cost_byte column");
+            let sequence: Vec<u8> = lines
+                .filter_map(|line| {
+                    let fields: Vec<_> = line.split(',').collect();
+                    if fields.first().copied() != Some("route-entry") {
+                        return None;
+                    }
+                    Some(u8::from_str_radix(
+                        fields
+                            .get(root_byte_column)
+                            .expect("route entry has a root byte"),
+                        16,
+                    )
+                    .expect("route root byte is hexadecimal"))
+                })
+                .collect();
+            assert!(!sequence.is_empty(), "native route trace has no route entries");
+            sequence
+        });
+    let expected_route_qd = std::env::var("CITYGAME_MAC_R20_ROUTE_EXPECTED_QD")
+        .ok()
+        .and_then(|value| u32::from_str_radix(value.trim_start_matches("0x"), 16).ok());
+    assert!(
+        route_root_cost_sequence.is_none() || route_root_cost_override.is_none(),
+        "choose either a native per-call sequence or one constant root byte"
+    );
     let mut route_trace_written = false;
     if let Some(dir) = &boundary_snapshot_dir {
         std::fs::create_dir_all(dir).expect("create R20 boundary snapshot directory");
@@ -5564,21 +5600,32 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                 },
             )
         };
-        let (advance, route_calls) = if capture_route_trace {
-            super::super::budget::with_mac_transit_test_route_trace(|| {
-                if let Some(root_cost) = route_root_cost_override {
-                    super::super::budget::with_mac_transit_test_root_cost_sequence(
-                        std::iter::repeat(root_cost).take(512),
-                        root_cost,
-                        finish_calendar_phase,
-                    )
-                    .0
-                } else {
-                    finish_calendar_phase()
-                }
-            })
+        let (advance, route_calls, root_costs_consumed) = if capture_route_trace {
+            let ((advance, consumed), route_calls) =
+                super::super::budget::with_mac_transit_test_route_trace(|| {
+                    if let Some(sequence) = route_root_cost_sequence.as_ref() {
+                        let (advance, consumed) =
+                            super::super::budget::with_mac_transit_test_root_cost_sequence(
+                                sequence.iter().copied(),
+                                0,
+                                finish_calendar_phase,
+                            );
+                        (advance, Some(consumed))
+                    } else if let Some(root_cost) = route_root_cost_override {
+                        let (advance, consumed) =
+                            super::super::budget::with_mac_transit_test_root_cost_sequence(
+                                std::iter::repeat(root_cost).take(512),
+                                root_cost,
+                                finish_calendar_phase,
+                            );
+                        (advance, Some(consumed))
+                    } else {
+                        (finish_calendar_phase(), None)
+                    }
+                });
+            (advance, route_calls, consumed)
         } else {
-            (finish_calendar_phase(), Vec::new())
+            (finish_calendar_phase(), Vec::new(), None)
         };
         if capture_route_trace && !route_calls.is_empty() {
             route_trace_written = true;
@@ -5614,8 +5661,9 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             std::fs::write(output, csv).expect("write R20 CODE 14 CityGame route trace");
             let draw_total: usize = route_calls.iter().map(|call| call.random_draws).sum();
             eprintln!(
-                "R20 CODE 14 route trace tick={tick} age={age_before} calls={} QuickDraw draws={draw_total} root_override={route_root_cost_override:?} output={}",
+                "R20 CODE 14 route trace tick={tick} age={age_before} calls={} QuickDraw draws={draw_total} root_override={route_root_cost_override:?} sequence_values={} consumed={root_costs_consumed:?} output={}",
                 route_calls.len(),
+                route_root_cost_sequence.as_ref().map_or(0, Vec::len),
                 output.display(),
             );
         }
@@ -5625,7 +5673,7 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             assert_eq!(state.mac_game_rng.state(), 0x2b8c_7286);
             assert_eq!(state.mac_app_lfsr.state(), 0xa92c);
             match route_root_cost_override {
-                None => assert_eq!(
+                None if route_root_cost_sequence.is_none() => assert_eq!(
                     state.mac_process_rng.seed(),
                     0x7245_56b8,
                     "R20 route diagnostic with the production zero-root approximation"
@@ -5635,7 +5683,15 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
                     0x503e_bea3,
                     "R20 all-0xff root-byte sensitivity diagnostic; matches native QD endpoint"
                 ),
+                None => {}
                 Some(_) => {}
+            }
+            if let Some(expected_qd) = expected_route_qd {
+                assert_eq!(
+                    state.mac_process_rng.seed(),
+                    expected_qd,
+                    "R20 CODE 14 route return QuickDraw seed from captured inputs"
+                );
             }
         }
         if boundary_snapshot_age.is_some_and(|age| age_before < age && age_after >= age) {

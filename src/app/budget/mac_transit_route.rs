@@ -508,10 +508,11 @@ where
     result
 }
 
-/// The root node's stored cost is an uninitialized byte in the original
-/// worker. It is read only after backtracking to that node. The caller-facing
-/// wrapper retains the existing zero approximation until native stack history
-/// can be modeled across drawing and event dispatch.
+/// CODE 14 does not initialize the root node's cost byte; the reused stack slot
+/// can retain stores from prior QuickDraw, System, or Sound Manager work. It is
+/// read only after backtracking to that node. The caller-facing wrapper keeps
+/// the existing zero approximation until native stack history can be modeled
+/// across drawing, event dispatch, and sound servicing.
 pub(in crate::app) fn mac_transit_route_search_with_root_cost<F, R>(
     x: usize,
     y: usize,

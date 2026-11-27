@@ -5620,6 +5620,24 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             );
         }
         let age_after = state.city.mac_state_misc_u32_at(0x10).unwrap_or(0);
+        if capture_route_trace && !route_calls.is_empty() {
+            assert_eq!(age_after, 22_603, "R20 CODE 14 return age");
+            assert_eq!(state.mac_game_rng.state(), 0x2b8c_7286);
+            assert_eq!(state.mac_app_lfsr.state(), 0xa92c);
+            match route_root_cost_override {
+                None => assert_eq!(
+                    state.mac_process_rng.seed(),
+                    0x7245_56b8,
+                    "R20 route diagnostic with the production zero-root approximation"
+                ),
+                Some(0xff) => assert_eq!(
+                    state.mac_process_rng.seed(),
+                    0x503e_bea3,
+                    "R20 all-0xff root-byte sensitivity diagnostic; matches native QD endpoint"
+                ),
+                Some(_) => {}
+            }
+        }
         if boundary_snapshot_age.is_some_and(|age| age_before < age && age_after >= age) {
             capture_boundary_snapshot(&state, tick, "calendar-after");
         }

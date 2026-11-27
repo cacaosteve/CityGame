@@ -21,9 +21,25 @@ pub(in crate::app) struct MacTransitRouteTrace {
     pub coefficient: u16,
     pub cost_limit: u16,
     pub root_cost: u8,
+    pub quickdraw_seed_start: u32,
+    pub quickdraw_seed_end: u32,
     pub route: Vec<(usize, usize, u8)>,
     pub cost: u16,
     pub random_draws: usize,
+}
+
+#[cfg(test)]
+pub(in crate::app) fn record_mac_transit_route_rng(start: u32, end: u32) {
+    MAC_TRANSIT_TEST_ROUTE_TRACE.with(|trace| {
+        if let Some(call) = trace
+            .borrow_mut()
+            .as_mut()
+            .and_then(|calls| calls.last_mut())
+        {
+            call.quickdraw_seed_start = start;
+            call.quickdraw_seed_end = end;
+        }
+    });
 }
 
 #[cfg(test)]
@@ -417,6 +433,8 @@ where
                 coefficient,
                 cost_limit,
                 root_cost,
+                quickdraw_seed_start: 0,
+                quickdraw_seed_end: 0,
                 route: result
                     .as_ref()
                     .map_or_else(Vec::new, |result| result.route.clone()),

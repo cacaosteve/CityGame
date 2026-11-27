@@ -711,7 +711,7 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
     }
     if let Some(output) = std::env::var_os("CITYGAME_R23_FLINT_ROUTE_TRACE_OUTPUT") {
         let mut csv = String::from(
-            "index,x,y,zone_category,coefficient,cost_limit,root_cost,result,cost,random_draws,path\n",
+            "index,x,y,zone_category,coefficient,cost_limit,root_cost,quickdraw_seed_start,quickdraw_seed_end,result,cost,random_draws,path\n",
         );
         for (index, call) in live_root.4.iter().enumerate() {
             let path = call
@@ -721,13 +721,15 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
                 .collect::<Vec<_>>()
                 .join(";");
             csv.push_str(&format!(
-                "{index},{},{},{},{},{},{},{},{},{},{}\n",
+                "{index},{},{},{},{},{},{},{:08x},{:08x},{},{},{},{}\n",
                 call.x,
                 call.y,
                 call.zone_category,
                 call.coefficient,
                 call.cost_limit,
                 call.root_cost,
+                call.quickdraw_seed_start,
+                call.quickdraw_seed_end,
                 u8::from(!call.route.is_empty()),
                 call.cost,
                 call.random_draws,

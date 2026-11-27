@@ -666,6 +666,8 @@ pub(in crate::app) fn mac_budget_try_transit_route_at(
         return 0;
     }
 
+    #[cfg(test)]
+    let quickdraw_seed_start = rng.seed();
     let route = mac_transit_route_search(
         x,
         y,
@@ -683,6 +685,8 @@ pub(in crate::app) fn mac_budget_try_transit_route_at(
         },
         || rng.random_i16(),
     );
+    #[cfg(test)]
+    super::mac_transit_route::record_mac_transit_route_rng(quickdraw_seed_start, rng.seed());
     if let Some(route) = route {
         mac_transit_apply_route_success(city, &route, growth_coefficient);
         let demand_index = (zone_category.saturating_sub(1) / 2).min(2);

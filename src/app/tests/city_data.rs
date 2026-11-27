@@ -6003,6 +6003,11 @@ fn mac_r20_flint_captured_events_reach_january_1975_review_boundary() {
             native_calendar_dispatch_ticks[index],
         )
     });
+    assert_eq!(
+        first_calendar_boundary_alignment,
+        Some((48, 4_284, Some(4_285), 4_286)),
+        "keep CityGame sample-A input, native sample B, and CODE 14 worker entry distinct"
+    );
     eprintln!(
         "R20 calendar boundaries CityGame_inputs={} Quadra_worker_entries={} first_unaligned_boundary=(index,sample_a,sample_b,native_worker) {:?}",
         citygame_calendar_input_ticks.len(),

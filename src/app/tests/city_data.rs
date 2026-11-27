@@ -3769,6 +3769,107 @@ fn assert_win95_capture_planes_match(
     }
 }
 
+fn print_win95_capture_plane_differences(
+    state: &ViewerState,
+    capture: &std::path::Path,
+    boundary: &str,
+) {
+    for (name, side) in [
+        ("altm", 128),
+        ("xter", 128),
+        ("xbld", 128),
+        ("xzon", 128),
+        ("xund", 128),
+        ("xtxt", 128),
+        ("xbit", 128),
+        ("xtrf", 64),
+        ("xplt", 64),
+        ("xval", 64),
+        ("xcrm", 64),
+        ("xplc", 32),
+        ("xfir", 32),
+        ("xpop", 32),
+        ("xrog", 32),
+    ] {
+        let live = std::fs::read(capture.join(boundary).join(format!("{name}-x-major.bin")))
+            .expect("missing native plane capture");
+        let mut differences = 0_usize;
+        let mut first = None;
+        for x in 0..side {
+            for y in 0..side {
+                let scale = 128 / side;
+                let (tile_x, tile_y) = (x * scale, y * scale);
+                let actual: u16 = match name {
+                    "altm" => {
+                        let v = state.city.altm_at(tile_x, tile_y);
+                        u16::from(v.land)
+                            | (u16::from(v.water) << 5)
+                            | (u16::from(v.tunnel_levels) << 10)
+                    }
+                    "xter" => state.city.terrain_at(tile_x, tile_y).into(),
+                    "xbld" => state.city.building_at(tile_x, tile_y).into(),
+                    "xzon" => state
+                        .city
+                        .zone_at(tile_x, tile_y)
+                        .unwrap()
+                        .raw_bits()
+                        .into(),
+                    "xund" => state.city.underground_at(tile_x, tile_y).into(),
+                    "xtxt" => state.city.text_overlay_at(tile_x, tile_y).unwrap().into(),
+                    "xbit" => state
+                        .city
+                        .tile_bits_at(tile_x, tile_y)
+                        .unwrap()
+                        .raw_bits()
+                        .into(),
+                    "xtrf" => state
+                        .city
+                        .traffic_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xplt" => state
+                        .city
+                        .pollution_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xval" => state.city.land_value_at(tile_x, tile_y).unwrap().into(),
+                    "xcrm" => state.city.crime_density_at(tile_x, tile_y).unwrap().into(),
+                    "xplc" => state
+                        .city
+                        .police_coverage_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xfir" => state.city.fire_coverage_at(tile_x, tile_y).unwrap().into(),
+                    "xpop" => state
+                        .city
+                        .population_density_at(tile_x, tile_y)
+                        .unwrap()
+                        .into(),
+                    "xrog" => state.city.rate_of_growth_at(tile_x, tile_y).unwrap().into(),
+                    _ => unreachable!(),
+                };
+                let index = x * side + y;
+                let expected = if name == "altm" {
+                    u16::from_le_bytes([live[index * 2], live[index * 2 + 1]])
+                } else {
+                    u16::from(live[index])
+                };
+                if actual != expected {
+                    differences += 1;
+                    first.get_or_insert((x, y, actual, expected));
+                }
+            }
+        }
+        println!("Bayview {boundary} {name}: {differences} differing cells; first={first:?}");
+    }
+}
+
+fn test_fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
 /// Reaches the annual Statue interval through CityGame's regular Cheetah frame
 /// scheduler, including timed actor ticks. It starts at a captured post-open
 /// boundary and is not an unseeded launch-to-year replay.
@@ -3880,7 +3981,7 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     let mut frame_count = 0_u32;
     const FRAME_ELAPSED: Duration = Duration::from_millis(20);
     while state.city.city_age_days().unwrap() < 41_788 {
-        state.advance_frame_simulation(FRAME_ELAPSED);
+        let advance = state.advance_frame_simulation(FRAME_ELAPSED);
         frame_count += 1;
         assert!(
             frame_count < 10_000,
@@ -3908,9 +4009,55 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
             .traffic
             .tick_traffic(&mut state.city, FRAME_ELAPSED.as_secs_f32());
         state.tick_win95_overlay_sim_frame(FRAME_ELAPSED.as_secs_f32());
+        if advance.days != 0 {
+            let actors = crate::win95_overlay::encode_xthg_records(
+                state.city.traffic_overlays().expect("Bayview XTHG daily"),
+            )
+            .unwrap();
+            let mut xtxt = Vec::with_capacity(128 * 128);
+            for x in 0..128 {
+                for y in 0..128 {
+                    xtxt.push(u8::try_from(state.city.text_overlay_at(x, y).unwrap()).unwrap());
+                }
+            }
+            println!(
+                "Bayview daily {} {} {} {} xtxt={:016x} xthg={:016x}",
+                state.city.city_age_days().unwrap(),
+                state.pe_process_crt.seed(),
+                state.pe_process_lfsr.state(),
+                state.pe_process_game_rand.state(),
+                test_fnv1a64(&xtxt),
+                test_fnv1a64(&actors),
+            );
+        }
     }
 
     let native_after_xmic = std::fs::read(capture.join("day41788/xmic-records.bin")).unwrap();
+    let xmic_differing_slots: Vec<_> = (0..150)
+        .filter(|&slot| {
+            let row = state.city.microsim_at(slot).unwrap();
+            let offset = slot * 8;
+            row.tile_id != native_after_xmic[offset]
+                || row.stat0 != native_after_xmic[offset + 1]
+                || row.stat1
+                    != u16::from_le_bytes([
+                        native_after_xmic[offset + 2],
+                        native_after_xmic[offset + 3],
+                    ])
+                || row.stat2
+                    != u16::from_le_bytes([
+                        native_after_xmic[offset + 4],
+                        native_after_xmic[offset + 5],
+                    ])
+                || row.stat3
+                    != u16::from_le_bytes([
+                        native_after_xmic[offset + 6],
+                        native_after_xmic[offset + 7],
+                    ])
+        })
+        .collect();
+    println!("Bayview day41788 XMIC differing slots={xmic_differing_slots:?}");
+    print_win95_capture_plane_differences(&state, &capture, "day41788");
     let actual = state.city.microsim_at(statue_slot).unwrap();
     let offset = statue_slot * 8;
     let native_after_xthg = std::fs::read(capture.join("day41788/xthg-records.bin")).unwrap();

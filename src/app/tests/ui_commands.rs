@@ -9429,6 +9429,9 @@ fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
             city.set_text_overlay(x, y, zoo_text);
         }
     }
+    let zoo_slot = (0..150)
+        .find(|&slot| city.microsim_at(slot).is_some_and(|row| row.tile_id == 218))
+        .expect("annual Zoo XMIC row");
     city.set_saved_date_and_day(
         CityDate {
             year: 1900,
@@ -9449,9 +9452,12 @@ fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
     state.traffic.set_speed(GameSpeed::Cheetah);
     let game_rand_before = state.pe_process_game_rand;
     let mut expected_game_rand = game_rand_before;
-    for _ in 0..4 {
-        expected_game_rand.random_mod(100);
-    }
+    let expected_zoo_fields = [
+        expected_game_rand.random_mod(100),
+        expected_game_rand.random_mod(100),
+        expected_game_rand.random_mod(100),
+        expected_game_rand.random_mod(100),
+    ];
     assert_eq!(
         state
             .advance_frame_simulation(Duration::from_millis(200))
@@ -9484,6 +9490,17 @@ fn pe_modal_live_january_waits_for_budget_before_financial_publication() {
     assert_eq!(
         state.pe_process_game_rand, expected_game_rand,
         "the resumed annual continuation performs the Zoo's four game-LCG draws"
+    );
+    let zoo = state.city.microsim_at(zoo_slot).expect("annual Zoo XMIC row");
+    assert_eq!(
+        (zoo.stat0, zoo.stat1, zoo.stat2, zoo.stat3),
+        (
+            expected_zoo_fields[0] as u8,
+            expected_zoo_fields[1],
+            expected_zoo_fields[2],
+            expected_zoo_fields[3],
+        ),
+        "the resumed annual continuation publishes the Zoo's sampled fields"
     );
     assert_eq!(state.game_clock, GameClock::new(1901, 1));
     assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);

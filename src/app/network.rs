@@ -25,8 +25,8 @@ use bridges::network_bridge_building_for_tile;
 pub(super) use bridges::{
     pe_power_bridge_selector_cost_45b930, pe_rail_bridge_interior_tile,
     pe_rail_bridge_selector_cost, pe_rail_bridge_span_plan, pe_road_bridge_direction_mask,
-    pe_road_bridge_interior_tile, pe_road_bridge_selector_mask, pe_road_bridge_span_plan,
-    power_bridge_span_plan,
+    pe_road_bridge_interior_tile, pe_road_bridge_mode1_direction, pe_road_bridge_selector_mask,
+    pe_road_bridge_span_plan, power_bridge_span_plan,
 };
 pub(super) use bridges::{
     pe_road_bridge_selector_cost, pe_road_bridge_selector_name, pe_road_bridge_selectors,

@@ -474,7 +474,7 @@ use network::{
     pe_place_roads_crossover_from_existing_44ae24, pe_power_bridge_selector_cost_45b930,
     pe_rail_bridge_interior_tile, pe_rail_bridge_selector_cost, pe_rail_bridge_span_plan,
     pe_rail_next_stroke_tile_449f50, pe_road_bridge_direction_mask, pe_road_bridge_interior_tile,
-    pe_road_bridge_selector_mask, pe_road_bridge_span_plan,
+    pe_road_bridge_mode1_direction, pe_road_bridge_selector_mask, pe_road_bridge_span_plan,
     pe_road_candidate_xbld_allows_step_448f50, pe_road_next_stroke_tile_448f50,
     pe_road_stroke_plan_449bb0, pe_road_stroke_walk_init_448bc0, power_bridge_span_plan,
     rail_neighbor_link_is_available, road_neighbor_link_is_available,

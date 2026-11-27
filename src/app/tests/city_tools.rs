@@ -17244,6 +17244,35 @@ fn pe_road_bridge_preflight_masks_directions_and_fixed_interior_families() {
     assert_eq!(pe_road_bridge_direction_mask(0x31), Some(0x02));
     assert_eq!(pe_road_bridge_direction_mask(0x29), None);
     assert_eq!(pe_road_bridge_direction_mask(0x39), None);
+
+    let masks = [0x02, 0x04, 0x08, 0x01, 0x06, 0x0c, 0x09, 0x03];
+    let mut city = City::new_blank("/tmp/road-bridge-seed-class-sweep.sc2", "BridgeSeedSweep")
+        .expect("blank city");
+    for compass in 0..4 {
+        city.set_view_rotation(compass);
+        let priority = [
+            compass,
+            (compass + 2) & 3,
+            (compass + 1) & 3,
+            (compass + 3) & 3,
+        ];
+        for seed_xter in (0x21..=0x28).chain(0x31..=0x38) {
+            city.set_terrain(64, 64, seed_xter);
+            assert_eq!(
+                pe_road_bridge_direction_mask(seed_xter),
+                Some(masks[(seed_xter & 0x0f) as usize - 1]),
+                "seed XTER {seed_xter:#04x}"
+            );
+            let expected = priority
+                .into_iter()
+                .find(|direction| masks[(seed_xter & 0x0f) as usize - 1] & (1 << direction) != 0);
+            assert_eq!(
+                pe_road_bridge_mode1_direction(&city, (64, 64)),
+                expected,
+                "seed XTER {seed_xter:#04x}, compass {compass}"
+            );
+        }
+    }
 }
 
 #[test]

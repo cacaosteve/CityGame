@@ -295,6 +295,27 @@ impl ViewerState {
                     y += 18.0 * body_scale;
                 }
             }
+            CityInfoDialog::MacScenarioFailure => {
+                let body = "You have failed to complete scenario objectives within the allotted span of time. It is with regret that your citizens vote you out of office in favor of fresh management.";
+                let scale = 2.0;
+                let lines =
+                    wrap_dialog_text(body, ((rect.w - 40.0) / (6.0 * scale)).max(1.0) as usize);
+                let line_height = 16.0 * scale;
+                let total_height = lines.len() as f32 * line_height;
+                let mut y = rect.y + (rect.h - total_height) * 0.5 + 8.0;
+                for line in lines {
+                    ui::push_pixel_text(
+                        solids,
+                        &line,
+                        rect.x + (rect.w - ui::pixel_text_width(&line, scale)) * 0.5,
+                        y,
+                        scale,
+                        [0.0, 0.0, 0.0, 1.0],
+                        depth + 1.0,
+                    );
+                    y += line_height;
+                }
+            }
             CityInfoDialog::Ordinances => self.push_ordinances_panel(rect, solids, depth + 1.0),
             CityInfoDialog::Newspaper(edition) => {
                 unreachable!("newspaper edition {edition:?} drawn above")

@@ -5,11 +5,11 @@
 //! ordering and announcement suppression around existing UI/disaster calls.
 
 use super::{
-    CITY_PROGRESSION_REQUIREMENTS, MILITARY_BASE_NONE, MISC_CITY_PROGRESSION_OFFSET,
-    PlacementSound, PopulationStats, ScenarioOutcome, ViewerState, ordinance_flags_for_city,
-    pe_misc_mirror_storage_active, persist_pe_garbage_day22, scenario_goal_counts,
-    scenario_goals_for_city, scenario_outcome_for_progress, scenario_outcome_message,
-    scenario_progress_for_city_with_entry_seed,
+    CITY_PROGRESSION_REQUIREMENTS, CityInfoDialog, MILITARY_BASE_NONE,
+    MISC_CITY_PROGRESSION_OFFSET, PlacementSound, PopulationStats, ScenarioOutcome, ViewerState,
+    ordinance_flags_for_city, pe_misc_mirror_storage_active, persist_pe_garbage_day22,
+    scenario_goal_counts, scenario_goals_for_city, scenario_outcome_for_progress,
+    scenario_outcome_message, scenario_progress_for_city_with_entry_seed,
 };
 use crate::city::{CityFileKind, MacScenarioResult};
 use crate::game_clock::GameClock;
@@ -151,6 +151,9 @@ impl ViewerState {
             self.queue_disaster_extra_sounds(sound, 1);
             self.announced_scenario_outcome = Some(outcome);
             self.set_sim_status_announcement(scenario_outcome_message(outcome));
+            if outcome == ScenarioOutcome::Failed {
+                self.open_city_info_dialog(CityInfoDialog::MacScenarioFailure);
+            }
             announced = true;
         }
         self.tick_mac_bankruptcy_outcome();

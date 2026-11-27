@@ -139,6 +139,15 @@ pub(super) fn city_info_dialog_rect_for_engine(
             w,
             h,
         }
+    } else if dialog == CityInfoDialog::MacScenarioFailure {
+        let w = 360.0_f32.min(window_size.0 as f32 - 24.0).max(200.0);
+        let h = 200.0_f32.min(window_size.1 as f32 - 24.0).max(160.0);
+        FloatRect {
+            x: (window_size.0 as f32 - w) * 0.5,
+            y: (window_size.1 as f32 - h) * 0.5,
+            w,
+            h,
+        }
     } else if matches!(
         dialog,
         CityInfoDialog::FiscalCrisis | CityInfoDialog::TunnelQuote { .. }

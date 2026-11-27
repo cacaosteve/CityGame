@@ -194,6 +194,8 @@ pub(super) enum CityInfoDialog {
     Budget,
     /// PE January MessageBox: holds its caller without a temporary speed pause.
     FiscalCrisis,
+    /// Mac saved-scenario deadline failure alert.
+    MacScenarioFailure,
     Ordinances,
     Newspaper(NewspaperEdition),
     Scenario,
@@ -269,6 +271,7 @@ impl CityInfoDialog {
                 | Self::HighwayWaterBridge { .. }
                 | Self::StadiumTeam { .. }
                 | Self::Help
+                | Self::MacScenarioFailure
                 | Self::Newspaper(
                     NewspaperEdition::MacDisaster
                         | NewspaperEdition::MacStandard
@@ -286,6 +289,7 @@ impl CityInfoDialog {
             Self::Industry => "Industry",
             Self::Budget => "Budget",
             Self::FiscalCrisis => "Fiscal Crisis",
+            Self::MacScenarioFailure => "Scenario Failed",
             Self::Ordinances => "Ordinances",
             Self::Newspaper(edition) => edition.label(),
             Self::Scenario => "Scenario Briefing",
@@ -309,6 +313,7 @@ impl CityInfoDialog {
             Self::Industry => Some(UiAction::OpenCityIndustry),
             Self::Budget => Some(UiAction::OpenBudget),
             Self::FiscalCrisis => None,
+            Self::MacScenarioFailure => None,
             Self::Ordinances => None,
             Self::Newspaper(_) => None,
             Self::Scenario => None,

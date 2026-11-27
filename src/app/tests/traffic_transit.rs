@@ -845,7 +845,7 @@ fn mac_r23_flint_age22603_native_entry_root_ff_replay() {
 /// Unlike R23, R24's reused route stack byte was zero for every captured call.
 #[test]
 #[ignore = "requires the private R24 Flint CODE 14 snapshots and route trace"]
-fn mac_r24_flint_age22602_native_entry_route_sequence_replay() {
+fn mac_r24_flint_age22602_native_entry_default_root_replay() {
     use crate::mac_random::{MacAppLfsrRng, MacGameLcgRng, MacToolboxRng};
 
     let input = std::env::var("CITYGAME_R24_FLINT_ROUTE_ENTRY_CGMS")
@@ -879,15 +879,11 @@ fn mac_r24_flint_age22602_native_entry_route_sequence_replay() {
     state.mac_process_rng = MacToolboxRng::new(0x0acd_44b4);
     state.mac_game_rng = MacGameLcgRng::new(0x3510_d31a);
     state.mac_app_lfsr = MacAppLfsrRng::new(0x154f);
-    let ((_, consumed), calls) = super::super::budget::with_mac_transit_test_route_trace(|| {
-        super::super::budget::with_mac_transit_test_root_cost_sequence(
-            root_costs.iter().copied(),
-            0,
-            || state.sim_calendar_mac_rci_scan_phase(0),
-        )
+    let (_, calls) = super::super::budget::with_mac_transit_test_route_trace(|| {
+        state.sim_calendar_mac_rci_scan_phase(0)
     });
-    assert_eq!(consumed, calls.len());
     assert_eq!(calls.len(), root_costs.len());
+    assert!(calls.iter().all(|call| call.root_cost == 0));
 
     let local_return = crate::city::cgms_v4_from_city_for_test(&state.city)
         .expect("encode CityGame R24 worker return");

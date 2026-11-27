@@ -3974,6 +3974,69 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     );
 }
 
+/// Replays exactly one native PE Things pass from Bayview's opened-city
+/// actor table and captured process RNG values. This isolates actor behavior
+/// from the wall-clock/idle cadence that is still under investigation.
+#[test]
+#[ignore = "requires the private Bayview Win95 catalog city"]
+fn win95_bayview_single_things_pass_matches_native_actor_and_rng_endpoint() {
+    let city_path = PathBuf::from(std::env::var_os("CITYGAME_WIN95_BAYVIEW_CITY").unwrap());
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(std::fs::read(&city_path).unwrap())),
+        "b2730e4fc6c8577d529d33ce75dd6d57c6217fb6b7e6442c870d13d127fd4678"
+    );
+    let mut state = test_state(City::new_blank("unused.sc2", "Bootstrap").unwrap());
+    state.engine_fidelity = EngineFidelity::Win95;
+    state.load_city(&city_path, (1280, 800), 1.0).unwrap();
+    if matches!(
+        state.city_info_dialog,
+        Some(CityInfoDialog::Newspaper(NewspaperEdition::Subscription))
+    ) {
+        state.close_city_info_dialog();
+    }
+    let before = crate::win95_overlay::encode_xthg_records(
+        state.city.traffic_overlays().expect("Bayview XTHG"),
+    )
+    .unwrap();
+
+    // Captured day-41661 boundary values from the original Bayview run.
+    state.pe_process_crt = Win95CrtRand::new(2_267_257_818);
+    state.pe_process_lfsr = Win95Lfsr::new(3_494);
+    state.pe_process_game_rand = Win95GameRand::new(3_730_023_020);
+    state.tick_pe_disaster_xthg_actors_in_slot_order();
+
+    let actors = crate::win95_overlay::encode_xthg_records(
+        state.city.traffic_overlays().expect("Bayview XTHG"),
+    )
+    .unwrap();
+    let changed_slots: Vec<_> = before
+        .chunks_exact(12)
+        .zip(actors.chunks_exact(12))
+        .enumerate()
+        .filter_map(|(slot, (old, new))| (old != new).then_some(slot))
+        .collect();
+    assert_eq!(changed_slots, [1, 2, 3, 4, 5, 7]);
+    let expected_rows = [
+        (1, "0300040c51010909427d0002"),
+        (2, "02020241190a08084e190001"),
+        (3, "0902001f1900040414140001"),
+        (4, "01000202400e08081414009f"),
+        (5, "09010043500004047d410014"),
+        (7, "0901001b2e000404141400d0"),
+    ];
+    for (slot, expected_hex) in expected_rows {
+        let begin = slot * 12;
+        let actual_hex = actors[begin..begin + 12]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(actual_hex, expected_hex, "XTHG slot {slot}");
+    }
+    assert_eq!(state.pe_process_crt.seed(), 894_329_687);
+    assert_eq!(state.pe_process_lfsr.state(), 44_853);
+    assert_eq!(state.pe_process_game_rand.state(), 3_730_023_020);
+}
+
 /// Fresh-launch Win95 clock inputs through a date-adjusted city's January phase.
 #[test]
 #[ignore = "requires private Win95 annual capture and original bootstrap city"]

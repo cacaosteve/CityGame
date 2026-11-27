@@ -2908,6 +2908,9 @@ fn disaster_end_opens_subscription_newspaper_paper_zero() {
     city.set_text_overlay(20, 20, 0xff);
     city.set_misc_u32_at(MISC_NEWSPAPER_CHOICE_OFFSET, 3);
     let mut state = test_state(city);
+    let mut expected_lfsr = Win95Lfsr::new(0x1dd8);
+    expected_lfsr.random_mod(5);
+    state.pe_process_lfsr = Win95Lfsr::new(0x1dd8);
     persist_pe_disaster_misc(
         &mut state.city,
         Some(DisasterKind::Fire),
@@ -2923,6 +2926,10 @@ fn disaster_end_opens_subscription_newspaper_paper_zero() {
     );
     assert_eq!(newspaper_choice_for_city(&state.city), 0);
     assert_eq!(state.query_line, "Newspaper: disaster summary");
+    assert_eq!(
+        state.pe_process_lfsr, expected_lfsr,
+        "opening the disaster-summary paper consumes its shared LFSR audio-cue draw"
+    );
     assert!(!state.city.take_pe_disaster_end_newspaper_pending());
 }
 

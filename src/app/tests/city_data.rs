@@ -3982,6 +3982,7 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
     const FRAME_ELAPSED: Duration = Duration::from_millis(20);
     while state.city.city_age_days().unwrap() < 41_788 {
         let advance = state.advance_frame_simulation(FRAME_ELAPSED);
+        let lfsr_after_scheduler = state.pe_process_lfsr.state();
         frame_count += 1;
         assert!(
             frame_count < 10_000,
@@ -4008,7 +4009,16 @@ fn win95_bayview_cheetah_checkpoint_exposes_annual_statue_rng_divergence() {
         state
             .traffic
             .tick_traffic(&mut state.city, FRAME_ELAPSED.as_secs_f32());
+        let lfsr_after_traffic_adapter = state.pe_process_lfsr.state();
         state.tick_win95_overlay_sim_frame(FRAME_ELAPSED.as_secs_f32());
+        if advance.days != 0 && state.city.city_age_days() == Some(41_662) {
+            println!(
+                "Bayview first-day LFSR scheduler={} traffic={} overlay={}",
+                lfsr_after_scheduler,
+                lfsr_after_traffic_adapter,
+                state.pe_process_lfsr.state(),
+            );
+        }
         if advance.days != 0 {
             let actors = crate::win95_overlay::encode_xthg_records(
                 state.city.traffic_overlays().expect("Bayview XTHG daily"),

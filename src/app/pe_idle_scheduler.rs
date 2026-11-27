@@ -369,26 +369,57 @@ impl ViewerState {
                 }
                 PeIdleContinuation::AdmitDisaster => {
                     let started = self.consume_pe_trigger_disaster();
+                    if cfg!(test) && self.city.city_age_days() == Some(41_662) {
+                        eprintln!(
+                            "Bayview day41662 idle-admit started={started} trigger={} active={} lfsr={:#06x}",
+                            self.city.pe_w_trigger_disaster,
+                            self.city.has_active_disaster(),
+                            self.pe_process_lfsr.state(),
+                        );
+                    }
                     self.pe_idle_scheduler.continuation =
                         Some(PeIdleContinuation::TickDisaster { started });
                 }
                 PeIdleContinuation::TickDisaster { started } => {
+                    let before = self.pe_process_lfsr.state();
+                    let active = self.city.has_active_disaster();
                     self.pe_idle_scheduler.continuation =
                         Some(PeIdleContinuation::PublishDisasterEnd);
-                    if started || self.city.has_active_disaster() {
+                    if started || active {
                         self.tick_pe_disaster_clock();
+                    }
+                    if cfg!(test) && self.city.city_age_days() == Some(41_662) {
+                        eprintln!(
+                            "Bayview day41662 idle-tick started={started} active={active} lfsr={before:#06x}->{:#06x}",
+                            self.pe_process_lfsr.state(),
+                        );
                     }
                 }
                 PeIdleContinuation::PublishDisasterEnd => {
+                    let before = self.pe_process_lfsr.state();
+                    let current_disaster = self.city.pe_w_current_disaster_type();
                     self.pe_idle_scheduler.continuation = Some(PeIdleContinuation::Finish);
                     if !self.city.has_active_disaster()
                         && self.city.pe_w_current_disaster_type() != 0
                     {
                         self.persist_cleared_disaster_misc();
                     }
+                    if cfg!(test) && self.city.city_age_days() == Some(41_662) {
+                        eprintln!(
+                            "Bayview day41662 idle-publish disaster={current_disaster} lfsr={before:#06x}->{:#06x}",
+                            self.pe_process_lfsr.state(),
+                        );
+                    }
                 }
                 PeIdleContinuation::Finish => {
+                    let before = self.pe_process_lfsr.state();
                     self.pe_idle_scheduler.finish_idle(self.traffic.speed());
+                    if cfg!(test) && self.city.city_age_days() == Some(41_662) {
+                        eprintln!(
+                            "Bayview day41662 idle-finish lfsr={before:#06x}->{:#06x}",
+                            self.pe_process_lfsr.state(),
+                        );
+                    }
                 }
             }
         }
@@ -468,12 +499,24 @@ impl ViewerState {
             } else {
                 self.apply_game_clock_advance(start, advance);
             }
+            if cfg!(test) && self.city.city_age_days() == Some(41_662) {
+                eprintln!(
+                    "Bayview day41662 scheduler-after-calendar lfsr={:#06x}",
+                    self.pe_process_lfsr.state(),
+                );
+            }
         }
         // Mode 1 checks queued requests after calendar; mode 2 runs this path
         // without a date step. A newly admitted request gets its first scan in
         // this same wrapper invocation, as in PE 0x45cf10.
         if !self.pe_dialog_owns_input() {
             self.resume_pe_idle_invocation();
+        }
+        if cfg!(test) && self.city.city_age_days() == Some(41_662) {
+            eprintln!(
+                "Bayview day41662 scheduler-after-idle lfsr={:#06x}",
+                self.pe_process_lfsr.state(),
+            );
         }
         advance
     }

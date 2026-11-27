@@ -164,7 +164,16 @@ impl ViewerState {
             power_service_maps_with_entry_seed(&self.city, self.pe_process_crt.seed());
         let mut development_services =
             rci_development_services_for_city_with_power(&self.city, &power_maps);
+        // Keep a bounded trace for the captured Bayview first-growth-tick
+        // comparison. The exact LFSR entry state identifies that one phase.
+        let trace_bayview_phase = cfg!(test)
+            && step == 2
+            && substep == 1
+            && lfsr.state() == 44_853;
         for (x, y) in sim_calendar_growth_phase_tiles(step, substep) {
+            let tile_lfsr_before = lfsr.state();
+            let tile_building_before = self.city.building_at(x, y);
+            let tile_zone_raw = self.city.zone_at(x, y).map(|zone| zone.raw_bits());
             // Win95 DoBudgetOvergroundTransportCheck @ `0x435988`/`0x43598e`: only when
             // XZON low nibble is 0 (unzoned). Loaded/blank cities always have a zones
             // plane — unzoned is `zone_id == 0`, not `zone_at == None`.
@@ -357,6 +366,17 @@ impl ViewerState {
                     false,
                 ));
             }
+            if trace_bayview_phase && tile_lfsr_before != lfsr.state() {
+                eprintln!(
+                    "Bayview phase12 LFSR tile=({x},{y}) xbld={:#04x} xzon={tile_zone_raw:?} {:#06x}->{:#06x}",
+                    tile_building_before,
+                    tile_lfsr_before,
+                    lfsr.state(),
+                );
+            }
+        }
+        if trace_bayview_phase {
+            eprintln!("Bayview phase12 LFSR end={:#06x}", lfsr.state());
         }
         self.pe_process_crt = budget_rng;
         self.persist_transit_passengers_to_city();

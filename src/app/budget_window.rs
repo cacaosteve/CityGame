@@ -3577,8 +3577,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires private R19 AutoDebt age-32100 through age-33300 CODE 3 export-162 captures"]
-    fn mac_r19_autodebt_annual_code3_xmic_matches_native_workers_2007_2011() {
+    #[ignore = "requires private R19 AutoDebt age-32100 through age-33600 CODE 3 export-162 captures"]
+    fn mac_r19_autodebt_annual_code3_xmic_matches_native_workers_2007_2012() {
         let root = std::path::PathBuf::from(
             std::env::var_os("CITYGAME_MAC_R19_AGE32100_CODE3_DIR")
                 .expect("CITYGAME_MAC_R19_AGE32100_CODE3_DIR must point to R19 annual fixtures"),
@@ -3632,6 +3632,16 @@ mod tests {
             0x4ae4,
             0x4881_7745,
             0x95c8,
+        );
+        assert_mac_r19_annual_xmic_boundary(
+            &root,
+            33600,
+            2012,
+            202_685,
+            0x252d_2947,
+            0xb360,
+            0x7fd6_2591,
+            0x7d35,
         );
     }
 

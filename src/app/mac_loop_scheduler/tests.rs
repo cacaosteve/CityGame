@@ -8087,6 +8087,75 @@ fn mac_captured_natural_earthquake_scan_matches_live_entry_and_return_seeds() {
 }
 
 #[test]
+#[ignore = "requires the private R19 AutoDebt save from the normal Mac open path"]
+fn mac_r19_autodebt_earthquake_menu_matches_native_point_and_entry_seed() {
+    let source = std::env::var_os("CITYGAME_MAC_R19_AUTODEBT_CITY")
+        .expect("set CITYGAME_MAC_R19_AUTODEBT_CITY to the private copied AutoDebt save");
+    let mut state = test_state(
+        City::new_blank("/tmp/mac-r19-autodebt-menu.sc2", "R19 AutoDebt")
+            .expect("create test state"),
+    );
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state
+        .load_city(std::path::Path::new(&source), (640, 480), 1.0)
+        .unwrap();
+    state
+        .city
+        .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    state.traffic.set_speed(GameSpeed::Paused);
+    // R19 MouseUp is recorded at TickCount 32637. The QuickDraw seed at the
+    // pre-event poll advances twice through MENU 1004's Earthquake point setup.
+    state.mac_loop_scheduler.start_captured_clock(32_637);
+    state.mac_process_rng = MacToolboxRng::new(0x4368_b97c);
+
+    assert!(state.start_disaster(DisasterKind::Earthquake));
+    assert_eq!(state.city.mac_pending_action(), 6);
+    assert_eq!(
+        state.mac_loop_scheduler.pending_action_point,
+        Some((122, 19))
+    );
+    assert_eq!(state.mac_process_rng.seed(), 0x0622_9f0c);
+}
+
+#[test]
+#[ignore = "requires private R19 Earthquake worker-boundary CGMS reconstructions"]
+fn mac_r19_autodebt_earthquake_worker_matches_native_state_and_rng_boundary() {
+    let entry_path = std::env::var_os("CITYGAME_MAC_R19_EARTHQUAKE_ENTRY_CGMS")
+        .expect("set CITYGAME_MAC_R19_EARTHQUAKE_ENTRY_CGMS to the private native entry CGMS");
+    let native_path = std::env::var_os("CITYGAME_MAC_R19_EARTHQUAKE_RETURN_CGMS")
+        .expect("set CITYGAME_MAC_R19_EARTHQUAKE_RETURN_CGMS to the private native return CGMS");
+    let mut city = crate::city::city_from_cgms_v4_for_test(
+        &std::fs::read(entry_path).expect("read R19 native worker-entry CGMS"),
+    )
+    .unwrap();
+    let native = std::fs::read(native_path).expect("read R19 native worker-return CGMS");
+    city.prepare_mac_fidelity_from_saved_city();
+    city.set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
+    city.set_mac_pending_action(6);
+
+    let mut rng = MacToolboxRng::new(0x0622_9f0c);
+    let mut lfsr = MacAppLfsrRng::new(0x8a5a);
+    let mut now = 32_665;
+    scenario_action::seed_earthquake(&mut city, (122, 19), &mut rng, &mut now, &mut lfsr);
+    let actual = crate::city::cgms_v4_from_city_for_test(&city).unwrap();
+
+    assert_eq!(rng.seed(), 0x783f_7e6c);
+    assert_eq!(lfsr.state(), 0x8a5a);
+    let map_end = 20 + 9 * 128 * 128 + 2 * 128 * 128 + 128 * 128;
+    assert_eq!(
+        &actual[..map_end],
+        &native[..map_end],
+        "CityGame map planes after the R19 Earthquake worker"
+    );
+    let xthg_start = map_end + 1200 * 4;
+    assert_eq!(
+        &actual[xthg_start..],
+        &native[xthg_start..],
+        "CityGame XTHG after the R19 Earthquake worker"
+    );
+}
+
+#[test]
 #[ignore = "requires private CGMS reconstructed from the live Maxis Land Earthquake entry RAM"]
 fn mac_earthquake_worker_scan_matches_live_maxis_land_rng_boundary() {
     let snapshot = std::env::var_os("CITYGAME_MAC_EARTHQUAKE_CGMS")

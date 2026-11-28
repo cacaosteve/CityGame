@@ -12684,6 +12684,98 @@ fn auto_budget_preserves_manual_service_funding_without_revenue() {
 }
 
 #[test]
+fn mac_auto_budget_carries_january_dialog_edit_through_settlement_and_reload() {
+    let mut city = City::new_blank("/tmp/sc2000-mac-edited-auto-budget.sc2", "MacBudget")
+        .expect("blank city");
+    city.kind = CityFileKind::MacCity;
+    city.set_saved_date(CityDate {
+        year: 1900,
+        month: 12,
+    });
+    city.set_city_funds(20_000);
+    set_budget_funding_for_city_test(&mut city, 0, 100);
+    set_mac_auto_budget_enabled(&mut city, true);
+
+    let police_ytd = budget_row_misc_offset_for_city(
+        &city,
+        BUDGET_SERVICE_ROW_START,
+        BUDGET_SERVICE_YEAR_TO_DATE_FIELD,
+    )
+    .expect("Mac Police budget accumulator");
+    city.set_budget_misc_u32_values(police_ytd, &[1_200]);
+    city.set_mac_state_misc_low_byte_at(MISC_YEAR_END_OFFSET, 0xff);
+
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.game_clock = GameClock::new(1901, 1);
+    assert!(mac_auto_budget_enabled_for_city(&state.city));
+
+    let action = crate::app::dialog_input::city_info_dialog_hit_test_for_engine(
+        Vec2::new(329.0, 228.0),
+        (640, 480),
+        CityInfoDialog::Budget,
+        EngineFidelity::Mac68k,
+    );
+    assert_eq!(
+        action,
+        Some(CityInfoDialogAction::AdjustBudgetFunding {
+            service_index: 0,
+            delta: -5,
+        })
+    );
+    assert!(state.adjust_budget_service_funding_from_dialog(0, -5));
+    assert_eq!(budget_service_funding_percent_for_city(&state.city, 0), 95);
+
+    // This is the same settlement and annual publication path used by Done
+    // in the January review, while Auto-Budget remains enabled.
+    assert!(state.mac_annual_budget_due(1901, 1));
+    state.finish_mac_january_budget_review();
+    assert_eq!(state.city.city_funds(), 19_900);
+    assert!(mac_auto_budget_enabled_for_city(&state.city));
+    assert_eq!(
+        state
+            .city
+            .mac_state_misc_u32_at(MISC_YEAR_END_OFFSET)
+            .unwrap() as u8,
+        0
+    );
+    assert_eq!(
+        state.city.budget_misc_u32_at(police_ytd),
+        Some(95),
+        "January clears the prior year, then publishes the new accrual at edited funding"
+    );
+    assert_eq!(budget_service_funding_percent_for_city(&state.city, 0), 95);
+
+    state.game_clock = GameClock::new(1901, 2);
+    state.handle_simulation_month_advanced();
+    let police = budget_service_misc_offset_for_city(&state.city, 0, 0)
+        .expect("Mac Police budget row");
+    let values = state
+        .city
+        .budget_misc_u32_values(police, BUDGET_SERVICE_MISC_STRIDE);
+    assert_eq!(values[4 + 1 * 2], 95, "February snapshots the edited funding");
+
+    let save_path = std::env::temp_dir().join(format!(
+        "citygame-mac-edited-auto-budget-{}.city",
+        std::process::id()
+    ));
+    state.city.save(&save_path).expect("save edited Mac city");
+    let reloaded = City::load(&save_path).expect("reload edited Mac city");
+    std::fs::remove_file(&save_path).unwrap();
+    assert_eq!(reloaded.kind, CityFileKind::MacCity);
+    assert_eq!(reloaded.city_funds(), 19_900);
+    assert!(mac_auto_budget_enabled_for_city(&reloaded));
+    assert_eq!(budget_service_funding_percent_for_city(&reloaded, 0), 95);
+    let reloaded_police = budget_service_misc_offset_for_city(&reloaded, 0, 0)
+        .expect("reloaded Mac Police budget row");
+    assert_eq!(
+        reloaded.budget_misc_u32_values(reloaded_police, BUDGET_SERVICE_MISC_STRIDE)[4 + 1 * 2],
+        95,
+        "February funding history survives Mac save/reload"
+    );
+}
+
+#[test]
 fn auto_budget_preserves_manual_service_funding_when_revenue_covers_expense() {
     let mut city = City::new_blank("/tmp/sc2000-test.sc2", "test").expect("blank city");
     // PE pZonePops rows ×10 give a $1,290 tax base; 7% ÷75 yields $120,

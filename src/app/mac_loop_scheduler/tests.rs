@@ -8222,6 +8222,7 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
     let mut native_notice_actor_return = None;
     let mut native_earthquake_worker_entry = None;
     let mut native_earthquake_worker_return = None;
+    let mut native_story_panel_entry = None;
     let mut earthquake_worker_return_tick = None;
     let mut earthquake_action_pass_tick = None;
     let mut earthquake_shake_ticks = std::collections::BTreeSet::new();
@@ -8311,6 +8312,20 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
             _ => {}
         }
     }
+    if let Ok(file) = std::fs::File::open(trace.join("story-window-events-qd-pointer-v2.csv")) {
+        for line in BufReader::new(file).lines().skip(1) {
+            let line = line.expect("read R19 story-window trace row");
+            let fields: Vec<_> = line.split(',').collect();
+            if fields[0] == "CODE7.export233_story_panel" && fields[1] == "34282" {
+                native_story_panel_entry = Some((
+                    fields[2].parse::<u32>().expect("story panel age"),
+                    u32::from_str_radix(fields[10], 16).expect("story panel QuickDraw"),
+                    u32::from_str_radix(fields[11], 16).expect("story panel game LCG"),
+                    u16::from_str_radix(fields[12], 16).expect("story panel app LFSR"),
+                ));
+            }
+        }
+    }
     // R19 returned one captured MouseDown at tick 30795 to dismiss the
     // fiscal notice. Model the completed click at its EventRecord return
     // boundary; the following clock samples resume normal CODE 2 dispatch.
@@ -8352,6 +8367,9 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
     let mut citygame_annual_rng = None;
     let mut citygame_earthquake_worker_entry = None;
     let mut citygame_earthquake_entry_state = None;
+    let mut citygame_earthquake_worker_return = None;
+    let mut citygame_action_pass_return = None;
+    let mut citygame_story_panel_entry = None;
     for (tick, (calendar_row, actor_row)) in timeline {
         if captured_earthquake_selections.contains(&tick) {
             let event_elapsed = ticks_duration(tick.wrapping_sub(last_frame_tick));
@@ -8396,12 +8414,45 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
                 &mut worker_now,
                 &mut state.mac_app_lfsr,
             );
+            citygame_earthquake_worker_return = Some((
+                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            ));
             let action_pass_tick = earthquake_action_pass_tick
                 .expect("native CODE 10 action-pass entry after Earthquake worker");
             worker_now = action_pass_tick;
             let action_elapsed = ticks_duration(action_pass_tick.wrapping_sub(last_frame_tick));
             state.mac_loop_scheduler.advance_elapsed(action_elapsed);
-            state.advance_mac_scenario_action(&mut worker_now);
+            let mut citygame_after_chooser = None;
+            state.advance_mac_scenario_action_with_music(&mut worker_now, &mut |state| {
+                // This captured tick is the intervening native music callback
+                // sample before CODE 7 export 233 begins.
+                citygame_after_chooser = Some((
+                    state.mac_process_rng.seed(),
+                    state.mac_game_rng.state(),
+                    state.mac_app_lfsr.state(),
+                ));
+                state.mac_music_callback(34_281, true);
+                citygame_story_panel_entry = Some((
+                    state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                    state.mac_process_rng.seed(),
+                    state.mac_game_rng.state(),
+                    state.mac_app_lfsr.state(),
+                ));
+            });
+            citygame_action_pass_return = Some((
+                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            ));
+            eprintln!(
+                "R19 after chooser/before music callback streams={:?}; after completion streams={:?}",
+                citygame_after_chooser,
+                citygame_action_pass_return
+            );
             last_frame_tick = worker_now;
         }
         if captured_notice_dismissals.contains(&tick) {
@@ -8662,6 +8713,13 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
         );
     }
     if let Some(native_return) = native_earthquake_worker_return {
+        assert_eq!(
+            citygame_earthquake_worker_return,
+            Some(native_return),
+            "R19 Earthquake worker-return RNG boundary before the CODE 10 action pass"
+        );
+    }
+    if native_earthquake_worker_return.is_some() {
         let native_return_cgms = std::fs::read(
             std::env::var_os("CITYGAME_MAC_R19_EARTHQUAKE_RETURN_CGMS")
                 .expect("set CITYGAME_MAC_R19_EARTHQUAKE_RETURN_CGMS to native return CGMS"),
@@ -8681,15 +8739,22 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
             &native_return_cgms[xthg_start..],
             "R19 Earthquake worker-return XTHG"
         );
+    }
+    if let Some(native_panel) = native_story_panel_entry {
+        let citygame_panel = citygame_story_panel_entry.expect("CityGame story-panel entry");
         assert_eq!(
-            (
-                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
-                state.mac_process_rng.seed(),
-                state.mac_game_rng.state(),
-                state.mac_app_lfsr.state(),
-            ),
-            native_return,
-            "R19 Earthquake worker-return RNG boundary"
+            citygame_panel,
+            native_panel,
+            "R19 CODE 7 export-233 age and all RNG streams after music callback"
+        );
+        eprintln!(
+            "R19 export-233 entry matches: age={} QD={:08x} LCG={:08x} LFSR={:04x}; after CityGame paper initialization QD={:08x} LFSR={:04x}",
+            native_panel.0,
+            native_panel.1,
+            native_panel.2,
+            native_panel.3,
+            citygame_action_pass_return.expect("CityGame post-open state").1,
+            citygame_action_pass_return.expect("CityGame post-open state").3
         );
     }
 }

@@ -520,11 +520,18 @@ pub fn run() -> Result<()> {
                 } else {
                     frame_start.duration_since(sampled_at)
                 };
-                state.finish_mac_frame_calendar_phase_with_tick_refresh_and_budget_pointer(
+                state.finish_mac_frame_calendar_phase_with_music(
                     event_elapsed,
                     waits,
                     input.mac_budget_review_pointer_is_down(),
                     || frame_start.elapsed(),
+                    &mut |state| {
+                        commands::update_mac_city_music(
+                            state,
+                            &mut city_music,
+                            &asset_profile,
+                        );
+                    },
                 )
             } else {
                 state.advance_frame_simulation(elapsed)

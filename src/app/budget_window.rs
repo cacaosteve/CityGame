@@ -3460,18 +3460,22 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires private R19 AutoDebt age-32100 CODE 3 export-162 boundary captures"]
-    fn mac_r19_autodebt_january_2007_code3_annual_xmic_matches_native_worker() {
-        let root = std::path::PathBuf::from(
-            std::env::var_os("CITYGAME_MAC_R19_AGE32100_CODE3_DIR")
-                .expect("CITYGAME_MAC_R19_AGE32100_CODE3_DIR must point to R19 age-32100 fixtures"),
-        );
+    fn assert_mac_r19_annual_xmic_boundary(
+        root: &std::path::Path,
+        age: u32,
+        year: u16,
+        entry_tick: u32,
+        entry_quickdraw: u32,
+        entry_lfsr: u16,
+        return_quickdraw: u32,
+        return_lfsr: u16,
+    ) {
+        let stem = format!("r19-age{age}-code3");
         let mut city = crate::city::city_from_cgms_v4_for_test(
-            &std::fs::read(root.join("r19-age32100-code3-entry.cgms")).unwrap(),
+            &std::fs::read(root.join(format!("{stem}-entry.cgms"))).unwrap(),
         )
         .unwrap();
-        let entry_xmic = std::fs::read(root.join("r19-age32100-code3-entry-xmic.bin")).unwrap();
+        let entry_xmic = std::fs::read(root.join(format!("{stem}-entry-xmic.bin"))).unwrap();
         assert_eq!(entry_xmic.len(), 150 * 8);
         for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
             city.set_microsim_tile_id(slot, row[0]);
@@ -3481,9 +3485,10 @@ mod tests {
             city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
         }
 
-        let entry_ram =
-            std::fs::read(root.join("qd-pointer-v2-code3-export162-entry-age32100-tick161782.ram"))
-                .unwrap();
+        let entry_ram = std::fs::read(root.join(format!(
+            "qd-pointer-v2-code3-export162-entry-age{age}-tick{entry_tick}.ram"
+        )))
+        .unwrap();
         assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
         let native_u32 = |address: usize| {
             u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
@@ -3499,26 +3504,23 @@ mod tests {
             }
             city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
         }
-        city.set_saved_date(crate::city::CityDate {
-            year: 2007,
-            month: 1,
-        });
+        city.set_saved_date(crate::city::CityDate { year, month: 1 });
 
         let mut state = crate::app::tests::test_state(city);
         state.engine_fidelity = EngineFidelity::Mac68k;
-        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x0f14_1a78);
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(entry_quickdraw);
         state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0x35fd_f4f1);
-        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x2b7f);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(entry_lfsr);
         let funding =
             std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
         let tax_rates =
             std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
         state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
 
-        assert_eq!(state.mac_process_rng.seed(), 0x0021_c250);
+        assert_eq!(state.mac_process_rng.seed(), return_quickdraw);
         assert_eq!(state.mac_game_rng.state(), 0x35fd_f4f1);
-        assert_eq!(state.mac_app_lfsr.state(), 0x56fe);
-        let expected_xmic = std::fs::read(root.join("r19-age32100-code3-return-xmic.bin")).unwrap();
+        assert_eq!(state.mac_app_lfsr.state(), return_lfsr);
+        let expected_xmic = std::fs::read(root.join(format!("{stem}-return-xmic.bin"))).unwrap();
         assert_eq!(expected_xmic.len(), 150 * 8);
         let mut mismatches = Vec::new();
         for slot in 0..150 {
@@ -3551,12 +3553,12 @@ mod tests {
         }
         assert!(
             mismatches.is_empty(),
-            "R19 AutoDebt January 2007 CODE 3 XMIC mismatches:\n{}",
+            "R19 AutoDebt January {year} CODE 3 XMIC mismatches:\n{}",
             mismatches.join("\n")
         );
 
         let native_return = crate::city::city_from_cgms_v4_for_test(
-            &std::fs::read(root.join("r19-age32100-code3-return.cgms")).unwrap(),
+            &std::fs::read(root.join(format!("{stem}-return.cgms"))).unwrap(),
         )
         .unwrap();
         let actual_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
@@ -3564,13 +3566,42 @@ mod tests {
         assert_eq!(
             &actual_cgms[..20 + 12 * 128 * 128],
             &native_cgms[..20 + 12 * 128 * 128],
-            "R19 January 2007 CODE 3 map planes"
+            "R19 January {year} CODE 3 map planes"
         );
         let xthg_start = 20 + 12 * 128 * 128 + 1_200 * 4;
         assert_eq!(
             &actual_cgms[xthg_start..],
             &native_cgms[xthg_start..],
-            "R19 January 2007 CODE 3 XTHG"
+            "R19 January {year} CODE 3 XTHG"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires private R19 AutoDebt age-32100 and age-32400 CODE 3 export-162 captures"]
+    fn mac_r19_autodebt_annual_code3_xmic_matches_native_workers_2007_2008() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R19_AGE32100_CODE3_DIR")
+                .expect("CITYGAME_MAC_R19_AGE32100_CODE3_DIR must point to R19 annual fixtures"),
+        );
+        assert_mac_r19_annual_xmic_boundary(
+            &root,
+            32100,
+            2007,
+            161_782,
+            0x0f14_1a78,
+            0x2b7f,
+            0x0021_c250,
+            0x56fe,
+        );
+        assert_mac_r19_annual_xmic_boundary(
+            &root,
+            32400,
+            2008,
+            170_831,
+            0x203b_313e,
+            0xa470,
+            0x244c_4a83,
+            0x5315,
         );
     }
 

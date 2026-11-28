@@ -3406,6 +3406,9 @@ mod tests {
             }
             city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
         }
+        assert_eq!(city.mac_state_misc_u32_at(0x2c), Some(4_163));
+        assert_eq!(city.mac_state_misc_u32_at(0x1038), Some(73));
+        assert_eq!(city.mac_police_coverage_gate(), 0);
         city.set_saved_date(crate::city::CityDate {
             year: 1976,
             month: 1,
@@ -3455,6 +3458,120 @@ mod tests {
                 "Flint January 1976 CODE 3 XMIC slot {slot}"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires private R19 AutoDebt age-32100 CODE 3 export-162 boundary captures"]
+    fn mac_r19_autodebt_january_2007_code3_annual_xmic_matches_native_worker() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R19_AGE32100_CODE3_DIR")
+                .expect("CITYGAME_MAC_R19_AGE32100_CODE3_DIR must point to R19 age-32100 fixtures"),
+        );
+        let mut city = crate::city::city_from_cgms_v4_for_test(
+            &std::fs::read(root.join("r19-age32100-code3-entry.cgms")).unwrap(),
+        )
+        .unwrap();
+        let entry_xmic = std::fs::read(root.join("r19-age32100-code3-entry-xmic.bin")).unwrap();
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+
+        let entry_ram =
+            std::fs::read(root.join("qd-pointer-v2-code3-export162-entry-age32100-tick161782.ram"))
+                .unwrap();
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let native_u32 = |address: usize| {
+            u32::from_be_bytes(entry_ram[address..address + 4].try_into().unwrap())
+        };
+        let a5 = native_u32(0x904) as usize;
+        city.set_mac_power_service_summary(native_u32(a5 + 0xf00a - 0x10000));
+        let budget_table = native_u32(a5 + 0xfd66 - 0x10000) as usize;
+        for row in 0..16 {
+            let start = budget_table + row * 0x70;
+            let mut values = vec![0; BUDGET_SERVICE_MISC_STRIDE];
+            for (field, offset) in [96usize, 100, 104].into_iter().enumerate() {
+                values[field] = native_u32(start + offset);
+            }
+            city.set_budget_misc_u32_values(0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4, &values);
+        }
+        city.set_saved_date(crate::city::CityDate {
+            year: 2007,
+            month: 1,
+        });
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x0f14_1a78);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0x35fd_f4f1);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0x2b7f);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x0021_c250);
+        assert_eq!(state.mac_game_rng.state(), 0x35fd_f4f1);
+        assert_eq!(state.mac_app_lfsr.state(), 0x56fe);
+        let expected_xmic = std::fs::read(root.join("r19-age32100-code3-return-xmic.bin")).unwrap();
+        assert_eq!(expected_xmic.len(), 150 * 8);
+        let mut mismatches = Vec::new();
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let actual = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            let expected = &expected_xmic[slot * 8..slot * 8 + 8];
+            if actual != expected {
+                mismatches.push(format!(
+                    "slot {slot} tile={} actual={} expected={}",
+                    actual[0],
+                    actual
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                    expected
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                ));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "R19 AutoDebt January 2007 CODE 3 XMIC mismatches:\n{}",
+            mismatches.join("\n")
+        );
+
+        let native_return = crate::city::city_from_cgms_v4_for_test(
+            &std::fs::read(root.join("r19-age32100-code3-return.cgms")).unwrap(),
+        )
+        .unwrap();
+        let actual_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+        let native_cgms = crate::city::cgms_v4_from_city_for_test(&native_return).unwrap();
+        assert_eq!(
+            &actual_cgms[..20 + 12 * 128 * 128],
+            &native_cgms[..20 + 12 * 128 * 128],
+            "R19 January 2007 CODE 3 map planes"
+        );
+        let xthg_start = 20 + 12 * 128 * 128 + 1_200 * 4;
+        assert_eq!(
+            &actual_cgms[xthg_start..],
+            &native_cgms[xthg_start..],
+            "R19 January 2007 CODE 3 XTHG"
+        );
     }
 
     #[test]

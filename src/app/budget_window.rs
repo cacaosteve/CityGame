@@ -6889,6 +6889,146 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires private R26 Flint January 1978 CODE 3 capture fixtures"]
+    fn mac_r26_flint_january_1978_code3_annual_xmic_matches_native_worker_and_save_reload() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("CITYGAME_MAC_R26_FLINT_CODE3_DIR")
+                .expect("CITYGAME_MAC_R26_FLINT_CODE3_DIR must point to extracted R26 fixtures"),
+        );
+        let age = 23_400;
+        let entry_tick = 96_149;
+        let return_tick = 96_150;
+        let stem = |role: &str, tick: u32| {
+            format!("r26-live-inputs-code3-export162-{role}-age{age}-tick{tick}")
+        };
+        let entry_stem = stem("entry", entry_tick);
+        let return_stem = stem("return", return_tick);
+        let entry_cgms = std::fs::read(root.join(format!("{entry_stem}.cgms")))
+            .expect("R26 native January 1978 CODE 3 entry CGMS");
+        let mut city = crate::city::city_from_cgms_v4_for_test(&entry_cgms).unwrap();
+        let entry_xmic = std::fs::read(root.join(format!("{entry_stem}-xmic.bin")))
+            .expect("R26 native January 1978 entry XMIC");
+        assert_eq!(entry_xmic.len(), 150 * 8);
+        for (slot, row) in entry_xmic.chunks_exact(8).enumerate() {
+            city.set_microsim_tile_id(slot, row[0]);
+            city.set_microsim_stat0(slot, row[1]);
+            city.set_microsim_stat1(slot, u16::from_be_bytes([row[2], row[3]]));
+            city.set_microsim_stat2(slot, u16::from_be_bytes([row[4], row[5]]));
+            city.set_microsim_stat3(slot, u16::from_be_bytes([row[6], row[7]]));
+        }
+
+        let budget_rows =
+            std::fs::read_to_string(root.join(format!("{entry_stem}-budget-rows.csv")))
+                .expect("R26 native January 1978 budget rows");
+        let mut lines = budget_rows.lines();
+        assert_eq!(lines.next(), Some("row,field_60,field_64,field_68"));
+        let mut seen_budget_rows = [false; 16];
+        for line in lines {
+            let fields: Vec<_> = line.split(',').collect();
+            assert_eq!(fields.len(), 4);
+            let row: usize = fields[0].parse().unwrap();
+            assert!(row < seen_budget_rows.len() && !seen_budget_rows[row]);
+            seen_budget_rows[row] = true;
+            let offset = 0x077c + row * BUDGET_SERVICE_MISC_STRIDE * 4;
+            let mut values = city.budget_misc_u32_values(offset, BUDGET_SERVICE_MISC_STRIDE);
+            values[BUDGET_SERVICE_FUNDING_FIELD] = fields[2].parse::<i32>().unwrap() as u32;
+            city.set_budget_misc_u32_values(offset, &values);
+        }
+        assert!(seen_budget_rows.into_iter().all(|seen| seen));
+
+        let entry_ram = std::fs::read(root.join(format!(
+            "code3-export162-entry-age{age}-tick{entry_tick}.ram"
+        )))
+        .expect("R26 native January 1978 entry RAM");
+        assert_eq!(entry_ram.len(), 16 * 1024 * 1024);
+        let read_global = |ram: &[u8], relative: usize, size: usize| {
+            let a5 = u32::from_be_bytes(ram[0x904..0x908].try_into().unwrap()) as usize;
+            let offset = a5 + relative - 0x1_0000;
+            match size {
+                2 => u16::from_be_bytes(ram[offset..offset + 2].try_into().unwrap()) as u32,
+                4 => u32::from_be_bytes(ram[offset..offset + 4].try_into().unwrap()),
+                _ => panic!("unexpected Mac global width {size}"),
+            }
+        };
+        city.set_mac_power_service_summary(read_global(&entry_ram, 0xf00a, 4));
+        city.set_mac_monthly_arrest_total_for_test(read_global(&entry_ram, 0xfe04, 2) as u16);
+        city.set_saved_date(crate::city::CityDate {
+            year: 1978,
+            month: 1,
+        });
+        assert_eq!(city.mac_state_misc_u32_at(0x0010), Some(age));
+        assert_eq!(
+            crate::city::cgms_v4_from_city_for_test(&city).unwrap(),
+            entry_cgms,
+            "rehydrated R26 native January 1978 entry CGMS"
+        );
+
+        let mut state = crate::app::tests::test_state(city);
+        state.engine_fidelity = EngineFidelity::Mac68k;
+        state.mac_process_rng = crate::mac_random::MacToolboxRng::new(0x3baa_40fe);
+        state.mac_game_rng = crate::mac_random::MacGameLcgRng::new(0x0f78_c3f5);
+        state.mac_app_lfsr = crate::mac_random::MacAppLfsrRng::new(0xdeae);
+        let funding =
+            std::array::from_fn(|row| mac_budget_service_funding_raw_for_city(&state.city, row));
+        let tax_rates =
+            std::array::from_fn(|row| mac_budget_tax_rate_raw_for_city(&state.city, row));
+        state.refresh_mac_xmic_with_arcologies(funding, tax_rates);
+
+        assert_eq!(state.mac_process_rng.seed(), 0x5f36_0800, "QuickDraw");
+        assert_eq!(state.mac_game_rng.state(), 0x0f78_c3f5, "game LCG");
+        assert_eq!(state.mac_app_lfsr.state(), 0xa6a9, "app LFSR");
+        let native_xmic = std::fs::read(root.join(format!("{return_stem}-xmic.bin")))
+            .expect("R26 native January 1978 return XMIC");
+        assert_eq!(native_xmic.len(), 150 * 8);
+        for slot in 0..150 {
+            let row = state.city.microsim_at(slot).unwrap();
+            let citygame_row = [
+                row.tile_id,
+                row.stat0,
+                (row.stat1 >> 8) as u8,
+                row.stat1 as u8,
+                (row.stat2 >> 8) as u8,
+                row.stat2 as u8,
+                (row.stat3 >> 8) as u8,
+                row.stat3 as u8,
+            ];
+            assert_eq!(
+                &citygame_row,
+                &native_xmic[slot * 8..slot * 8 + 8],
+                "R26 Flint January 1978 CODE 3 XMIC slot {slot}"
+            );
+        }
+
+        let native_return_cgms = std::fs::read(root.join(format!("{return_stem}.cgms")))
+            .expect("R26 native January 1978 return CGMS");
+        let citygame_return_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+        assert_eq!(
+            citygame_return_cgms, native_return_cgms,
+            "R26 native January 1978 CODE 3 return CGMS"
+        );
+
+        let return_ram = std::fs::read(root.join(format!(
+            "code3-export162-return-age{age}-tick{return_tick}.ram"
+        )))
+        .expect("R26 native January 1978 return RAM");
+        let return_arrest = read_global(&return_ram, 0xfe04, 2) as u16;
+        let save_path = std::env::temp_dir().join(format!(
+            "citygame-r26-flint-annual-code3-1978-{}.city",
+            std::process::id()
+        ));
+        state.city.save(&save_path).unwrap();
+        let reloaded = City::load(&save_path).unwrap();
+        std::fs::remove_file(&save_path).unwrap();
+        assert_eq!(reloaded.kind, CityFileKind::MacCity);
+        assert_eq!(reloaded.mac_monthly_arrest_total(), return_arrest);
+        assert_eq!(
+            crate::city::cgms_v4_from_city_for_test(&reloaded).unwrap(),
+            native_return_cgms,
+            "R26 native January 1978 return state after Mac save/reload"
+        );
+    }
+
+    #[test]
     #[ignore = "requires private R26 Flint January 1975 CODE 3 capture fixtures"]
     fn mac_r26_flint_january_1975_code3_annual_xmic_matches_native_worker() {
         let root = std::path::PathBuf::from(

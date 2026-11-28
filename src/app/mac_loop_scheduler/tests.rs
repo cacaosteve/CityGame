@@ -8157,7 +8157,7 @@ fn mac_r19_autodebt_earthquake_worker_matches_native_state_and_rng_boundary() {
 
 #[test]
 #[ignore = "requires the private R19 AutoDebt save, frozen trace, and annual RAM-derived CGMS/XMIC"]
-fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
+fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
     use std::collections::{BTreeMap, HashMap};
     use std::io::{BufRead, BufReader};
 
@@ -8187,11 +8187,15 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
     state.mac_app_lfsr = MacAppLfsrRng::new(0x666f);
 
     let mut timeline = BTreeMap::<u32, (Option<usize>, Option<usize>)>::new();
+    let mut captured_notice_dismissals = std::collections::HashSet::new();
     let mut refresh_b = HashMap::<u32, u32>::new();
     let mut native_actor_refreshes = HashMap::<u32, u32>::new();
+    let mut native_actor_d7 = HashMap::<u32, u32>::new();
     let mut native_initial_phase_return = None;
     let mut native_phase_returns = Vec::new();
     let mut native_annual_xmic_return = None;
+    let mut native_notice_continuation_return = None;
+    let mut native_notice_actor_return = None;
     let mut last_native_actor_check = None;
     let file = std::fs::File::open(trace.join("gdb-clock-through-earthquake-return.csv"))
         .expect("R19 clock trace");
@@ -8209,17 +8213,27 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
                 u16::from_str_radix(fields[10], 16).expect("app LFSR"),
             )
         };
-        if (29_103..=29_752).contains(&tick) {
+        if (29_103..=31_001).contains(&tick) {
             match fields[1] {
-                "CODE2.phase_pre_b" => native_initial_phase_return = Some(native_state()),
-                "CODE14.export210_dispatch.return" => native_phase_returns.push(native_state()),
+                "CODE2.phase_pre_b" => {
+                    native_initial_phase_return.get_or_insert_with(native_state);
+                }
+                "CODE14.export210_dispatch.return" if tick != 30_796 => {
+                    native_phase_returns.push(native_state())
+                }
+                "CODE14.export210_dispatch.return" if tick == 30_796 => {
+                    native_notice_continuation_return = Some(native_state())
+                }
+                "CODE2.export109_return" if tick == 30_801 => {
+                    native_notice_actor_return = Some(native_state())
+                }
                 "CODE3.export162_annual_xmic.return" => {
                     native_annual_xmic_return = Some(native_state())
                 }
                 _ => {}
             }
         }
-        if !(29_103..=29_750).contains(&tick) {
+        if !(29_103..=31_001).contains(&tick) {
             continue;
         }
         match fields[1] {
@@ -8235,6 +8249,10 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
             "CODE2.actor_deadline_tick_return" if last_actor_check != Some(tick) => {
                 last_actor_check = Some(tick);
                 last_native_actor_check = Some(tick);
+                native_actor_d7.insert(
+                    tick,
+                    u32::from_str_radix(fields[12], 16).expect("native D7 register"),
+                );
                 timeline.entry(tick).or_default().1.get_or_insert(row);
             }
             "CODE2.actor_timer_30tick_add" | "CODE2.actor_timer_45tick_add" => {
@@ -8245,6 +8263,29 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
             _ => {}
         }
     }
+    // R19 returned one captured MouseDown at tick 30795 to dismiss the
+    // fiscal notice. Model the completed click at its EventRecord return
+    // boundary; the following clock samples resume normal CODE 2 dispatch.
+    let events = std::fs::File::open(trace.join("toolbox-events-through-earthquake-return.csv"))
+        .expect("R19 captured Toolbox events");
+    for line in BufReader::new(events).lines().skip(1) {
+        let line = line.expect("read R19 Toolbox event row");
+        let fields: Vec<_> = line.split(',').collect();
+        let tick = fields[1].parse::<u32>().expect("EventRecord entry TickCount");
+        let tick_return = fields[2]
+            .parse::<u32>()
+            .expect("EventRecord return TickCount");
+        if (29_103..=31_001).contains(&tick_return) && fields[7] == "0001" {
+            captured_notice_dismissals.insert(tick_return);
+            timeline.entry(tick_return).or_default();
+            if tick_return == 30_795 {
+                // The native resumed CODE 14 continuation returns on the
+                // next captured TickCount, before the next periodic sample.
+                timeline.entry(30_796).or_default().0 = Some(usize::MAX);
+            }
+            eprintln!("R19 replay captured MouseDown entry={tick} return={tick_return}");
+        }
+    }
     assert!(timeline.values().any(|(calendar, _)| calendar.is_some()));
     assert!(timeline.values().any(|(_, actor)| actor.is_some()));
 
@@ -8252,7 +8293,19 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
         |ticks: u32| std::time::Duration::from_nanos((u64::from(ticks) * 1_000_000_000 + 59) / 60);
     let mut last_frame_tick = 29_103_u32;
     let mut boundaries = Vec::new();
+    let mut actor_phase_results = Vec::new();
+    let mut citygame_annual_state = None;
+    let mut citygame_annual_rng = None;
     for (tick, (calendar_row, actor_row)) in timeline {
+        if captured_notice_dismissals.contains(&tick) {
+            let notice = state
+                .mac_loop_scheduler
+                .fiscal_notice
+                .as_mut()
+                .expect("captured R19 MouseDown dismisses the pending fiscal notice");
+            notice.dismissed = true;
+            notice.button_down = false;
+        }
         let calendar_first =
             matches!((calendar_row, actor_row), (Some(calendar), Some(actor)) if calendar < actor);
         let mut run_calendar =
@@ -8265,6 +8318,22 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
                         false,
                         || ticks_duration(sample_b.wrapping_sub(tick).saturating_sub(actor_wait)),
                     );
+                if citygame_annual_state.is_none()
+                    && state.city.mac_state_misc_u32_at(0x10) == Some(28_200)
+                {
+                    // CODE 3 executes synchronously inside the January day-0
+                    // publication. A fiscal notice can make the outer frame
+                    // return zero days after that worker has already run, so
+                    // capture the annual state at the call boundary instead
+                    // of waiting for the notice continuation.
+                    citygame_annual_state = Some(state.city.clone());
+                    citygame_annual_rng = Some((
+                        28_200,
+                        state.mac_process_rng.seed(),
+                        state.mac_game_rng.state(),
+                        state.mac_app_lfsr.state(),
+                    ));
+                }
                 if advance.days > 0 {
                     boundaries.push((
                         tick,
@@ -8272,8 +8341,30 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
                         state.mac_process_rng.seed(),
                         state.mac_game_rng.state(),
                         state.mac_app_lfsr.state(),
+                        state.mac_loop_scheduler.actor_timer_diagnostics(),
                         advance.days,
                     ));
+                    if state.city.mac_state_misc_u32_at(0x10) == Some(28_200) {
+                        if let Some(path) = std::env::var_os("CITYGAME_MAC_R19_ANNUAL_RAM") {
+                            let ram = std::fs::read(path).expect("read native R19 annual RAM");
+                            assert!(ram.len() >= 0x77_0d5c, "native annual RAM size");
+                            let counter =
+                                u16::from_be_bytes(ram[0x76c3d8..0x76c3da].try_into().unwrap());
+                            let smoother =
+                                i16::from_be_bytes(ram[0x76c3da..0x76c3dc].try_into().unwrap());
+                            let deadline =
+                                u32::from_be_bytes(ram[0x76c40a..0x76c40e].try_into().unwrap());
+                            let speed =
+                                u16::from_be_bytes(ram[0x770d5a..0x770d5c].try_into().unwrap());
+                            assert_eq!(speed, 3, "R19 native annual speed selector");
+                            state.mac_loop_scheduler.dispatch_counter = counter;
+                            state.mac_loop_scheduler.actor_smoother = smoother;
+                            state.mac_loop_scheduler.actor_deadline = deadline;
+                            eprintln!(
+                                "R19 diagnostic restored native age-28200 actor timer checkpoint: counter={counter}, smoother={smoother}, deadline={deadline}, speed={speed}"
+                            );
+                        }
+                    }
                 }
                 *last_frame_tick = tick;
             };
@@ -8290,11 +8381,37 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
         if calendar_first {
             run_calendar(&mut state, &mut last_frame_tick, 0);
             if actor_row.is_some() {
+                let deadline_before = state.mac_loop_scheduler.actor_timer_diagnostics();
                 run_actor(&mut state, &mut last_frame_tick);
+                if state.city.mac_state_misc_u32_at(0x10).unwrap_or(0) >= 28_200 {
+                    actor_phase_results.push((
+                        tick,
+                        state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                        state.mac_process_rng.seed(),
+                        state.mac_game_rng.state(),
+                        state.mac_app_lfsr.state(),
+                        deadline_before,
+                        state.mac_loop_scheduler.actor_timer_diagnostics(),
+                        native_actor_d7.get(&tick).copied(),
+                    ));
+                }
             }
         } else {
             if actor_row.is_some() {
+                let deadline_before = state.mac_loop_scheduler.actor_timer_diagnostics();
                 actor_wait = run_actor(&mut state, &mut last_frame_tick);
+                if state.city.mac_state_misc_u32_at(0x10).unwrap_or(0) >= 28_200 {
+                    actor_phase_results.push((
+                        tick,
+                        state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                        state.mac_process_rng.seed(),
+                        state.mac_game_rng.state(),
+                        state.mac_app_lfsr.state(),
+                        deadline_before,
+                        state.mac_loop_scheduler.actor_timer_diagnostics(),
+                        native_actor_d7.get(&tick).copied(),
+                    ));
+                }
             }
             if calendar_row.is_some() {
                 run_calendar(&mut state, &mut last_frame_tick, actor_wait);
@@ -8303,7 +8420,7 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
     }
 
     eprintln!(
-        "R19 city-open checkpoint replay matched {} CODE 14 phase returns; final age={} qd={:08x} game={:08x} app={:04x}",
+        "R19 city-open checkpoint replay matched {} CODE 14 phase returns; final age={} qd={:08x} game={:08x} app={:04x}; CityGame actor-phase results={actor_phase_results:?}",
         native_phase_returns.len(),
         state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
         state.mac_process_rng.seed(),
@@ -8321,13 +8438,34 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
         native_initial_phase_return.expect("native initial CODE 2 phase return"),
         "first post-open phase state"
     );
-    assert_eq!(boundaries.len() - 1, native_phase_returns.len());
-    for (index, (citygame, native)) in boundaries
+    let notice_return = boundaries
+        .iter()
+        .find(|boundary| boundary.0 == 30_796)
+        .expect("CityGame fiscal-notice continuation return");
+    assert_eq!(
+        (notice_return.1, notice_return.2, notice_return.3, notice_return.4),
+        native_notice_continuation_return.expect("native CODE 14 fiscal-notice continuation return"),
+        "R19 fiscal-notice continuation return before the next CODE 2 actor pass"
+    );
+    let notice_actor = actor_phase_results
+        .iter()
+        .find(|result| result.0 == 30_799)
+        .expect("CityGame next-frame actor pass after fiscal notice");
+    assert_eq!(
+        (notice_actor.1, notice_actor.2, notice_actor.3, notice_actor.4),
+        native_notice_actor_return.expect("native CODE 2 return after notice actor pass"),
+        "R19 CODE 2 actor return after the fiscal-notice continuation"
+    );
+    let citygame_phase_returns: Vec<_> = boundaries
         .iter()
         .skip(1)
+        .filter(|boundary| boundary.0 != 30_796)
+        .collect();
+    assert_eq!(citygame_phase_returns.len(), native_phase_returns.len());
+    for (index, (citygame, native)) in citygame_phase_returns
+        .into_iter()
         .zip(&native_phase_returns)
-        .enumerate()
-    {
+        .enumerate() {
         assert_eq!(
             (citygame.1, citygame.2, citygame.3, citygame.4),
             *native,
@@ -8338,16 +8476,12 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
     }
     let native_annual = native_annual_xmic_return.expect("native annual XMIC return");
     assert_eq!(
-        (
-            state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
-            state.mac_process_rng.seed(),
-            state.mac_game_rng.state(),
-            state.mac_app_lfsr.state(),
-        ),
+        citygame_annual_rng.expect("CityGame annual RNG boundary"),
         native_annual,
         "R19 annual XMIC return boundary"
     );
 
+    let citygame_annual_state = citygame_annual_state.expect("CityGame annual age-28200 state");
     let native_annual_cgms = std::fs::read(
         std::env::var_os("CITYGAME_MAC_R19_ANNUAL_CGMS")
             .expect("set CITYGAME_MAC_R19_ANNUAL_CGMS to the RAM-derived annual CGMS"),
@@ -8358,7 +8492,8 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
             .expect("set CITYGAME_MAC_R19_ANNUAL_XMIC to the native annual XMIC bytes"),
     )
     .expect("read native R19 annual XMIC");
-    let citygame_annual_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let citygame_annual_cgms =
+        crate::city::cgms_v4_from_city_for_test(&citygame_annual_state).unwrap();
     let map_end = 20 + 12 * 128 * 128;
     let xthg_start = map_end + 1_200 * 4;
     assert_eq!(
@@ -8373,8 +8508,7 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
     );
     let mut citygame_annual_xmic = Vec::with_capacity(1_200);
     for index in 0..150 {
-        let record = state
-            .city
+        let record = citygame_annual_state
             .microsim_at(index)
             .unwrap_or_else(|| panic!("missing R19 XMIC row {index}"));
         citygame_annual_xmic.push(record.tile_id);
@@ -12655,13 +12789,13 @@ fn mac_fiscal_notice_holds_dispatch_until_timeout_or_dismissal() {
         );
         assert_eq!(
             state.mac_loop_scheduler.dispatch_counter,
-            0,
-            "the resumed actor helper resets the dispatch counter after phase completion; dismissed={early_key}"
+            counter.wrapping_add(1),
+            "resuming the fiscal continuation returns before the next CODE 2 actor check; dismissed={early_key}"
         );
         assert_eq!(
             state.mac_loop_scheduler.actor_smoother,
-            1,
-            "the actor helper observes the completed phase increment before resetting it; dismissed={early_key}"
+            0,
+            "resuming the fiscal continuation does not advance the actor smoother; dismissed={early_key}"
         );
         assert_eq!(state.city_info_dialog, None);
         assert_eq!(
@@ -12732,8 +12866,19 @@ fn mac_actor_phase_runs_after_fiscal_notice_continuation_returns() {
             start,
             "the fiscal continuation returns without admitting a second calendar step; dismissed={dismissed}"
         );
+        assert_eq!(state.mac_process_rng.seed(), initial_rng.seed());
+        assert_eq!(state.mac_loop_scheduler.actor_deadline, 0);
+
+        // The continuation returns from CODE 14 first. CODE 2 checks the
+        // actor deadline on the next event-loop turn, using a fresh TickCount
+        // sample rather than reusing the notice-dismissal frame's sample.
+        state.begin_mac_frame_actor_phase_with_tick_refresh(
+            Duration::from_millis(50),
+            || Duration::from_millis(17),
+        );
         assert_eq!(state.mac_process_rng.seed(), expected_rng.seed());
-        assert_eq!(state.mac_loop_scheduler.actor_deadline, now + 45);
+        assert_ne!(state.mac_loop_scheduler.actor_deadline, 0);
+        assert_eq!(state.mac_loop_scheduler.actor_deadline, now + 4 + 45);
     }
 }
 

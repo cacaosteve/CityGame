@@ -687,18 +687,13 @@ impl ViewerState {
         } else {
             false
         };
-        if resumed_notice {
-            let waits = self.begin_mac_frame_actor_phase_with_tick_refresh(
-                Duration::ZERO,
-                || Duration::ZERO,
-            );
-            now = now.wrapping_add(waits);
-        }
         let (run_state, speed) = self.mac_scheduler_inputs();
         let advance = if resumed_notice {
-            // The suspended CODE 14 callback has now returned; preserve its
-            // completion signal without admitting a second calendar step in
-            // the same frame. CODE 2 can sample the normal deadline next frame.
+            // Return to the outer loop after the suspended CODE 14 callback.
+            // Native CODE 2 checks the actor timer on its next turn with a
+            // fresh TickCount; an inline check here reuses this frame's sample.
+            // Preserve the callback's completion signal without admitting a
+            // second calendar step in the same frame.
             GameClockAdvance { days: 1, months: 1 }
         } else if self.mac_loop_scheduler.january_budget_review_pending {
             if self.city_info_dialog.is_some_and(|dialog| {

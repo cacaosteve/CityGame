@@ -8156,7 +8156,7 @@ fn mac_r19_autodebt_earthquake_worker_matches_native_state_and_rng_boundary() {
 }
 
 #[test]
-#[ignore = "requires the private R19 AutoDebt save and frozen CODE 2 trace"]
+#[ignore = "requires the private R19 AutoDebt save, frozen trace, and annual RAM-derived CGMS/XMIC"]
 fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
     use std::collections::{BTreeMap, HashMap};
     use std::io::{BufRead, BufReader};
@@ -8346,6 +8346,47 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_to_annual_boundary() {
         ),
         native_annual,
         "R19 annual XMIC return boundary"
+    );
+
+    let native_annual_cgms = std::fs::read(
+        std::env::var_os("CITYGAME_MAC_R19_ANNUAL_CGMS")
+            .expect("set CITYGAME_MAC_R19_ANNUAL_CGMS to the RAM-derived annual CGMS"),
+    )
+    .expect("read native R19 annual CGMS");
+    let native_annual_xmic = std::fs::read(
+        std::env::var_os("CITYGAME_MAC_R19_ANNUAL_XMIC")
+            .expect("set CITYGAME_MAC_R19_ANNUAL_XMIC to the native annual XMIC bytes"),
+    )
+    .expect("read native R19 annual XMIC");
+    let citygame_annual_cgms = crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+    let map_end = 20 + 12 * 128 * 128;
+    let xthg_start = map_end + 1_200 * 4;
+    assert_eq!(
+        &citygame_annual_cgms[..map_end],
+        &native_annual_cgms[..map_end],
+        "R19 annual XBLD/XTER/map-plane state"
+    );
+    assert_eq!(
+        &citygame_annual_cgms[xthg_start..],
+        &native_annual_cgms[xthg_start..],
+        "R19 annual XTHG actor table"
+    );
+    let mut citygame_annual_xmic = Vec::with_capacity(1_200);
+    for index in 0..150 {
+        let record = state
+            .city
+            .microsim_at(index)
+            .unwrap_or_else(|| panic!("missing R19 XMIC row {index}"));
+        citygame_annual_xmic.push(record.tile_id);
+        citygame_annual_xmic.push(record.stat0);
+        citygame_annual_xmic.extend_from_slice(&record.stat1.to_be_bytes());
+        citygame_annual_xmic.extend_from_slice(&record.stat2.to_be_bytes());
+        citygame_annual_xmic.extend_from_slice(&record.stat3.to_be_bytes());
+    }
+    assert_eq!(
+        citygame_annual_xmic,
+        native_annual_xmic,
+        "R19 complete annual XMIC state"
     );
 }
 

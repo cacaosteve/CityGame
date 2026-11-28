@@ -30,6 +30,30 @@ fn mac_story_window_closes_at_wrapping_tickcount_deadline() {
 }
 
 #[test]
+fn mac_disaster_paper_closes_at_wrapping_timed_deadline() {
+    let city = City::new_blank("/tmp/mac-disaster-paper-timeout.sc2", "Disaster").unwrap();
+    let mut state = test_state(city);
+    state.engine_fidelity = EngineFidelity::Mac68k;
+    state.mode = AppMode::CityView;
+    state.mac_loop_scheduler.start_captured_clock(0xffff_ff00);
+    state.open_city_info_dialog(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster));
+    assert_eq!(
+        state.mac_loop_scheduler.mac_disaster_paper_started_at,
+        Some(0xffff_ff00)
+    );
+
+    assert_eq!(
+        state.begin_mac_frame_actor_phase(Duration::from_secs(59)),
+        0,
+        "the disaster paper holds simulation until the native deadline"
+    );
+    assert!(state.city_info_dialog.is_some());
+    state.begin_mac_frame_actor_phase(Duration::from_secs(1));
+    assert_eq!(state.city_info_dialog, None);
+    assert_eq!(state.mac_loop_scheduler.mac_disaster_paper_started_at, None);
+}
+
+#[test]
 fn mac_annual_aged_plant_opens_story_window_and_resumes_budget_tail() {
     let mut city = City::new_blank("/tmp/mac-annual-plant-story.sc2", "Plant Story").unwrap();
     city.kind = crate::city::CityFileKind::MacCity;
@@ -8199,6 +8223,7 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
     let mut native_earthquake_worker_entry = None;
     let mut native_earthquake_worker_return = None;
     let mut earthquake_worker_return_tick = None;
+    let mut earthquake_action_pass_tick = None;
     let mut earthquake_shake_ticks = std::collections::BTreeSet::new();
     let mut last_native_actor_check = None;
     let file = std::fs::File::open(trace.join("gdb-clock-through-earthquake-return.csv"))
@@ -8231,6 +8256,10 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
                     earthquake_worker_return_tick = Some(tick);
                     timeline.entry(tick).or_default();
                 }
+                "CODE10.earthquake_action_pass" => {
+                    earthquake_action_pass_tick = Some(tick);
+                    timeline.entry(tick).or_default();
+                }
                 "CODE2.phase_pre_b" => {
                     native_initial_phase_return.get_or_insert_with(native_state);
                 }
@@ -8244,7 +8273,10 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
                     native_notice_actor_return = Some(native_state())
                 }
                 "CODE3.export162_annual_xmic.return" => {
-                    native_annual_xmic_return = Some(native_state())
+                    let boundary = native_state();
+                    if boundary.0 == 28_200 {
+                        native_annual_xmic_return = Some(boundary);
+                    }
                 }
                 _ => {}
             }
@@ -8352,7 +8384,9 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
             let now = state.mac_loop_scheduler.advance_elapsed(elapsed);
             last_frame_tick = tick;
             state.mac_loop_scheduler.cancel_mac_earthquake_prelude();
-            state.city.set_mac_pending_action(6);
+            // Production CODE 10 has already consumed and cleared the
+            // selector before the shake. Recreate that state at worker return.
+            state.city.set_mac_pending_action(0);
             let point = state.mac_loop_scheduler.disaster_point;
             let mut worker_now = now;
             scenario_action::seed_earthquake(
@@ -8362,6 +8396,13 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
                 &mut worker_now,
                 &mut state.mac_app_lfsr,
             );
+            let action_pass_tick = earthquake_action_pass_tick
+                .expect("native CODE 10 action-pass entry after Earthquake worker");
+            worker_now = action_pass_tick;
+            let action_elapsed = ticks_duration(action_pass_tick.wrapping_sub(last_frame_tick));
+            state.mac_loop_scheduler.advance_elapsed(action_elapsed);
+            state.advance_mac_scenario_action(&mut worker_now);
+            last_frame_tick = worker_now;
         }
         if captured_notice_dismissals.contains(&tick) {
             let notice = state
@@ -8486,12 +8527,13 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
     }
 
     eprintln!(
-        "R19 city-open checkpoint replay matched {} CODE 14 phase returns; final age={} qd={:08x} game={:08x} app={:04x}; CityGame actor-phase results={actor_phase_results:?}",
+        "R19 city-open checkpoint replay matched {} CODE 14 phase returns; final age={} qd={:08x} game={:08x} app={:04x}; CityGame actor-phase samples={}",
         native_phase_returns.len(),
         state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
         state.mac_process_rng.seed(),
         state.mac_game_rng.state(),
         state.mac_app_lfsr.state(),
+        actor_phase_results.len(),
     );
     let citygame_first = boundaries.first().expect("CityGame reached first phase");
     assert_eq!(

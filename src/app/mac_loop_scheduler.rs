@@ -60,6 +60,8 @@ pub(super) struct MacLoopScheduler {
     pub(super) january_budget_review_started_at: Option<u32>,
     /// TickCount at which the automatic CODE 7 story window was shown.
     pub(super) mac_story_window_started_at: Option<u32>,
+    /// TickCount deadline origin for the timed CODE 7 disaster paper.
+    pub(super) mac_disaster_paper_started_at: Option<u32>,
     /// Deferred CODE 4 monthly-budget tail after a CODE 3 plant story returns.
     pub(super) mac_annual_story_continuation: Option<u8>,
     /// Suspended CODE 8 phase-21 technology/story call, resumed after CODE 7 returns.
@@ -499,6 +501,25 @@ impl ViewerState {
             }
         }
         if self.mode == AppMode::CityView
+            && self.city_info_dialog
+                == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster))
+        {
+            let expired = self
+                .mac_loop_scheduler
+                .mac_disaster_paper_started_at
+                .is_some_and(|started_at| {
+                    mac_tick_at_or_after(
+                        now,
+                        started_at.wrapping_add(MAC_STORY_WINDOW_TIMEOUT_TICKS),
+                    )
+                });
+            if expired {
+                self.close_city_info_dialog();
+            } else {
+                return 0;
+            }
+        }
+        if self.mode == AppMode::CityView
             && self.city_info_dialog.is_none()
             && self
                 .mac_loop_scheduler
@@ -644,6 +665,21 @@ impl ViewerState {
             .mac_loop_scheduler
             .advance_elapsed(elapsed)
             .wrapping_add(actor_wait_ticks);
+        if self.mode == AppMode::CityView
+            && self.city_info_dialog
+                == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster))
+            && self
+                .mac_loop_scheduler
+                .mac_disaster_paper_started_at
+                .is_some_and(|started_at| {
+                    mac_tick_at_or_after(
+                        now,
+                        started_at.wrapping_add(MAC_STORY_WINDOW_TIMEOUT_TICKS),
+                    )
+                })
+        {
+            self.close_city_info_dialog();
+        }
         let fiscal_notice_resumable = self
             .mac_loop_scheduler
             .fiscal_notice

@@ -349,6 +349,10 @@ impl ViewerState {
             self.mac_newspaper.detail_open = false;
             self.mac_newspaper.paint = None;
         }
+        if next_dialog == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster)) {
+            self.mac_loop_scheduler.mac_disaster_paper_started_at =
+                Some(self.mac_loop_scheduler.current_tick());
+        }
         self.sync_pe_city_info_modal_state();
     }
 
@@ -376,6 +380,9 @@ impl ViewerState {
         .flatten();
         if closed == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacStoryWindow)) {
             self.mac_loop_scheduler.mac_story_window_started_at = None;
+        }
+        if closed == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster)) {
+            self.mac_loop_scheduler.mac_disaster_paper_started_at = None;
         }
         if closed == Some(CityInfoDialog::Help)
             && let Some(return_dialog) = self.help_return_dialog.take()

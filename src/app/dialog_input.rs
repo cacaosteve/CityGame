@@ -165,12 +165,15 @@ pub(super) fn handle_mac_paper_pointer(
 ) -> bool {
     if state.mac_newspaper.detail_open {
         if point_in_float_rect(screen, newspaper::detail_scroll_rect(page, false)) {
+            reset_mac_disaster_paper_timeout(state);
             state.scroll_mac_paper_detail(-3);
         } else if point_in_float_rect(screen, newspaper::detail_scroll_rect(page, true)) {
+            reset_mac_disaster_paper_timeout(state);
             state.scroll_mac_paper_detail(3);
         } else if point_in_float_rect(screen, newspaper::detail_close_rect(page))
             || !point_in_float_rect(screen, newspaper::detail_rect(page))
         {
+            reset_mac_disaster_paper_timeout(state);
             state.close_mac_paper_detail();
         }
         return true;
@@ -185,6 +188,7 @@ pub(super) fn handle_mac_paper_pointer(
             if newspaper::mac_story_hit_rect(page, family, position)
                 .is_some_and(|rect| point_in_float_rect(screen, rect))
             {
+                reset_mac_disaster_paper_timeout(state);
                 // The original leaves the weather and survey boxes inert in layout 2.
                 if family != 2 || (position != 5 && position != 6) {
                     state.open_mac_paper_detail_at(position);
@@ -195,10 +199,18 @@ pub(super) fn handle_mac_paper_pointer(
         return false;
     }
     if point_in_float_rect(screen, newspaper::lead_hit_rect(page)) {
+        reset_mac_disaster_paper_timeout(state);
         state.open_mac_paper_detail();
         return true;
     }
     false
+}
+
+fn reset_mac_disaster_paper_timeout(state: &mut ViewerState) {
+    if state.city_info_dialog == Some(CityInfoDialog::Newspaper(NewspaperEdition::MacDisaster)) {
+        state.mac_loop_scheduler.mac_disaster_paper_started_at =
+            Some(state.mac_loop_scheduler.current_tick());
+    }
 }
 
 pub(super) fn close_city_info_dialog_from_input(

@@ -30,9 +30,6 @@ const MAC_EXPORT80_RENDER_WAIT_TICKS_PER_LOOP: u32 = 12;
 const MAC_EARTHQUAKE_SHAKE_FRAMES: u8 = 24;
 const MAC_EARTHQUAKE_FRAME_WAIT_TICKS: u32 = 5;
 const MAC_EARTHQUAKE_FIRST_FRAME_TICKS: u32 = 2;
-// One R15 capture records these two advances before its first shake sample.
-// Other native captures record zero; the event-specific source is unresolved.
-const MAC_EARTHQUAKE_PRE_SHAKE_RANDOM_DRAWS: u8 = 2;
 // One live pixel census kept the native January review visible across 4,760
 // TickCount ticks; a second annual boundary had a 5,180-tick CODE 7 gap. The
 // current nominal timeout is 4,800 ticks, with adjacent annual work accounting
@@ -821,15 +818,6 @@ impl ViewerState {
             return;
         }
         if prelude.frames_done < MAC_EARTHQUAKE_SHAKE_FRAMES {
-            if prelude.frames_done == 0 {
-                // Native CODE 10 reaches its pending-clear return before the
-                // first shake TickCount sample. The two provisional advances
-                // observed in one R15 capture belong at that first sample,
-                // not at dispatch entry.
-                for _ in 0..MAC_EARTHQUAKE_PRE_SHAKE_RANDOM_DRAWS {
-                    self.mac_process_rng.random_i16();
-                }
-            }
             self.mac_loop_scheduler.set_mac_earthquake_sound_pending();
             prelude.frames_done += 1;
             prelude.deadline = now.wrapping_add(MAC_EARTHQUAKE_FRAME_WAIT_TICKS);

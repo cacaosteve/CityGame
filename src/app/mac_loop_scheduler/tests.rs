@@ -7912,8 +7912,8 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             manual.mac_loop_scheduler.mac_earthquake_shake_phase(),
             Some(0)
         );
-        // The observed two-draw setup occurs at the first shake TickCount.
-        assert_eq!(manual.mac_process_rng.seed(), 984_943_658);
+        // CODE 10's visible shake frames do not draw from QuickDraw's stream.
+        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
         let mut quake_sound_requests = usize::from(manual.take_pending_mac_earthquake_sound());
         assert_eq!(quake_sound_requests, 1);
         assert_eq!(manual.view_camera().x - manual.camera.x, 16.0);
@@ -7934,14 +7934,14 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
                 if phase & 1 == 0 { 16.0 } else { 0.0 }
             );
         }
-        assert_eq!(manual.mac_process_rng.seed(), 984_943_658);
+        assert_eq!(manual.mac_process_rng.seed(), 282_475_249);
         assert_eq!(
             manual
                 .advance_frame_simulation(Duration::from_millis(84))
                 .days,
             0
         );
-        assert_eq!(manual.mac_process_rng.seed(), 1_338_654_090);
+        assert_eq!(manual.mac_process_rng.seed(), 1_017_324_090);
         assert_eq!(manual.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
         assert!(!manual.take_pending_mac_earthquake_sound());
         assert_eq!(quake_sound_requests, 24);
@@ -7963,7 +7963,7 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
             Some(CITY_MODE_GAMEPLAY)
         );
         // The natural proposal reaches CODE 10's pending-clear boundary before
-        // the first shake TickCount; its pre-shake advances happen on frame 0.
+        // the first shake TickCount; the shake prelude itself draws no RNG.
         assert_eq!(monthly.mac_process_rng.seed(), 1_983_943_974);
         for _ in 0..25 {
             assert_eq!(
@@ -7973,12 +7973,12 @@ fn mac_earthquake_manual_menu_and_monthly_empty_scan_match_native() {
                 0
             );
         }
-        assert_eq!(monthly.mac_process_rng.seed(), 1_558_535_238);
+        assert_eq!(monthly.mac_process_rng.seed(), 1_013_997_541);
     }
 }
 
 #[test]
-fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
+fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries_without_extra_rng() {
     // TickCount offsets of the 24 CODE 10 shake sound requests in
     // earthquake-live-armed-r4-20261117/trace.csv. The first CODE 10 scan
     // Random call occurs at offset 136.
@@ -8014,13 +8014,9 @@ fn mac_earthquake_manual_prelude_uses_live_quadra_tick_boundaries() {
         Some((70, 12))
     );
     assert_eq!(state.advance_frame_simulation(Duration::ZERO).days, 0);
-    let mut expected_first_shake_seed = MacToolboxRng::new(worker_entry_seed);
-    expected_first_shake_seed.random_i16();
-    expected_first_shake_seed.random_i16();
-    let prelude_seed = expected_first_shake_seed.seed();
+    let prelude_seed = worker_entry_seed;
     assert_eq!(state.mac_process_rng.seed(), worker_entry_seed);
-    assert_ne!(worker_entry_seed, prelude_seed);
-    assert_eq!(prelude_seed, 0x03c3_accb);
+    assert_eq!(prelude_seed, 0x4039_47e7);
     assert_eq!(state.mac_loop_scheduler.mac_earthquake_shake_phase(), None);
 
     let mut previous_tick = 0;
@@ -8156,8 +8152,8 @@ fn mac_r19_autodebt_earthquake_worker_matches_native_state_and_rng_boundary() {
 }
 
 #[test]
-#[ignore = "requires the private R19 AutoDebt save, frozen trace, and annual RAM-derived CGMS/XMIC"]
-fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
+#[ignore = "requires the private R19 AutoDebt save, captured input trace, and annual RAM-derived CGMS/XMIC"]
+fn mac_r19_autodebt_city_open_checkpoint_replays_captured_menu_input() {
     use std::collections::{BTreeMap, HashMap};
     use std::io::{BufRead, BufReader};
 
@@ -8167,6 +8163,9 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
         std::env::var_os("CITYGAME_MAC_R19_TRACE_DIR")
             .expect("set CITYGAME_MAC_R19_TRACE_DIR to the frozen R19 capture directory"),
     );
+    let replay_end_tick = std::env::var("CITYGAME_MAC_R19_REPLAY_END_TICK")
+        .map(|tick| tick.parse::<u32>().expect("R19 replay end TickCount"))
+        .unwrap_or(31_001);
     let mut state = test_state(
         City::new_blank("/tmp/mac-r19-autodebt-open-replay.sc2", "R19 AutoDebt")
             .expect("create test state"),
@@ -8188,6 +8187,7 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
 
     let mut timeline = BTreeMap::<u32, (Option<usize>, Option<usize>)>::new();
     let mut captured_notice_dismissals = std::collections::HashSet::new();
+    let mut captured_earthquake_selections = std::collections::HashSet::new();
     let mut refresh_b = HashMap::<u32, u32>::new();
     let mut native_actor_refreshes = HashMap::<u32, u32>::new();
     let mut native_actor_d7 = HashMap::<u32, u32>::new();
@@ -8196,6 +8196,10 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
     let mut native_annual_xmic_return = None;
     let mut native_notice_continuation_return = None;
     let mut native_notice_actor_return = None;
+    let mut native_earthquake_worker_entry = None;
+    let mut native_earthquake_worker_return = None;
+    let mut earthquake_worker_return_tick = None;
+    let mut earthquake_shake_ticks = std::collections::BTreeSet::new();
     let mut last_native_actor_check = None;
     let file = std::fs::File::open(trace.join("gdb-clock-through-earthquake-return.csv"))
         .expect("R19 clock trace");
@@ -8213,8 +8217,20 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
                 u16::from_str_radix(fields[10], 16).expect("app LFSR"),
             )
         };
-        if (29_103..=31_001).contains(&tick) {
+        if (29_103..=replay_end_tick).contains(&tick) {
             match fields[1] {
+                "CODE10.earthquake_worker_entry" => {
+                    native_earthquake_worker_entry = Some(native_state());
+                }
+                "CODE10.earthquake_shake_tickcount" => {
+                    earthquake_shake_ticks.insert(tick);
+                    timeline.entry(tick).or_default();
+                }
+                "CODE10.earthquake_worker.return" => {
+                    native_earthquake_worker_return = Some(native_state());
+                    earthquake_worker_return_tick = Some(tick);
+                    timeline.entry(tick).or_default();
+                }
                 "CODE2.phase_pre_b" => {
                     native_initial_phase_return.get_or_insert_with(native_state);
                 }
@@ -8233,7 +8249,7 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
                 _ => {}
             }
         }
-        if !(29_103..=31_001).contains(&tick) {
+        if !(29_103..=replay_end_tick).contains(&tick) {
             continue;
         }
         match fields[1] {
@@ -8275,15 +8291,21 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
         let tick_return = fields[2]
             .parse::<u32>()
             .expect("EventRecord return TickCount");
-        if (29_103..=31_001).contains(&tick_return) && fields[7] == "0001" {
-            captured_notice_dismissals.insert(tick_return);
-            timeline.entry(tick_return).or_default();
-            if tick_return == 30_795 {
+        if (29_103..=replay_end_tick).contains(&tick_return) {
+            if fields[7] == "0001" || fields[7] == "0002" {
+                timeline.entry(tick_return).or_default();
+            }
+            if tick_return == 30_795 && fields[7] == "0001" {
+                captured_notice_dismissals.insert(tick_return);
                 // The native resumed CODE 14 continuation returns on the
                 // next captured TickCount, before the next periodic sample.
                 timeline.entry(30_796).or_default().0 = Some(usize::MAX);
+                eprintln!("R19 replay captured fiscal-notice MouseDown entry={tick} return={tick_return}");
             }
-            eprintln!("R19 replay captured MouseDown entry={tick} return={tick_return}");
+            if tick_return == 32_637 && fields[7] == "0002" {
+                captured_earthquake_selections.insert(tick_return);
+                eprintln!("R19 replay captured Earthquake MouseUp entry={tick} return={tick_return}");
+            }
         }
     }
     assert!(timeline.values().any(|(calendar, _)| calendar.is_some()));
@@ -8296,7 +8318,51 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
     let mut actor_phase_results = Vec::new();
     let mut citygame_annual_state = None;
     let mut citygame_annual_rng = None;
+    let mut citygame_earthquake_worker_entry = None;
+    let mut citygame_earthquake_entry_state = None;
     for (tick, (calendar_row, actor_row)) in timeline {
+        if captured_earthquake_selections.contains(&tick) {
+            let event_elapsed = ticks_duration(tick.wrapping_sub(last_frame_tick));
+            state.mac_loop_scheduler.advance_elapsed(event_elapsed);
+            last_frame_tick = tick;
+            assert!(state.start_disaster(DisasterKind::Earthquake));
+            assert_eq!(state.city.mac_pending_action(), 6);
+            assert_eq!(state.mac_loop_scheduler.pending_action_point, Some((122, 19)));
+            assert_eq!(state.mac_process_rng.seed(), 0x0622_9f0c);
+        }
+        if earthquake_shake_ticks.contains(&tick) {
+            let elapsed = ticks_duration(tick.wrapping_sub(last_frame_tick));
+            let now = state.mac_loop_scheduler.advance_elapsed(elapsed);
+            last_frame_tick = tick;
+            if citygame_earthquake_worker_entry.is_none()
+                && state.mac_loop_scheduler.mac_earthquake_prelude_active()
+            {
+                citygame_earthquake_worker_entry = Some((
+                    state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                    state.mac_process_rng.seed(),
+                    state.mac_game_rng.state(),
+                    state.mac_app_lfsr.state(),
+                ));
+                citygame_earthquake_entry_state = Some(state.city.clone());
+            }
+            state.advance_mac_earthquake_prelude(now, &mut |_| {});
+        }
+        if earthquake_worker_return_tick == Some(tick) {
+            let elapsed = ticks_duration(tick.wrapping_sub(last_frame_tick));
+            let now = state.mac_loop_scheduler.advance_elapsed(elapsed);
+            last_frame_tick = tick;
+            state.mac_loop_scheduler.cancel_mac_earthquake_prelude();
+            state.city.set_mac_pending_action(6);
+            let point = state.mac_loop_scheduler.disaster_point;
+            let mut worker_now = now;
+            scenario_action::seed_earthquake(
+                &mut state.city,
+                point,
+                &mut state.mac_process_rng,
+                &mut worker_now,
+                &mut state.mac_app_lfsr,
+            );
+        }
         if captured_notice_dismissals.contains(&tick) {
             let notice = state
                 .mac_loop_scheduler
@@ -8522,6 +8588,68 @@ fn mac_r19_autodebt_city_open_checkpoint_replays_through_tick_31001() {
         native_annual_xmic,
         "R19 complete annual XMIC state"
     );
+
+    if let Some(native_entry) = native_earthquake_worker_entry {
+        assert_eq!(
+            citygame_earthquake_worker_entry.expect("CityGame entered R19 Earthquake prelude"),
+            native_entry,
+            "R19 Earthquake worker-entry RNG boundary"
+        );
+        let native_entry_cgms = std::fs::read(
+            std::env::var_os("CITYGAME_MAC_R19_EARTHQUAKE_ENTRY_CGMS")
+                .expect("set CITYGAME_MAC_R19_EARTHQUAKE_ENTRY_CGMS to native entry CGMS"),
+        )
+        .expect("read native R19 Earthquake entry CGMS");
+        let citygame_entry_cgms = crate::city::cgms_v4_from_city_for_test(
+            citygame_earthquake_entry_state
+                .as_ref()
+                .expect("CityGame R19 Earthquake entry state"),
+        )
+        .unwrap();
+        let map_end = 20 + 12 * 128 * 128;
+        let xthg_start = map_end + 1_200 * 4;
+        assert_eq!(
+            &citygame_entry_cgms[..map_end],
+            &native_entry_cgms[..map_end],
+            "R19 Earthquake worker-entry map planes"
+        );
+        assert_eq!(
+            &citygame_entry_cgms[xthg_start..],
+            &native_entry_cgms[xthg_start..],
+            "R19 Earthquake worker-entry XTHG"
+        );
+    }
+    if let Some(native_return) = native_earthquake_worker_return {
+        let native_return_cgms = std::fs::read(
+            std::env::var_os("CITYGAME_MAC_R19_EARTHQUAKE_RETURN_CGMS")
+                .expect("set CITYGAME_MAC_R19_EARTHQUAKE_RETURN_CGMS to native return CGMS"),
+        )
+        .expect("read native R19 Earthquake return CGMS");
+        let citygame_return_cgms =
+            crate::city::cgms_v4_from_city_for_test(&state.city).unwrap();
+        let map_end = 20 + 12 * 128 * 128;
+        let xthg_start = map_end + 1_200 * 4;
+        assert_eq!(
+            &citygame_return_cgms[..map_end],
+            &native_return_cgms[..map_end],
+            "R19 Earthquake worker-return map planes"
+        );
+        assert_eq!(
+            &citygame_return_cgms[xthg_start..],
+            &native_return_cgms[xthg_start..],
+            "R19 Earthquake worker-return XTHG"
+        );
+        assert_eq!(
+            (
+                state.city.mac_state_misc_u32_at(0x10).unwrap_or(0),
+                state.mac_process_rng.seed(),
+                state.mac_game_rng.state(),
+                state.mac_app_lfsr.state(),
+            ),
+            native_return,
+            "R19 Earthquake worker-return RNG boundary"
+        );
+    }
 }
 
 #[test]
@@ -9194,10 +9322,9 @@ fn mac_earthquake_native_mixed_scan_and_reopened_first_marker_match_both_layouts
             .city
             .set_mac_state_misc_u32_at(MISC_CITY_MODE_OFFSET, CITY_MODE_GAMEPLAY);
         state.traffic.set_speed(GameSpeed::Paused);
-        // The CODE 10 pre-shake setup consumes two draws. Choose the inverse
-        // Park-Miller state so the native mixed-scan fixture still enters its
-        // map worker at seed 1.
-        state.mac_process_rng = MacToolboxRng::new(1_475_608_308);
+        // CODE 10 enters the map worker from the menu-selected QuickDraw seed;
+        // the shake prelude itself does not consume extra draws.
+        state.mac_process_rng = MacToolboxRng::new(1);
         state.city.set_mac_pending_action(6);
         state.mac_loop_scheduler.pending_action_point = Some((2, 3));
         for (x, y) in [(0, 14), (1, 32)] {
